@@ -125,6 +125,34 @@ fn run_framework(root: &Path, framework: &str, model: &str) -> Option<BenchResul
     }
 }
 
+/// Compute error metrics between two logit sample vectors.
+/// Returns (max_error, mae, rmse, relative_error).
+fn compute_errors(a: &[f64], b: &[f64]) -> (f64, f64, f64, f64) {
+    let n = a.len().min(b.len());
+    if n == 0 {
+        return (0.0, 0.0, 0.0, 0.0);
+    }
+    let mut max_err = 0.0f64;
+    let mut sum_abs = 0.0f64;
+    let mut sum_sq = 0.0f64;
+    let mut sum_ref_sq = 0.0f64;
+    for i in 0..n {
+        let diff = (a[i] - b[i]).abs();
+        max_err = max_err.max(diff);
+        sum_abs += diff;
+        sum_sq += diff * diff;
+        sum_ref_sq += a[i] * a[i];
+    }
+    let mae = sum_abs / n as f64;
+    let rmse = (sum_sq / n as f64).sqrt();
+    let rel = if sum_ref_sq > 0.0 {
+        (sum_sq / sum_ref_sq).sqrt()
+    } else {
+        0.0
+    };
+    (max_err, mae, rmse, rel)
+}
+
 fn compare_outputs(results: &[BenchResult]) {
     if results.len() < 2 {
         return;
@@ -132,19 +160,30 @@ fn compare_outputs(results: &[BenchResult]) {
     let reference = &results[0];
     eprintln!();
     eprintln!("=== Output comparison (reference: {}) ===", reference.framework);
+    eprintln!(
+        "  {:<12} {:>12} {:>12} {:>12} {:>12} {:>12}  {}",
+        "Framework", "Loss Diff", "Max Error", "MAE", "RMSE", "Rel Error", "Status"
+    );
+    eprintln!("  {}", "-".repeat(90));
     for other in &results[1..] {
         let hash_match = reference.outputs.logits_hash == other.outputs.logits_hash;
         let loss_diff = (reference.outputs.loss - other.outputs.loss).abs();
+        let (max_err, mae, rmse, rel) = compute_errors(
+            &reference.outputs.logits_sample,
+            &other.outputs.logits_sample,
+        );
         let status = if hash_match {
             "EXACT MATCH"
-        } else if loss_diff < 1e-4 {
-            "CLOSE (loss <1e-4)"
+        } else if loss_diff < 1e-4 && rel < 0.01 {
+            "PASS (<1% rel)"
+        } else if loss_diff < 0.01 {
+            "CLOSE"
         } else {
             "MISMATCH"
         };
         eprintln!(
-            "  {} vs {}: {} (loss diff: {:.6e})",
-            reference.framework, other.framework, status, loss_diff
+            "  {:<12} {:>12.6e} {:>12.6e} {:>12.6e} {:>12.6e} {:>12.6e}  {}",
+            other.framework, loss_diff, max_err, mae, rmse, rel, status
         );
     }
 }

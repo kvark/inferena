@@ -3,14 +3,18 @@
 ML framework inference benchmark. Compares inference and training performance of
 the same models across different ML frameworks on single-GPU hardware.
 
+Inspired by [meganeura's bench/compare.sh](https://github.com/kvark/meganeura/tree/main/bench) pipeline.
+
 ## Frameworks
 
-| Framework | Language | Status |
-|-----------|----------|--------|
-| [PyTorch](https://pytorch.org/) | Python | Implemented |
-| [Burn](https://burn.dev/) | Rust | Implemented |
-| [Luminal](https://github.com/jafioti/luminal) | Rust | Scaffold |
-| [Meganeura](frameworks/meganeura/) | Rust | Scaffold |
+All Rust frameworks use bleeding-edge git dependencies pinned to specific revisions.
+
+| Framework | Language | Backend | Status |
+|-----------|----------|---------|--------|
+| [PyTorch](https://pytorch.org/) | Python | CUDA/ROCm/MPS | Implemented |
+| [Burn](https://github.com/tracel-ai/burn) @ `ed72d2b` | Rust | wgpu (Vulkan/Metal/DX12) | Implemented |
+| [Luminal](https://github.com/luminal-ai/luminal) @ `f32161d` | Rust | NativeRuntime (CPU) / CUDA | Implemented |
+| [Meganeura](https://github.com/kvark/meganeura) @ `550bb6c` | Rust | blade-graphics (Vulkan/Metal) | Implemented |
 
 ## Models
 
@@ -25,11 +29,12 @@ the same models across different ML frameworks on single-GPU hardware.
 
 Each framework runs a fake training step on the selected model:
 
-1. **Compile/Init** — Time to load and prepare the model on the GPU.
+1. **Compile/Init** — Time to build, compile, and prepare the model on the GPU.
 2. **Forward** — Single forward pass with a fixed dummy input (seq_len=128).
 3. **Backward** — Backpropagation from a cross-entropy loss.
 
-Outputs (logits, loss) are compared across frameworks to verify semantic equivalence.
+Outputs (logits, loss) are compared across frameworks with error metrics
+(max error, MAE, RMSE, relative error) to verify semantic equivalence.
 
 ## Quick start
 
@@ -37,10 +42,11 @@ Outputs (logits, loss) are compared across frameworks to verify semantic equival
 # Prerequisites: Rust toolchain, Python 3, GPU drivers
 ./run.sh                              # all frameworks, SmolLM2-135M
 ./run.sh -m SmolLM2-135M -f pytorch   # just PyTorch
+./run.sh -f meganeura,pytorch         # compare two frameworks
 ./run.sh --json                       # machine-readable output
 ```
 
-### Download pre-trained weights (for PyTorch)
+### Download pre-trained weights (for PyTorch / Meganeura)
 
 ```bash
 pip install huggingface-hub
@@ -53,10 +59,10 @@ Each framework runner produces a JSON object:
 
 ```json
 {
-  "framework": "pytorch",
+  "framework": "meganeura",
   "model": "SmolLM2-135M",
-  "device": "cuda:0",
-  "gpu_name": "NVIDIA RTX 4090",
+  "device": "blade-gpu",
+  "gpu_name": "blade-gpu",
   "timings": {
     "compile_ms": 1234.5,
     "forward_ms": 56.7,
@@ -70,19 +76,20 @@ Each framework runner produces a JSON object:
 }
 ```
 
-The harness collects these, prints a comparison table, and checks output consistency.
+The harness collects these, prints a comparison table, and checks output
+consistency with error metrics modeled after meganeura's compare.sh.
 
 ## Project structure
 
 ```
 infermark/
 ├── run.sh                  # Main entry point
-├── harness/                # Rust: orchestration, timing, comparison
+├── harness/                # Rust: orchestration, timing, output comparison
 ├── frameworks/
-│   ├── pytorch/            # Python + bash wrapper
-│   ├── burn/               # Rust (wgpu backend)
-│   ├── luminal/            # Rust (scaffold)
-│   └── meganeura/          # Rust (scaffold)
+│   ├── pytorch/            # Python + bash wrapper (HF transformers)
+│   ├── burn/               # Rust (wgpu backend, LLaMA-style model)
+│   ├── luminal/            # Rust (graph-compiled, e-graph optimized)
+│   └── meganeura/          # Rust (blade-graphics, e-graph optimized)
 └── models/
     └── download.sh         # HuggingFace model downloader
 ```

@@ -10,8 +10,9 @@ name = "infermark-luminal"
 path = "src/main.rs"
 
 [dependencies]
-# TODO: Add luminal dependencies once crate is published / pinned.
-# luminal = "0.3"
-# luminal_cuda = "0.3"  # or luminal_metal on macOS
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+luminal = { workspace = true }
+luminal_nn = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+hex = "0.4"

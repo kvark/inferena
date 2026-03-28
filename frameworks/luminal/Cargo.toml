@@ -1,0 +1,17 @@
+[package]
+name = "infermark-luminal"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Luminal framework benchmark runner for infermark"
+
+[[bin]]
+name = "infermark-luminal"
+path = "src/main.rs"
+
+[dependencies]
+# TODO: Add luminal dependencies once crate is published / pinned.
+# luminal = "0.3"
+# luminal_cuda = "0.3"  # or luminal_metal on macOS
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

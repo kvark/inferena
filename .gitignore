@@ -1,0 +1,11 @@
+/target
+/models/*.safetensors
+/models/*.bin
+/models/*.json
+/models/*.model
+!/models/download.sh
+/results/
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/

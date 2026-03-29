@@ -73,6 +73,10 @@ fn bench_smollm2(model_name: &str) {
     let transposed_set: std::collections::HashSet<&str> =
         transposed.iter().map(|s| s.as_str()).collect();
     for (name, _) in session.plan().param_buffers.clone() {
+        // Skip derived (fused) params — auto-populated when source params are loaded.
+        if !model.tensor_info().contains_key(&name) && name != "lm_head.weight" {
+            continue;
+        }
         if name == "lm_head.weight" {
             if model.tensor_info().contains_key("lm_head.weight") {
                 let data = if transposed_set.contains(name.as_str()) {

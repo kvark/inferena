@@ -83,7 +83,7 @@ fn framework_meta(name: &str) -> (&'static str, &'static str, &'static str) {
         "candle" => ("Candle", "https://github.com/huggingface/candle", "6b4d8a1"),
         "burn" => ("Burn", "https://github.com/tracel-ai/burn", "ed72d2b"),
         "luminal" => ("Luminal", "https://github.com/luminal-ai/luminal", "f32161d"),
-        "meganeura" => ("Meganeura", "https://github.com/kvark/meganeura", "550bb6c"),
+        "meganeura" => ("Meganeura", "https://github.com/kvark/meganeura", "d56d5d9"),
         "llama-cpp" => ("llama.cpp", "https://github.com/ggml-org/llama.cpp", ""),
         _ => ("unknown", "", ""),
     }

@@ -14,13 +14,13 @@ Benchmark config: seq_len=128, float32, input=[0,1,...,127].
 
 | Platform | Framework | Compile (s) | Forward (ms) | Backward (ms) | Loss |
 |----------|-----------|:-----------:|:------------:|:--------------:|:----:|
-| Intel Xeon @ 2.10GHz | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CPU) | 54.51 | 34961 | 19049 | 10.98 |
-| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.28~~ | ~~325~~ | ~~—~~ | ~~11.11~~ |
+| Intel Xeon @ 2.10GHz | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CPU) | 59.26 | 38907 | 21049 | 10.98 |
+| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.31~~ | ~~373~~ | ~~—~~ | ~~11.11~~ |
 | | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/Lavapipe) | ~~0.00~~ | ~~2288~~ | ~~4143~~ | ~~11.70~~ |
 | | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) (CPU) | ~~3.31~~ | ~~14585~~ | ~~14299~~ | ~~10.81~~ |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/550bb6c) (Vulkan/Lavapipe) | **2.01** | **3097** | **3032** | 10.98 |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/d56d5d9) (Vulkan/Lavapipe) | **2.80** | **3972** | **3434** | 10.98 |
 
-**Correctness:** PyTorch vs Meganeura: **PASS** (max error 1.7e-6, loss diff 8.6e-4).
+**Correctness:** PyTorch vs Meganeura: **PASS** (max error 1.7e-6, loss diff 6.4e-4).
 Struck-through values are from frameworks running a different (simplified) model.
 
 ## Architecture
@@ -52,9 +52,11 @@ LLaMA-family transformer with Grouped Query Attention:
 
 - **PyTorch** and **Meganeura** load real model weights and run the full
   architecture — their outputs match.
-- **Candle** runs the real LLaMA architecture but uses zero-init weights
-  (not the same safetensors). Returns only last-position logits.
-  Backward not yet wired.
+- **Candle** runs the real LLaMA architecture with the same safetensors
+  weights, but its `forward()` returns last-position logits only (private
+  fields prevent getting all-position logits). Loss is computed on 1
+  position vs 128 for others — hence DIFFERENT MODEL in correctness check.
+  Timing is valid. Backward not yet wired.
 - **Burn** and **Luminal** use a simplified model (single-head attention,
   no RoPE/RMSNorm) with random weights.
 - Luminal backward is estimated as a second forward pass.

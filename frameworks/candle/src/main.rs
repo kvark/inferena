@@ -91,16 +91,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input = Tensor::new(&input_ids[..], &device)?.unsqueeze(0)?;
 
     // --- Forward ---
-    // Note: Candle's LLaMA forward returns last-position logits only [1, vocab].
-    // The full seq_len computation still happens — timing covers all positions.
+    // Candle's LLaMA runs the full seq_len computation but returns
+    // last-position logits only (private fields prevent bypassing).
+    // Timing covers the full forward pass; correctness compares last position.
     let fwd_start = Instant::now();
     let logits = model.forward(&input, 0, &mut cache)?;
     let forward_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
 
+    // logits shape: [1, vocab_size] (last position)
     let logits_data: Vec<f32> = logits.squeeze(0)?.to_vec1()?;
-    eprintln!("[candle] forward: {forward_ms:.2}ms, {} logits", logits_data.len());
+    eprintln!("[candle] forward: {forward_ms:.2}ms, {} logits (last position)", logits_data.len());
 
-    // Cross-entropy on last position.
+    // Cross-entropy on last position only.
     let vocab = config.vocab_size;
     let target = seq_len % vocab;
     let max_logit = logits_data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);

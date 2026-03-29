@@ -1,0 +1,25 @@
+title: infermark
+description: ML Framework Inference Benchmark
+theme: jekyll-theme-cayman
+url: https://kvark.github.io
+baseurl: /infermark
+
+# Render markdown files in models/ as pages.
+collections_dir: .
+include:
+  - models
+
+# Don't render framework source or Rust build artifacts.
+exclude:
+  - target
+  - frameworks
+  - harness
+  - results
+  - Cargo.toml
+  - Cargo.lock
+  - run.sh
+  - "*.rs"
+  - "*.py"
+  - "*.sh"
+  - .venv
+  - .github

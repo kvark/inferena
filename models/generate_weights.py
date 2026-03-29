@@ -62,6 +62,9 @@ def generate(name: str):
 
     # Generate config.
     config = config_cls(**spec["config_args"])
+    # Ensure architectures is set (needed by llama.cpp converter).
+    if not hasattr(config, "architectures") or not config.architectures:
+        config.architectures = [spec["model_cls"]]
     config.save_pretrained(out_dir)
     print(f"  {name}/config.json", file=sys.stderr)
 

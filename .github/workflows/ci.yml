@@ -16,7 +16,6 @@ jobs:
         include:
           - os: ubuntu-latest
             name: Linux
-            # All Rust frameworks build on Linux.
             packages: "infermark-harness infermark-candle infermark-burn infermark-luminal infermark-meganeura"
           - os: macos-latest
             name: macOS
@@ -45,23 +44,21 @@ jobs:
             echo "::endgroup::"
           done
 
-  # Smoke test: run frameworks that work on CPU / software renderers.
-  smoke-test:
+  # Smoke test on Linux: Lavapipe (Vulkan SW renderer) + CPU frameworks.
+  smoke-test-linux:
     runs-on: ubuntu-latest
-    name: Smoke test (Linux + Lavapipe)
+    name: Smoke test (Linux)
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: smoke-test
+          shared-key: smoke-linux
 
-      - name: Install Lavapipe and Vulkan tools
+      - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools cmake
 
       - name: Verify Vulkan (Lavapipe)
         run: vulkaninfo --summary || true
@@ -70,37 +67,60 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Build harness
-        run: cargo build --release -p infermark-harness
+      - name: Build all Rust frameworks
+        run: |
+          cargo build --release -p infermark-harness
+          cargo build --release -p infermark-candle || true
+          cargo build --release -p infermark-burn || true
+          cargo build --release -p infermark-luminal || true
+          cargo build --release -p infermark-meganeura || true
 
-      # Build each framework independently; some may fail on CI.
-      - name: Build burn
-        run: cargo build --release -p infermark-burn
-        continue-on-error: true
-
-      - name: Build luminal
-        run: cargo build --release -p infermark-luminal
-        continue-on-error: true
-
-      - name: Build meganeura
-        run: cargo build --release -p infermark-meganeura
-        continue-on-error: true
-
-      # Run the harness with frameworks that work on CPU/Lavapipe.
-      - name: Run benchmark (Luminal CPU)
+      - name: Run SmolLM2-135M (CPU frameworks)
         run: |
           chmod +x frameworks/*/run.sh
-          ./target/release/infermark --model SmolLM2-135M --frameworks luminal --root .
-        continue-on-error: true
-
-      - name: Run benchmark (Burn wgpu/Lavapipe)
-        run: ./target/release/infermark --model SmolLM2-135M --frameworks burn --root .
+          ./target/release/infermark --model SmolLM2-135M --frameworks candle,luminal,burn --root .
         continue-on-error: true
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: benchmark-results
+          name: benchmark-results-linux
+          path: results/
+          if-no-files-found: ignore
+
+  # Smoke test on macOS: Metal (if available) + CPU frameworks.
+  smoke-test-macos:
+    runs-on: macos-latest
+    name: Smoke test (macOS)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: smoke-macos
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build Rust frameworks
+        run: |
+          cargo build --release -p infermark-harness
+          cargo build --release -p infermark-candle || true
+          cargo build --release -p infermark-burn || true
+          cargo build --release -p infermark-meganeura || true
+
+      - name: Run SmolLM2-135M
+        run: |
+          chmod +x frameworks/*/run.sh
+          ./target/release/infermark --model SmolLM2-135M --frameworks candle,burn --root .
+        continue-on-error: true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-macos
           path: results/
           if-no-files-found: ignore

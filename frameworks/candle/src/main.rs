@@ -50,12 +50,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dtype = DType::F32;
     let seq_len: usize = 128;
 
-    // --- Build & load model with random weights ---
+    // --- Build & load model ---
     eprintln!("[candle] building model...");
     let compile_start = Instant::now();
 
-    // Use random-init weights via VarBuilder.
-    let vb = VarBuilder::zeros(dtype, &device);
+    // Try loading real weights from local models/ dir.
+    let exe = std::env::current_exe().unwrap_or_default();
+    let mut root = exe.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+    let mut model_path = None;
+    for _ in 0..5 {
+        let p = root.join("models").join(&model_name).join("model.safetensors");
+        if p.exists() {
+            model_path = Some(p);
+            break;
+        }
+        if !root.pop() { break; }
+    }
+    if model_path.is_none() {
+        let p = std::path::PathBuf::from("models").join(&model_name).join("model.safetensors");
+        if p.exists() { model_path = Some(p); }
+    }
+
+    let vb = if let Some(ref path) = model_path {
+        eprintln!("[candle] loading weights from {}", path.display());
+        unsafe {
+            VarBuilder::from_mmaped_safetensors(std::slice::from_ref(path), dtype, &device)?
+        }
+    } else {
+        eprintln!("[candle] no local weights, using zeros");
+        VarBuilder::zeros(dtype, &device)
+    };
     let model = llama_model::Llama::load(vb, &config)?;
     let mut cache = llama_model::Cache::new(false, dtype, &config, &device)?;
 
@@ -67,15 +91,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input = Tensor::new(&input_ids[..], &device)?.unsqueeze(0)?;
 
     // --- Forward ---
+    // Note: Candle's LLaMA forward returns last-position logits only [1, vocab].
+    // The full seq_len computation still happens — timing covers all positions.
     let fwd_start = Instant::now();
     let logits = model.forward(&input, 0, &mut cache)?;
     let forward_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
 
-    // logits shape: [1, vocab_size] (last position only)
     let logits_data: Vec<f32> = logits.squeeze(0)?.to_vec1()?;
     eprintln!("[candle] forward: {forward_ms:.2}ms, {} logits", logits_data.len());
 
-    // --- Loss: cross-entropy on last position ---
+    // Cross-entropy on last position.
     let vocab = config.vocab_size;
     let target = seq_len % vocab;
     let max_logit = logits_data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);

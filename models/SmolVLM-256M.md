@@ -14,7 +14,7 @@ Benchmark config: seq_len=128, float32, 1 dummy 384×384 image, input=[0,1,...,1
 
 | CPU / GPU | Framework | Compile (s) | Forward (ms) | Backward (ms) | Loss |
 |-----------|-----------|:-----------:|:------------:|:--------------:|:----:|
-| Intel Xeon @ 2.10GHz | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch) | 68.18 | 54492 | 30852 | 10.89 |
+| Intel Xeon @ 2.10GHz | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch) | **81.58** | **51619** | **33682** | 10.92 |
 | | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) | ✗ | ✗ | ✗ | |
 | | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) | ✗ | ✗ | ✗ | |
 | | [Meganeura](https://github.com/kvark/meganeura/tree/550bb6c) | ✗ | ✗ | ✗ | |
@@ -39,7 +39,7 @@ Idefics3: SigLIP vision encoder + SmolLM2-135M language backbone + MLP connector
 
 ## What this exercises
 
-Everything in [SmolLM2-135M](SmolLM2-135M.md), plus:
+Everything in [SmolLM2-135M](SmolLM2-135M), plus:
 
 - **Vision encoder**: patch embedding (Conv2D), ViT self-attention, LayerNorm
 - **Pixel-shuffle compression**: space-to-depth (384×384 → 81 tokens per patch)

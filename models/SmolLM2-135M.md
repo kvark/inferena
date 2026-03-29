@@ -14,10 +14,10 @@ Benchmark config: seq_len=128, float32, input=[0,1,...,127].
 
 | CPU / GPU | Framework | Compile (s) | Forward (ms) | Backward (ms) | Loss |
 |-----------|-----------|:-----------:|:------------:|:--------------:|:----:|
-| Intel Xeon @ 2.10GHz (Lavapipe) | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch) | 124.23 | 58081 | 31163 | 10.98 |
-| | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) | ~~0.00~~ | ~~2779~~ | ~~5814~~ | ~~11.82~~ |
-| | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) | ~~4.17~~ | ~~18028~~ | ~~17848~~ | ~~10.81~~ |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/550bb6c) | **2.20** | **4127** | **3920** | 10.98 |
+| Intel Xeon @ 2.10GHz | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch) | 61.23 | 34016 | 18731 | 10.98 |
+| Intel Xeon @ 2.10GHz (Lavapipe) | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) | ~~0.00~~ | ~~2041~~ | ~~3022~~ | ~~11.76~~ |
+| Intel Xeon @ 2.10GHz | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) | ~~4.19~~ | ~~11610~~ | ~~11413~~ | ~~10.81~~ |
+| Intel Xeon @ 2.10GHz (Lavapipe) | [Meganeura](https://github.com/kvark/meganeura/tree/550bb6c) | **1.48** | **2855** | **2885** | 10.98 |
 
 **Correctness:** PyTorch vs Meganeura: **PASS** (max error 1.7e-6, loss diff 8.6e-4).
 Struck-through values are from frameworks running a different (simplified) model.

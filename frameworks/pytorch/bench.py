@@ -25,6 +25,105 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+# --- SD U-Net (matches meganeura's sd_unet module: simplified, no cross-attn/timestep) ---
+
+class ResBlock(nn.Module):
+    """GroupNorm → SiLU → Conv3×3 → GroupNorm → SiLU → Conv3×3 + residual."""
+    def __init__(self, in_c, out_c, num_groups=16, eps=1e-5):
+        super().__init__()
+        self.norm1 = nn.GroupNorm(num_groups, in_c, eps=eps)
+        self.conv1 = nn.Conv2d(in_c, out_c, 3, padding=1, bias=False)
+        self.norm2 = nn.GroupNorm(num_groups, out_c, eps=eps)
+        self.conv2 = nn.Conv2d(out_c, out_c, 3, padding=1, bias=False)
+        self.res_conv = nn.Conv2d(in_c, out_c, 1, bias=False) if in_c != out_c else nn.Identity()
+
+    def forward(self, x):
+        h = F.silu(self.norm1(x))
+        h = self.conv1(h)
+        h = F.silu(self.norm2(h))
+        h = self.conv2(h)
+        return h + self.res_conv(x)
+
+
+class SDUNet(nn.Module):
+    """Simplified SD U-Net matching meganeura's sd_unet::SDUNetConfig::small().
+
+    Architecture: Conv_in → [ResBlock + Downsample]×N → Middle ResBlock
+                  → [Upsample + CatSkip + ResBlock]×N → GroupNorm → SiLU → Conv_out
+
+    No cross-attention, no timestep embedding — pure convolutional U-Net.
+    """
+    def __init__(self, in_channels=4, base_channels=64, num_levels=3,
+                 num_groups=16, eps=1e-5):
+        super().__init__()
+        self.num_levels = num_levels
+
+        # Input conv
+        self.conv_in = nn.Conv2d(in_channels, base_channels, 3, padding=1, bias=False)
+
+        # Encoder
+        ch_mults = [1 << i for i in range(num_levels)]
+        self.encoder_blocks = nn.ModuleList()
+        self.downsamples = nn.ModuleList()
+
+        prev_c = base_channels
+        for level, mult in enumerate(ch_mults):
+            out_c = base_channels * mult
+            self.encoder_blocks.append(ResBlock(prev_c, out_c, num_groups, eps))
+            if level < num_levels - 1:
+                self.downsamples.append(
+                    nn.Conv2d(out_c, out_c, 3, stride=2, padding=1, bias=False)
+                )
+            else:
+                self.downsamples.append(nn.Identity())
+            prev_c = out_c
+
+        # Middle
+        self.middle = ResBlock(prev_c, prev_c, num_groups, eps)
+
+        # Decoder
+        self.upsamples = nn.ModuleList()
+        self.decoder_blocks = nn.ModuleList()
+
+        for level in reversed(range(num_levels)):
+            out_c = base_channels * ch_mults[level]
+            skip_c = out_c  # from encoder
+            if level < num_levels - 1:
+                self.upsamples.append(nn.Upsample(scale_factor=2, mode='nearest'))
+            else:
+                self.upsamples.append(nn.Identity())
+            self.decoder_blocks.append(ResBlock(prev_c + skip_c, out_c, num_groups, eps))
+            prev_c = out_c
+
+        # Output
+        self.norm_out = nn.GroupNorm(num_groups, base_channels, eps=eps)
+        self.conv_out = nn.Conv2d(base_channels, in_channels, 3, padding=1, bias=False)
+
+    def forward(self, x):
+        x = self.conv_in(x)
+
+        # Encoder
+        skips = []
+        for level in range(self.num_levels):
+            x = self.encoder_blocks[level](x)
+            skips.append(x)
+            if level < self.num_levels - 1:
+                x = self.downsamples[level](x)
+
+        # Middle
+        x = self.middle(x)
+
+        # Decoder
+        for i, level in enumerate(reversed(range(self.num_levels))):
+            if level < self.num_levels - 1:
+                x = self.upsamples[i](x)
+            x = torch.cat([x, skips[level]], dim=1)
+            x = self.decoder_blocks[i](x)
+
+        x = F.silu(self.norm_out(x))
+        return self.conv_out(x)
+
+
 # --- SmolVLA Action Expert (matches meganeura's bench_smolvla_train_pytorch.py) ---
 
 class RMSNorm(nn.Module):
@@ -200,6 +299,10 @@ MODEL_REGISTRY = {
         "hf_id": "lerobot/smolvla_base",
         "type": "smolvla",
     },
+    "StableDiffusion": {
+        "hf_id": "stable-diffusion-v1-5/stable-diffusion-v1-5",
+        "type": "sd_unet",
+    },
 }
 
 
@@ -208,8 +311,8 @@ def load_model(model_name: str, spec: dict, dev: str):
     hf_id = spec["hf_id"]
     model_type = spec["type"]
 
-    # Custom architectures (SmolVLA) are always random-init.
-    if model_type == "smolvla":
+    # Custom architectures (SmolVLA, SD U-Net) are always random-init.
+    if model_type in ("smolvla", "sd_unet"):
         print(f"[pytorch] {model_name}: random-init (custom architecture)", file=sys.stderr)
         return _random_init(model_type, model_name)
 
@@ -247,15 +350,26 @@ def _load_pretrained(model_type: str, path_or_id: str):
         return AutoModelForCausalLM.from_pretrained(path_or_id, torch_dtype=torch.float32)
 
 
+def _deterministic_init(model):
+    """Match meganeura's deterministic init: sin(j * 0.01 + i) * 0.1."""
+    with torch.no_grad():
+        for i, p in enumerate(model.parameters()):
+            n = p.numel()
+            p.copy_(torch.sin(torch.arange(n, dtype=torch.float32) * 0.01 + i).view_as(p) * 0.1)
+    return model
+
+
 def _random_init(model_type: str, model_name: str):
+    if model_type == "sd_unet":
+        # Match meganeura's SDUNetConfig::small()
+        model = SDUNet(
+            in_channels=4, base_channels=64, num_levels=3,
+            num_groups=16, eps=1e-5,
+        ).to(torch.float32)
+        return _deterministic_init(model)
     if model_type == "smolvla":
         model = ActionExpert().to(torch.float32)
-        # Match meganeura's deterministic init: sin(j * 0.01 + i) * 0.1
-        with torch.no_grad():
-            for i, p in enumerate(model.parameters()):
-                n = p.numel()
-                p.copy_(torch.sin(torch.arange(n, dtype=torch.float32) * 0.01 + i).view_as(p) * 0.1)
-        return model
+        return _deterministic_init(model)
     else:
         from transformers import LlamaConfig, LlamaForCausalLM
         configs = {
@@ -284,6 +398,20 @@ def _random_init(model_type: str, model_name: str):
 
 def prepare_inputs(model_type: str, model, dev: str, seq_len: int = 128):
     """Build deterministic dummy inputs matching the model type."""
+    if model_type == "sd_unet":
+        # Match meganeura's SDUNetConfig::small(): batch=2, in_c=4, res=32.
+        batch, in_c, res = 2, 4, 32
+        in_size = batch * in_c * res * res
+        noisy = torch.tensor(
+            [(i * 0.01) for i in range(in_size)],
+            dtype=torch.float32, device=dev,
+        ).sin().reshape(batch, in_c, res, res)
+        target = torch.tensor(
+            [(i * 0.007) for i in range(in_size)],
+            dtype=torch.float32, device=dev,
+        ).cos().reshape(batch, in_c, res, res)
+        return {"noisy_latent": noisy, "noise_target": target}
+
     if model_type == "smolvla":
         # SmolVLA action expert inputs: noisy_actions, timestep, vlm_kv.
         chunk_size = 50
@@ -334,7 +462,10 @@ def bench(model_name: str, spec: dict):
     # Force compilation with a dummy forward pass.
     dummy_kwargs = prepare_inputs(model_type, model, dev)
     with torch.no_grad():
-        model(**dummy_kwargs)
+        if model_type == "sd_unet":
+            model(dummy_kwargs["noisy_latent"])
+        else:
+            model(**dummy_kwargs)
     sync()
     compile_s = time.perf_counter() - compile_t0
     print(f"[pytorch] compiled in {compile_s:.2f}s", file=sys.stderr)
@@ -345,12 +476,21 @@ def bench(model_name: str, spec: dict):
     # --- Forward ---
     sync()
     t0 = time.perf_counter()
-    outputs = model(**fwd_kwargs)
+    if model_type == "sd_unet":
+        noisy = fwd_kwargs["noisy_latent"]
+        target = fwd_kwargs["noise_target"]
+        outputs = model(noisy)
+    else:
+        outputs = model(**fwd_kwargs)
     sync()
     forward_ms = (time.perf_counter() - t0) * 1000.0
 
     # --- Loss ---
-    if model_type == "smolvla":
+    if model_type == "sd_unet":
+        # MSE loss: mean((pred - target)²)
+        loss = F.mse_loss(outputs, target)
+        logits = outputs
+    elif model_type == "smolvla":
         # MSE loss against target actions (zeros as target).
         target = torch.zeros_like(outputs)
         loss = F.mse_loss(outputs, target)

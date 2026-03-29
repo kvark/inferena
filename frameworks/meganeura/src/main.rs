@@ -3,24 +3,34 @@
 //! Supports SmolLM2 (text LLM) and SmolVLA (action expert) models
 //! using the meganeura crate (e-graph optimized NN on blade-graphics).
 
-use meganeura::{Graph, build_inference_session, build_session};
 use meganeura::data::safetensors::SafeTensorsModel;
+use meganeura::{Graph, build_inference_session, build_session};
 use sha2::{Digest, Sha256};
 use std::time::Instant;
 
 fn find_local_model(model_name: &str) -> Option<std::path::PathBuf> {
     // Search up from exe location.
     let exe = std::env::current_exe().unwrap_or_default();
-    let mut root = exe.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+    let mut root = exe
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .to_path_buf();
     for _ in 0..5 {
-        let local = root.join("models").join(model_name).join("model.safetensors");
+        let local = root
+            .join("models")
+            .join(model_name)
+            .join("model.safetensors");
         if local.exists() {
             return Some(local);
         }
-        if !root.pop() { break; }
+        if !root.pop() {
+            break;
+        }
     }
     // Check relative to cwd.
-    let cwd = std::path::PathBuf::from("models").join(model_name).join("model.safetensors");
+    let cwd = std::path::PathBuf::from("models")
+        .join(model_name)
+        .join("model.safetensors");
     if cwd.exists() {
         return Some(cwd);
     }
@@ -105,7 +115,9 @@ fn bench_smollm2(model_name: &str) {
 
     // --- Forward ---
     let input_ids: Vec<u32> = (0..seq_len as u32).map(|i| i % vocab as u32).collect();
-    let labels: Vec<u32> = (0..seq_len as u32).map(|i| (i + 1) % vocab as u32).collect();
+    let labels: Vec<u32> = (0..seq_len as u32)
+        .map(|i| (i + 1) % vocab as u32)
+        .collect();
 
     session.set_input_u32("token_ids", &input_ids);
     let fwd_start = Instant::now();
@@ -133,7 +145,14 @@ fn bench_smollm2(model_name: &str) {
     session.wait();
     let backward_ms = bwd_start.elapsed().as_secs_f64() * 1000.0;
 
-    emit_result(model_name, compile_s, forward_ms, backward_ms, &all_logits, loss);
+    emit_result(
+        model_name,
+        compile_s,
+        forward_ms,
+        backward_ms,
+        &all_logits,
+        loss,
+    );
 }
 
 fn bench_smolvla() {
@@ -161,7 +180,13 @@ fn bench_smolvla() {
 
     // --- Initialize with deterministic random values ---
     eprintln!("[meganeura] initializing parameters...");
-    for (i, (name, buf_ref)) in train_session.plan().param_buffers.clone().iter().enumerate() {
+    for (i, (name, buf_ref)) in train_session
+        .plan()
+        .param_buffers
+        .clone()
+        .iter()
+        .enumerate()
+    {
         let n = train_session.plan().buffers[buf_ref.0 as usize] / 4;
         let data: Vec<f32> = (0..n)
             .map(|j| (j as f32 * 0.01 + i as f32).sin() * 0.1)
@@ -202,11 +227,13 @@ fn bench_smolvla() {
     let forward_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
 
     let output = infer_session.read_output(action_seq_len * action_dim);
-    eprintln!("[meganeura] forward: {forward_ms:.2}ms, {} outputs", output.len());
+    eprintln!(
+        "[meganeura] forward: {forward_ms:.2}ms, {} outputs",
+        output.len()
+    );
 
     // MSE loss on CPU.
-    let loss: f64 = output.iter().map(|&v| (v as f64).powi(2)).sum::<f64>()
-        / output.len() as f64;
+    let loss: f64 = output.iter().map(|&v| (v as f64).powi(2)).sum::<f64>() / output.len() as f64;
 
     // --- Training step (forward + backward + SGD) ---
     let target_actions = vec![0.0f32; action_seq_len * action_dim];
@@ -223,7 +250,14 @@ fn bench_smolvla() {
     emit_result("SmolVLA", compile_s, forward_ms, backward_ms, &output, loss);
 }
 
-fn emit_result(model: &str, compile_s: f64, forward_ms: f64, backward_ms: f64, output: &[f32], loss: f64) {
+fn emit_result(
+    model: &str,
+    compile_s: f64,
+    forward_ms: f64,
+    backward_ms: f64,
+    output: &[f32],
+    loss: f64,
+) {
     let hash = sha256_f32(output);
     let sample: Vec<f64> = output.iter().take(16).map(|&v| v as f64).collect();
 
@@ -247,6 +281,89 @@ fn emit_result(model: &str, compile_s: f64, forward_ms: f64, backward_ms: f64, o
     println!("{}", serde_json::to_string(&result).unwrap());
 }
 
+fn bench_stable_diffusion() {
+    use meganeura::models::sd_unet::{self, SDUNetConfig};
+
+    let config = SDUNetConfig::small();
+    let batch = config.batch_size;
+    let in_c = config.in_channels;
+    let res = config.resolution;
+    let in_size = (batch * in_c * res * res) as usize;
+
+    // --- Build training graph ---
+    eprintln!("[meganeura] building SD U-Net training graph (small config)...");
+    let compile_start = Instant::now();
+    let mut g = Graph::new();
+    let loss = sd_unet::build_training_graph(&mut g, &config);
+    g.set_outputs(vec![loss]);
+
+    eprintln!("[meganeura] compiling inference session...");
+    let mut infer_session = build_inference_session(&g);
+
+    eprintln!("[meganeura] compiling training session...");
+    let mut train_session = build_session(&g);
+
+    let compile_s = compile_start.elapsed().as_secs_f64();
+    eprintln!("[meganeura] ready (compile: {compile_s:.2}s)");
+
+    // --- Initialize with deterministic values ---
+    eprintln!("[meganeura] initializing parameters...");
+    for (i, (name, buf_ref)) in train_session
+        .plan()
+        .param_buffers
+        .clone()
+        .iter()
+        .enumerate()
+    {
+        let n = train_session.plan().buffers[buf_ref.0 as usize] / 4;
+        let data: Vec<f32> = (0..n)
+            .map(|j| (j as f32 * 0.01 + i as f32).sin() * 0.1)
+            .collect();
+        infer_session.set_parameter(name, &data);
+        train_session.set_parameter(name, &data);
+    }
+
+    // --- Prepare inputs ---
+    let noisy_latent: Vec<f32> = (0..in_size).map(|i| (i as f32 * 0.01).sin()).collect();
+    let noise_target: Vec<f32> = (0..in_size).map(|i| (i as f32 * 0.007).cos()).collect();
+
+    // --- Forward (inference session) ---
+    infer_session.set_input("noisy_latent", &noisy_latent);
+    infer_session.set_input("noise_target", &noise_target);
+
+    let fwd_start = Instant::now();
+    infer_session.step();
+    infer_session.wait();
+    let forward_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
+
+    // The output is the MSE loss scalar.
+    let output = infer_session.read_output(1);
+    let loss_val = output[0] as f64;
+    eprintln!("[meganeura] forward: {forward_ms:.2}ms, loss={loss_val:.6}");
+
+    // For logits hash, use the loss value encoded as f32.
+    let logits_data = vec![output[0]];
+
+    // --- Training step (forward + backward + SGD) ---
+    train_session.set_input("noisy_latent", &noisy_latent);
+    train_session.set_input("noise_target", &noise_target);
+
+    let bwd_start = Instant::now();
+    train_session.step();
+    train_session.wait();
+    let train_ms = bwd_start.elapsed().as_secs_f64() * 1000.0;
+    let backward_ms = (train_ms - forward_ms).max(0.0);
+
+    emit_result(
+        "StableDiffusion",
+        compile_s,
+        forward_ms,
+        backward_ms,
+        &logits_data,
+        loss_val,
+    );
+}
+
 fn main() {
     env_logger::init();
 
@@ -254,8 +371,9 @@ fn main() {
     match model_name.as_str() {
         "SmolLM2-135M" => bench_smollm2(&model_name),
         "SmolVLA" => bench_smolvla(),
+        "StableDiffusion" => bench_stable_diffusion(),
         other => {
-            eprintln!("Unknown model: {other}. Available: SmolLM2-135M, SmolVLA");
+            eprintln!("Unknown model: {other}. Available: SmolLM2-135M, SmolVLA, StableDiffusion");
             std::process::exit(1);
         }
     }

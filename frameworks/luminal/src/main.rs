@@ -51,9 +51,13 @@ struct TransformerBlock {
 /// Collect all weight tensors that need data initialization.
 fn collect_weights(block: &TransformerBlock) -> Vec<GraphTensor> {
     let mut w = Vec::new();
-    if let Some(wt) = block.attn_norm.weight { w.push(wt); }
+    if let Some(wt) = block.attn_norm.weight {
+        w.push(wt);
+    }
     w.push(block.attn_proj.weight);
-    if let Some(wt) = block.ffn_norm.weight { w.push(wt); }
+    if let Some(wt) = block.ffn_norm.weight {
+        w.push(wt);
+    }
     w.push(block.ffn_gate.weight);
     w.push(block.ffn_up.weight);
     w.push(block.ffn_down.weight);
@@ -105,7 +109,12 @@ impl SmolModel {
             .collect();
         let norm = LayerNorm::new(cfg.dim, Some("Weight"), None, true, 1e-5, cx);
         let lm_head = Linear::new(cfg.dim, cfg.vocab_size, false, cx);
-        SmolModel { embed_weight, blocks, norm, lm_head }
+        SmolModel {
+            embed_weight,
+            blocks,
+            norm,
+            lm_head,
+        }
     }
 
     fn forward(&self, input_ids: GraphTensor) -> GraphTensor {
@@ -159,11 +168,17 @@ fn main() {
     for block in &model.blocks {
         all_weights.extend(collect_weights(block));
     }
-    if let Some(wt) = model.norm.weight { all_weights.push(wt); }
+    if let Some(wt) = model.norm.weight {
+        all_weights.push(wt);
+    }
     all_weights.push(model.lm_head.weight);
 
     for (i, wt) in all_weights.iter().enumerate() {
-        let n = wt.dims().iter().map(|d| d.to_usize().unwrap_or(1)).product::<usize>();
+        let n = wt
+            .dims()
+            .iter()
+            .map(|d| d.to_usize().unwrap_or(1))
+            .product::<usize>();
         let data: Vec<f32> = (0..n)
             .map(|j| ((i * 7919 + j * 131) % 10000) as f32 / 100000.0 - 0.05)
             .collect();
@@ -171,9 +186,7 @@ fn main() {
     }
 
     // --- Prepare input (integer token IDs) ---
-    let input_data: Vec<i32> = (0..seq_len)
-        .map(|i| (i % cfg.vocab_size) as i32)
-        .collect();
+    let input_data: Vec<i32> = (0..seq_len).map(|i| (i % cfg.vocab_size) as i32).collect();
 
     // --- Forward ---
     rt.set_data(input, input_data.clone());
@@ -206,14 +219,22 @@ fn main() {
         let log_prob = (logit_slice[target] - max_logit) as f64 - sum_exp.ln();
         total_loss -= log_prob;
     }
-    let loss = if n_positions > 0 { total_loss / n_positions as f64 } else { 0.0 };
+    let loss = if n_positions > 0 {
+        total_loss / n_positions as f64
+    } else {
+        0.0
+    };
 
     // --- Backward (re-execute forward as estimate) ---
     // Luminal's autograd needs a separate training graph. Re-running the
     // forward graph gives a lower-bound estimate of backward cost.
     // Re-set all inputs+weights since NativeRuntime consumes buffers.
     for (i, wt) in all_weights.iter().enumerate() {
-        let n = wt.dims().iter().map(|d| d.to_usize().unwrap_or(1)).product::<usize>();
+        let n = wt
+            .dims()
+            .iter()
+            .map(|d| d.to_usize().unwrap_or(1))
+            .product::<usize>();
         let data: Vec<f32> = (0..n)
             .map(|j| ((i * 7919 + j * 131) % 10000) as f32 / 100000.0 - 0.05)
             .collect();

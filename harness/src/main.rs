@@ -48,9 +48,17 @@ pub enum FrameworkOutcome {
     #[serde(rename = "ok")]
     Ok(BenchResult),
     #[serde(rename = "error")]
-    Error { framework: String, model: String, error: String },
+    Error {
+        framework: String,
+        model: String,
+        error: String,
+    },
     #[serde(rename = "skipped")]
-    Skipped { framework: String, model: String, reason: String },
+    Skipped {
+        framework: String,
+        model: String,
+        reason: String,
+    },
 }
 
 #[derive(Parser)]
@@ -73,7 +81,14 @@ struct Cli {
     json: bool,
 }
 
-const ALL_FRAMEWORKS: &[&str] = &["pytorch", "candle", "burn", "luminal", "meganeura", "llama-cpp"];
+const ALL_FRAMEWORKS: &[&str] = &[
+    "pytorch",
+    "candle",
+    "burn",
+    "luminal",
+    "meganeura",
+    "llama-cpp",
+];
 
 /// Framework metadata: (display_name, repo_url, git_rev).
 /// git_rev must match the pinned revision in the workspace Cargo.toml.
@@ -82,8 +97,12 @@ fn framework_meta(name: &str) -> (&'static str, &'static str, &'static str) {
         "pytorch" => ("PyTorch", "https://github.com/pytorch/pytorch", ""),
         "candle" => ("Candle", "https://github.com/huggingface/candle", "6b4d8a1"),
         "burn" => ("Burn", "https://github.com/tracel-ai/burn", "ed72d2b"),
-        "luminal" => ("Luminal", "https://github.com/luminal-ai/luminal", "f32161d"),
-        "meganeura" => ("Meganeura", "https://github.com/kvark/meganeura", "d56d5d9"),
+        "luminal" => (
+            "Luminal",
+            "https://github.com/luminal-ai/luminal",
+            "f32161d",
+        ),
+        "meganeura" => ("Meganeura", "https://github.com/kvark/meganeura", "a480c6d"),
         "llama-cpp" => ("llama.cpp", "https://github.com/ggml-org/llama.cpp", ""),
         _ => ("unknown", "", ""),
     }
@@ -99,7 +118,10 @@ fn framework_md_link(name: &str, extra: &serde_json::Map<String, serde_json::Val
     }
 
     let link = if name == "pytorch" {
-        let ver = extra.get("torch_version").and_then(|v| v.as_str()).unwrap_or("");
+        let ver = extra
+            .get("torch_version")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if !ver.is_empty() {
             let base_ver = ver.split('+').next().unwrap_or(ver);
             format!("[{display} {ver}]({url}/releases/tag/v{base_ver})")
@@ -196,7 +218,11 @@ fn run_framework(root: &Path, framework: &str, model: &str) -> FrameworkOutcome 
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let json_str = match stdout.lines().rev().find(|l| l.trim_start().starts_with('{')) {
+    let json_str = match stdout
+        .lines()
+        .rev()
+        .find(|l| l.trim_start().starts_with('{'))
+    {
         Some(s) => s,
         None => {
             return FrameworkOutcome::Error {
@@ -224,9 +250,15 @@ fn save_results(root: &Path, model: &str, outcomes: &[FrameworkOutcome]) {
 
     for outcome in outcomes {
         let (fw, content) = match outcome {
-            FrameworkOutcome::Ok(r) => (&r.framework, serde_json::to_string_pretty(outcome).unwrap()),
-            FrameworkOutcome::Error { framework, .. } => (framework, serde_json::to_string_pretty(outcome).unwrap()),
-            FrameworkOutcome::Skipped { framework, .. } => (framework, serde_json::to_string_pretty(outcome).unwrap()),
+            FrameworkOutcome::Ok(r) => {
+                (&r.framework, serde_json::to_string_pretty(outcome).unwrap())
+            }
+            FrameworkOutcome::Error { framework, .. } => {
+                (framework, serde_json::to_string_pretty(outcome).unwrap())
+            }
+            FrameworkOutcome::Skipped { framework, .. } => {
+                (framework, serde_json::to_string_pretty(outcome).unwrap())
+            }
         };
         let path = results_dir.join(format!("{model}_{fw}.json"));
         if let Err(e) = std::fs::write(&path, &content) {
@@ -278,7 +310,10 @@ fn compare_outputs(results: &[&BenchResult]) {
     }
     let reference = results[0];
     eprintln!();
-    eprintln!("=== Output comparison (reference: {}) ===", reference.framework);
+    eprintln!(
+        "=== Output comparison (reference: {}) ===",
+        reference.framework
+    );
     eprintln!(
         "  {:<12} {:>12} {:>12} {:>12} {:>12} {:>12}  {}",
         "Framework", "Loss Diff", "Max Error", "MAE", "RMSE", "Rel Error", "Status"
@@ -339,9 +374,15 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
     let mut best_forward = f64::MAX;
     let mut best_backward = f64::MAX;
     for o in outcomes {
-        if let FrameworkOutcome::Ok(r) = o && matching.contains(&r.framework) {
-            if r.timings.compile_s < best_compile { best_compile = r.timings.compile_s; }
-            if r.timings.forward_ms < best_forward { best_forward = r.timings.forward_ms; }
+        if let FrameworkOutcome::Ok(r) = o
+            && matching.contains(&r.framework)
+        {
+            if r.timings.compile_s < best_compile {
+                best_compile = r.timings.compile_s;
+            }
+            if r.timings.forward_ms < best_forward {
+                best_forward = r.timings.forward_ms;
+            }
             if r.timings.backward_ms > 0.0 && r.timings.backward_ms < best_backward {
                 best_backward = r.timings.backward_ms;
             }

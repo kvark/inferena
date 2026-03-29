@@ -50,7 +50,7 @@ while [[ $# -gt 0 ]]; do
             echo "  -h, --help                Show this help"
             echo ""
             echo "Models: $ALL_MODELS"
-            echo "Frameworks: pytorch, burn, luminal, meganeura"
+            echo "Frameworks: pytorch, burn, luminal, meganeura, candle, llama-cpp"
             exit 0
             ;;
         *)

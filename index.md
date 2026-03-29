@@ -1,37 +1,33 @@
 ---
-layout: default
-title: Home
+layout: home
+title: Results
 ---
 
-# infermark
+<div class="tabs">
+  <input type="radio" name="model" id="tab-smollm2" value="panel-smollm2" checked>
+  <label for="tab-smollm2">SmolLM2-135M</label>
+  <input type="radio" name="model" id="tab-smolvla" value="panel-smolvla">
+  <label for="tab-smolvla">SmolVLA</label>
+</div>
 
-ML framework inference benchmark — comparing training step performance of the
-same models across different ML frameworks on single-GPU hardware.
+<div id="panel-smollm2" class="tab-content active" markdown="1">
+{% include smollm2-135m.md %}
+</div>
 
-## Models
+<div id="panel-smolvla" class="tab-content" markdown="1">
+{% include smolvla.md %}
+</div>
 
-| Model | Type | Params | |
-|-------|------|-------:|---|
-| [SmolLM2-135M](models/SmolLM2-135M) | Text LLM | 135M | [results →](models/SmolLM2-135M#results) |
-| [SmolVLA](models/SmolVLA) | Robotics Action Expert | ~14M | [results →](models/SmolVLA#results) |
+<ul class="legend">
+  <li><strong>Bold</strong> — best among frameworks running the <strong>same model</strong> as PyTorch.</li>
+  <li><s>Struck through</s> — framework runs a simplified/different model, not comparable.</li>
+  <li><strong>✗</strong> — framework doesn't support this model yet.</li>
+  <li>Framework names link to the exact git revision tested.</li>
+</ul>
 
-## How to read the tables
+---
 
-- **Bold** — best among frameworks running the **same model** as PyTorch.
-- ~~Struck through~~ — framework runs a simplified/different model, not comparable.
-- **✗** — framework doesn't support this model yet.
-- Framework names link to the exact git revision tested.
-
-## Frameworks
-
-| Framework | Language | GPU Backend | Rev |
-|-----------|----------|-------------|-----|
-| [PyTorch](https://pytorch.org/) | Python | CUDA / ROCm / MPS | latest pip |
-| [Burn](https://github.com/tracel-ai/burn) | Rust | wgpu (Vulkan / Metal / DX12) | [`ed72d2b`](https://github.com/tracel-ai/burn/tree/ed72d2b) |
-| [Luminal](https://github.com/luminal-ai/luminal) | Rust | CUDA / Metal / CPU | [`f32161d`](https://github.com/luminal-ai/luminal/tree/f32161d) |
-| [Meganeura](https://github.com/kvark/meganeura) | Rust | blade (Vulkan / Metal) | [`550bb6c`](https://github.com/kvark/meganeura/tree/550bb6c) |
-
-## Run it yourself
+**Run it yourself:**
 
 ```bash
 git clone https://github.com/kvark/infermark && cd infermark
@@ -39,6 +35,4 @@ git clone https://github.com/kvark/infermark && cd infermark
 ./run.sh -m SmolLM2-135M    # single model
 ```
 
-Results print as markdown tables — paste into the model page and submit a PR!
-
-Source: [github.com/kvark/infermark](https://github.com/kvark/infermark)
+Results print as markdown tables — paste into the model page and submit a PR.

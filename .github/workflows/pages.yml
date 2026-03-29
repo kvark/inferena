@@ -43,6 +43,9 @@ jobs:
                   out.append(p[len('Results'):].strip())
               elif p.startswith('Caveats'):
                   out.append('**Caveats:** ' + p[len('Caveats'):].strip())
+          # Append model-specific run command
+          model_name = '$f'.split('/')[-1].replace('.md', '')
+          out.append(f'**Run it yourself:** `git clone https://github.com/kvark/infermark && cd infermark && ./run.sh -m {model_name}`')
           print('\n\n'.join(out))
           " > "_includes/${name}.md"
             echo "Generated _includes/${name}.md ($(wc -l < "_includes/${name}.md") lines)"

@@ -8,12 +8,14 @@
     <script src="{{ '/assets/js/scale.fix.js' | relative_url }}"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
     <style>
-      /* Widen layout for benchmark tables */
-      .wrapper { width: 1200px; max-width: 95vw; }
-      section { width: 960px; max-width: calc(100% - 200px); }
+      /* Push content clear of the sidebar (Dinky sidebar is 170px + padding) */
+      .wrapper { width: auto; max-width: none; margin: 0 auto; padding: 0 20px; }
+      header { position: fixed; width: 170px; }
+      section { margin-left: 210px; width: auto; max-width: 1100px; float: none; }
+      footer { margin-left: 210px; float: none; }
 
       /* Tabs */
-      .tabs { display: flex; gap: 0; border-bottom: 2px solid #b5e853; margin: 0 0 0 0; }
+      .tabs { display: flex; gap: 0; border-bottom: 2px solid #b5e853; margin: 0; }
       .tabs input[type="radio"] { display: none; }
       .tabs label {
         padding: 8px 20px; cursor: pointer; font-weight: bold;
@@ -27,15 +29,10 @@
       .tab-panel { display: none; padding: 0.5em 0; }
       .tab-panel.active { display: block; }
 
-      /* Table sizing */
+      /* Tables */
       table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
       th { background: #f5f5f5; white-space: nowrap; }
       td, th { padding: 4px 8px; border: 1px solid #ddd; }
-
-      /* Legend in sidebar */
-      .legend { font-size: 0.8em; color: #888; margin-top: 2em; line-height: 1.6; }
-      .legend dt { font-weight: bold; }
-      .legend dd { margin: 0 0 0.3em 0; }
     </style>
   </head>
   <body>
@@ -48,15 +45,16 @@
           <li><a class="buttons github" href="https://github.com/kvark/infermark">View On GitHub</a></li>
         </ul>
 
-        <dl class="legend">
-          <dt>Bold</dt>
-          <dd>Best among matching frameworks</dd>
-          <dt><s>Struck through</s></dt>
-          <dd>Different / simplified model</dd>
-          <dt>✗</dt>
-          <dd>Not supported</dd>
+        <p class="header" style="margin-top:1.5em; font-size:0.85em; color:#b5e853;">Legend:</p>
+        <dl style="font-size:0.8em; color:#888; line-height:1.6; margin-top:0.3em;">
+          <dt style="font-weight:bold;">Bold</dt>
+          <dd style="margin:0 0 0.3em 0;">Best among matching frameworks</dd>
+          <dt style="font-weight:bold;"><s>Struck through</s></dt>
+          <dd style="margin:0 0 0.3em 0;">Different / simplified model</dd>
+          <dt style="font-weight:bold;">✗</dt>
+          <dd style="margin:0 0 0.3em 0;">Not supported</dd>
         </dl>
-        <p class="legend">Framework names link to the tested git revision.</p>
+        <p style="font-size:0.75em; color:#888;">Framework names link to the tested git revision.</p>
       </header>
 
       <section>

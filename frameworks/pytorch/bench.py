@@ -21,6 +21,101 @@ import sys
 import time
 
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+# --- SmolVLA Action Expert (matches meganeura's bench_smolvla_train_pytorch.py) ---
+
+class RMSNorm(nn.Module):
+    def __init__(self, dim, eps=1e-5):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(dim))
+        self.eps = eps
+
+    def forward(self, x):
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
+
+
+class SwiGLU(nn.Module):
+    def __init__(self, dim, intermediate):
+        super().__init__()
+        self.gate = nn.Linear(dim, intermediate, bias=False)
+        self.up = nn.Linear(dim, intermediate, bias=False)
+        self.down = nn.Linear(intermediate, dim, bias=False)
+
+    def forward(self, x):
+        return self.down(F.silu(self.gate(x)) * self.up(x))
+
+
+class GQAttention(nn.Module):
+    def __init__(self, dim, num_heads=15, num_kv_heads=5, head_dim=64):
+        super().__init__()
+        self.num_heads = num_heads
+        self.num_kv_heads = num_kv_heads
+        self.head_dim = head_dim
+        self.q_proj = nn.Linear(dim, num_heads * head_dim, bias=False)
+        self.k_proj = nn.Linear(dim, num_kv_heads * head_dim, bias=False)
+        self.v_proj = nn.Linear(dim, num_kv_heads * head_dim, bias=False)
+        self.o_proj = nn.Linear(num_heads * head_dim, dim, bias=False)
+        self.kv_repeat = num_heads // num_kv_heads
+
+    def forward(self, q_input, kv_input=None):
+        if kv_input is None:
+            kv_input = q_input
+        b, sq, _ = q_input.shape
+        sk = kv_input.shape[1]
+        q = self.q_proj(q_input).view(b, sq, self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(kv_input).view(b, sk, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(kv_input).view(b, sk, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        k = k.repeat_interleave(self.kv_repeat, dim=1)
+        v = v.repeat_interleave(self.kv_repeat, dim=1)
+        scale = self.head_dim ** -0.5
+        attn = (q @ k.transpose(-2, -1)) * scale
+        attn = attn.softmax(dim=-1)
+        out = (attn @ v).transpose(1, 2).reshape(b, sq, self.num_heads * self.head_dim)
+        return self.o_proj(out)
+
+
+class ExpertLayer(nn.Module):
+    def __init__(self, dim, intermediate, num_heads, num_kv_heads, head_dim):
+        super().__init__()
+        self.norm1 = RMSNorm(dim)
+        self.attn = GQAttention(dim, num_heads, num_kv_heads, head_dim)
+        self.norm2 = RMSNorm(dim)
+        self.mlp = SwiGLU(dim, intermediate)
+
+    def forward(self, x, kv=None):
+        x = x + self.attn(self.norm1(x), kv)
+        x = x + self.mlp(self.norm2(x))
+        return x
+
+
+class ActionExpert(nn.Module):
+    def __init__(self, action_dim=32, expert_hidden=720, intermediate=2048,
+                 num_layers=16, num_heads=15, num_kv_heads=5, head_dim=64,
+                 vlm_kv_dim=320, self_attn_every_n=2):
+        super().__init__()
+        self.action_proj = nn.Linear(action_dim, expert_hidden, bias=False)
+        self.time_proj = nn.Linear(expert_hidden * 2, expert_hidden, bias=False)
+        self.kv_proj = nn.Linear(vlm_kv_dim, expert_hidden, bias=False)
+        self.layers = nn.ModuleList([
+            ExpertLayer(expert_hidden, intermediate, num_heads, num_kv_heads, head_dim)
+            for _ in range(num_layers)
+        ])
+        self.norm = RMSNorm(expert_hidden)
+        self.head = nn.Linear(expert_hidden, action_dim, bias=False)
+        self.self_attn_every_n = self_attn_every_n
+
+    def forward(self, noisy_actions, timestep, vlm_kv):
+        x = self.action_proj(noisy_actions) + self.time_proj(timestep)
+        kv = self.kv_proj(vlm_kv)
+        for i, layer in enumerate(self.layers):
+            if i % self.self_attn_every_n == 0:
+                x = layer(x)  # self-attention
+            else:
+                x = layer(x, kv)  # cross-attention
+        return self.head(self.norm(x))
 
 
 def sync():
@@ -80,19 +175,23 @@ MODEL_REGISTRY = {
         "hf_id": "HuggingFaceTB/SmolLM2-1.7B",
         "type": "causal_lm",
     },
-    "SmolVLM-256M": {
-        "hf_id": "HuggingFaceTB/SmolVLM-256M-Instruct",
-        "type": "vlm",
+    "SmolVLA": {
+        "hf_id": "lerobot/smolvla_base",
+        "type": "smolvla",
     },
 }
 
 
 def load_model(model_name: str, spec: dict, dev: str):
     """Load model, trying: local dir -> HF download -> random-init fallback."""
-    from transformers import AutoModelForCausalLM
-
     hf_id = spec["hf_id"]
     model_type = spec["type"]
+
+    # Custom architectures (SmolVLA) are always random-init.
+    if model_type == "smolvla":
+        print(f"[pytorch] {model_name}: random-init (custom architecture)", file=sys.stderr)
+        return _random_init(model_type, model_name)
+
     script_dir = os.path.dirname(os.path.abspath(__file__))
     root_dir = os.path.dirname(os.path.dirname(script_dir))
     local_dir = os.path.join(root_dir, "models", model_name)
@@ -119,28 +218,23 @@ def load_model(model_name: str, spec: dict, dev: str):
 
 
 def _load_pretrained(model_type: str, path_or_id: str):
-    if model_type == "vlm":
-        from transformers import SmolVLMForConditionalGeneration
-        return SmolVLMForConditionalGeneration.from_pretrained(path_or_id, torch_dtype=torch.float32)
+    if model_type == "smolvla":
+        # SmolVLA is a custom architecture — always random-init.
+        return None
     else:
         from transformers import AutoModelForCausalLM
         return AutoModelForCausalLM.from_pretrained(path_or_id, torch_dtype=torch.float32)
 
 
 def _random_init(model_type: str, model_name: str):
-    if model_type == "vlm":
-        from transformers import SmolVLMConfig, SmolVLMForConditionalGeneration, LlamaConfig, SmolVLMVisionConfig
-        vision = SmolVLMVisionConfig(
-            hidden_size=768, num_hidden_layers=12, num_attention_heads=12,
-            image_size=384, patch_size=16,
-        )
-        text = LlamaConfig(
-            vocab_size=49152, hidden_size=576, num_hidden_layers=30,
-            num_attention_heads=9, num_key_value_heads=3,
-            intermediate_size=1536, max_position_embeddings=2048,
-        )
-        config = SmolVLMConfig(vision_config=vision, text_config=text)
-        return SmolVLMForConditionalGeneration(config).to(torch.float32)
+    if model_type == "smolvla":
+        model = ActionExpert().to(torch.float32)
+        # Match meganeura's deterministic init: sin(j * 0.01 + i) * 0.1
+        with torch.no_grad():
+            for i, p in enumerate(model.parameters()):
+                n = p.numel()
+                p.copy_(torch.sin(torch.arange(n, dtype=torch.float32) * 0.01 + i).view_as(p) * 0.1)
+        return model
     else:
         from transformers import LlamaConfig, LlamaForCausalLM
         configs = {
@@ -169,20 +263,26 @@ def _random_init(model_type: str, model_name: str):
 
 def prepare_inputs(model_type: str, model, dev: str, seq_len: int = 128):
     """Build deterministic dummy inputs matching the model type."""
+    if model_type == "smolvla":
+        # SmolVLA action expert inputs: noisy_actions, timestep, vlm_kv.
+        chunk_size = 50
+        action_dim = 32
+        expert_hidden = 720
+        vlm_seq_len = 16
+        vlm_kv_dim = 320
+        torch.manual_seed(42)
+        return {
+            "noisy_actions": torch.randn(1, chunk_size, action_dim, device=dev),
+            "timestep": torch.randn(1, 1, expert_hidden * 2, device=dev),
+            "vlm_kv": torch.randn(1, vlm_seq_len, vlm_kv_dim, device=dev),
+        }
+
     vocab_size = model.config.vocab_size if hasattr(model.config, "vocab_size") else model.config.text_config.vocab_size
     input_ids = torch.arange(seq_len, device=dev, dtype=torch.long).unsqueeze(0)
     labels = (torch.arange(1, seq_len + 1, device=dev, dtype=torch.long) % vocab_size).unsqueeze(0)
     attention_mask = torch.ones(1, seq_len, dtype=torch.long, device=dev)
 
-    kwargs = {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
-
-    if model_type == "vlm":
-        # One dummy 384x384 image.
-        torch.manual_seed(42)
-        kwargs["pixel_values"] = torch.randn(1, 1, 3, 384, 384, device=dev)
-        kwargs["pixel_attention_mask"] = torch.ones(1, 1, 384, 384, dtype=torch.bool, device=dev)
-
-    return kwargs
+    return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
 
 
 def bench(model_name: str, spec: dict):
@@ -227,8 +327,15 @@ def bench(model_name: str, spec: dict):
     sync()
     forward_ms = (time.perf_counter() - t0) * 1000.0
 
-    loss = outputs.loss
-    logits = outputs.logits
+    # --- Loss ---
+    if model_type == "smolvla":
+        # MSE loss against target actions (zeros as target).
+        target = torch.zeros_like(outputs)
+        loss = F.mse_loss(outputs, target)
+        logits = outputs
+    else:
+        loss = outputs.loss
+        logits = outputs.logits
 
     # --- Backward ---
     sync()

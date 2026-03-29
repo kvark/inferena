@@ -37,7 +37,7 @@ and results tables.
 | Model | Type | Params | Results |
 |-------|------|-------:|---------|
 | [SmolLM2-135M](models/SmolLM2-135M.md) | Text LLM | 135M | [results](models/SmolLM2-135M.md#results) |
-| [SmolVLM-256M](models/SmolVLM-256M.md) | Vision-Language | 256M | [results](models/SmolVLM-256M.md#results) |
+| [SmolVLA](models/SmolVLA.md) | Robotics Action Expert | ~14M | [results](models/SmolVLA.md#results) |
 
 ## What it measures
 
@@ -87,7 +87,7 @@ infermark/
 │   └── meganeura/            # Rust (blade-graphics, e-graph optimized)
 ├── models/
 │   ├── SmolLM2-135M.md       # Model description + results
-│   ├── SmolVLM-256M.md       # Model description + results
+│   ├── SmolVLA.md            # Model description + results
 │   ├── download.sh           # HuggingFace model downloader
 │   └── generate_weights.py   # Generate random-init weights locally
 └── results/                  # Benchmark output (gitignored, per-run)

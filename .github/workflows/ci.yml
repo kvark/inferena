@@ -97,8 +97,6 @@ jobs:
 
       - name: Run benchmark (Burn wgpu/Lavapipe)
         run: ./target/release/infermark --model SmolLM2-135M --frameworks burn --root .
-        env:
-          WGPU_BACKEND: vulkan
         continue-on-error: true
 
       - name: Upload results

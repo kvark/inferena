@@ -75,6 +75,40 @@ struct Cli {
 
 const ALL_FRAMEWORKS: &[&str] = &["pytorch", "burn", "luminal", "meganeura"];
 
+/// Framework metadata: (display_name, repo_url, git_rev).
+/// git_rev must match the pinned revision in the workspace Cargo.toml.
+fn framework_meta(name: &str) -> (&'static str, &'static str, &'static str) {
+    match name {
+        "pytorch" => ("PyTorch", "https://github.com/pytorch/pytorch", ""),
+        "burn" => ("Burn", "https://github.com/tracel-ai/burn", "ed72d2b"),
+        "luminal" => ("Luminal", "https://github.com/luminal-ai/luminal", "f32161d"),
+        "meganeura" => ("Meganeura", "https://github.com/kvark/meganeura", "550bb6c"),
+        _ => ("unknown", "", ""),
+    }
+}
+
+/// Format framework name as a markdown link to the repo at the pinned revision.
+fn framework_md_link(name: &str, extra: &serde_json::Map<String, serde_json::Value>) -> String {
+    let (display, url, rev) = framework_meta(name);
+    if url.is_empty() {
+        return display.to_string();
+    }
+    // For PyTorch, include version from the runner's extra fields.
+    if name == "pytorch" {
+        let ver = extra
+            .get("torch_version")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if !ver.is_empty() {
+            return format!("[{display} {ver}]({url})");
+        }
+    }
+    if rev.is_empty() {
+        return format!("[{display}]({url})");
+    }
+    format!("[{display}]({url}/tree/{rev})")
+}
+
 fn project_root(cli_root: Option<&Path>) -> PathBuf {
     if let Some(r) = cli_root {
         return std::fs::canonicalize(r).unwrap_or_else(|_| r.to_path_buf());
@@ -248,38 +282,94 @@ fn compare_outputs(results: &[&BenchResult]) {
     }
 }
 
-fn print_table(outcomes: &[FrameworkOutcome]) {
-    println!(
-        "| {:<12} | {:<16} | {:>12} | {:>12} | {:>12} | {:>10} | {} |",
-        "Framework", "Model", "Compile(s)", "Forward(ms)", "Backward(ms)", "Loss", "Device"
-    );
-    println!("|{}|", "-".repeat(96));
+/// Determine which frameworks "match" the reference (first successful result).
+/// Returns a set of framework names that passed correctness checks.
+fn matching_frameworks(successes: &[&BenchResult]) -> std::collections::HashSet<String> {
+    let mut matching = std::collections::HashSet::new();
+    if successes.is_empty() {
+        return matching;
+    }
+    let reference = successes[0];
+    matching.insert(reference.framework.clone());
+    for other in &successes[1..] {
+        let loss_diff = (reference.outputs.loss - other.outputs.loss).abs();
+        let (_, _, _, rel) = compute_errors(
+            &reference.outputs.logits_sample,
+            &other.outputs.logits_sample,
+        );
+        if loss_diff < 0.1 && rel < 0.1 {
+            matching.insert(other.framework.clone());
+        }
+    }
+    matching
+}
+
+fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
+    let matching = matching_frameworks(successes);
+
+    // Find best compile/forward/backward among matching frameworks.
+    let mut best_compile = f64::MAX;
+    let mut best_forward = f64::MAX;
+    let mut best_backward = f64::MAX;
+    for o in outcomes {
+        if let FrameworkOutcome::Ok(r) = o && matching.contains(&r.framework) {
+            if r.timings.compile_s < best_compile { best_compile = r.timings.compile_s; }
+            if r.timings.forward_ms < best_forward { best_forward = r.timings.forward_ms; }
+            if r.timings.backward_ms > 0.0 && r.timings.backward_ms < best_backward {
+                best_backward = r.timings.backward_ms;
+            }
+        }
+    }
+
+    println!("| Framework | Compile (s) | Forward (ms) | Backward (ms) | Loss |");
+    println!("|-----------|:-----------:|:------------:|:--------------:|:----:|");
+
     for outcome in outcomes {
         match outcome {
             FrameworkOutcome::Ok(r) => {
-                println!(
-                    "| {:<12} | {:<16} | {:>12.2} | {:>12.2} | {:>12.2} | {:>10.4} | {} |",
-                    r.framework,
-                    r.model,
-                    r.timings.compile_s,
-                    r.timings.forward_ms,
-                    r.timings.backward_ms,
-                    r.outputs.loss,
-                    r.gpu_name
-                );
+                let link = framework_md_link(&r.framework, &r.extra);
+                let is_matching = matching.contains(&r.framework);
+
+                let fmt_val = |val: f64, best: f64, is_time: bool| -> String {
+                    let s = if is_time && val == 0.0 {
+                        "—".to_string()
+                    } else if is_time {
+                        format!("{:.0}", val)
+                    } else {
+                        format!("{:.2}", val)
+                    };
+                    if !is_matching {
+                        format!("~~{s}~~")
+                    } else if val > 0.0 && (val - best).abs() < 0.01 {
+                        format!("**{s}**")
+                    } else {
+                        s
+                    }
+                };
+
+                let compile = fmt_val(r.timings.compile_s, best_compile, false);
+                let forward = fmt_val(r.timings.forward_ms, best_forward, true);
+                let backward = fmt_val(r.timings.backward_ms, best_backward, true);
+                let loss = if is_matching {
+                    format!("{:.2}", r.outputs.loss)
+                } else {
+                    format!("~~{:.2}~~", r.outputs.loss)
+                };
+
+                println!("| {link} | {compile} | {forward} | {backward} | {loss} |");
             }
-            FrameworkOutcome::Error { framework, error, .. } => {
-                let reason = if error.len() > 40 { &error[..40] } else { error };
-                println!(
-                    "| {:<12} | {:<16} | {:>12} | {:>12} | {:>12} | {:>10} | {} |",
-                    framework, "—", "✗", "✗", "✗", "✗", reason
-                );
+            FrameworkOutcome::Error { framework, .. } => {
+                let (display, url, rev) = framework_meta(framework);
+                let link = if !url.is_empty() && !rev.is_empty() {
+                    format!("[{display}]({url}/tree/{rev})")
+                } else {
+                    display.to_string()
+                };
+                println!("| {link} | ✗ | ✗ | ✗ | |");
             }
-            FrameworkOutcome::Skipped { framework, reason, .. } => {
-                println!(
-                    "| {:<12} | {:<16} | {:>12} | {:>12} | {:>12} | {:>10} | {} |",
-                    framework, "—", "—", "—", "—", "—", reason
-                );
+            FrameworkOutcome::Skipped { framework, .. } => {
+                let (display, ..) = framework_meta(framework);
+                println!("| {display} | — | — | — | |");
             }
         }
     }
@@ -311,7 +401,7 @@ fn main() {
     if cli.json {
         println!("{}", serde_json::to_string_pretty(&outcomes).unwrap());
     } else {
-        print_table(&outcomes);
+        print_table(&outcomes, &successes);
     }
 
     if successes.is_empty() {

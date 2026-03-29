@@ -18,11 +18,11 @@ Two benchmark configurations are used depending on framework capabilities:
 
 | Platform | Framework | Compile (s) | Forward (ms) | Backward (ms) | Loss |
 |----------|-----------|:-----------:|:------------:|:--------------:|:----:|
-| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 13.01 | **2** | **6** | 0.57 |
-|  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~5626~~ | ~~—~~ | ~~0.00~~ |
+| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 12.80 | **3** | **6** | 0.57 |
+|  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~5290~~ | ~~—~~ | ~~0.00~~ |
 |  | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu) | ✗ | ✗ | ✗ | |
 |  | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) (CPU) | ✗ | ✗ | ✗ | |
-|  | [Meganeura](https://github.com/kvark/meganeura/tree/a480c6d) (Vulkan) | **1.26** | 51 | 282 | 0.57 |
+|  | [Meganeura](https://github.com/kvark/meganeura/tree/a480c6d) (Vulkan) | **1.28** | 52 | 141 | 0.57 |
 |  | [llama.cpp](https://github.com/ggml-org/llama.cpp) (CPU) | ✗ | ✗ | ✗ | |
 
 *Run `./run.sh -m StableDiffusion` to populate this table.*

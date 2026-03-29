@@ -17,7 +17,7 @@ All Rust frameworks use bleeding-edge git dependencies pinned to specific revisi
 | [Candle](https://github.com/huggingface/candle) | Rust | CUDA / Metal / CPU | `6b4d8a1` |
 | [Burn](https://github.com/tracel-ai/burn) | Rust | wgpu (Vulkan / Metal / DX12) | `ed72d2b` |
 | [Luminal](https://github.com/luminal-ai/luminal) | Rust | CUDA / Metal / CPU | `f32161d` |
-| [Meganeura](https://github.com/kvark/meganeura) | Rust | blade (Vulkan / Metal) | `d56d5d9` |
+| [Meganeura](https://github.com/kvark/meganeura) | Rust | blade (Vulkan / Metal) | `c43315d` |
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) | C++ | CUDA / Metal / Vulkan / CPU | latest |
 
 ## Platform support

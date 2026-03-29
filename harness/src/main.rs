@@ -102,7 +102,7 @@ fn framework_meta(name: &str) -> (&'static str, &'static str, &'static str) {
             "https://github.com/luminal-ai/luminal",
             "f32161d",
         ),
-        "meganeura" => ("Meganeura", "https://github.com/kvark/meganeura", "a480c6d"),
+        "meganeura" => ("Meganeura", "https://github.com/kvark/meganeura", "c43315d"),
         "llama-cpp" => ("llama.cpp", "https://github.com/ggml-org/llama.cpp", ""),
         _ => ("unknown", "", ""),
     }

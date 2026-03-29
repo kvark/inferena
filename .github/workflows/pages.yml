@@ -29,15 +29,23 @@ jobs:
           mkdir -p _includes
           for f in models/*.md; do
             name=$(basename "$f" .md | tr 'A-Z' 'a-z')
-            # Extract from "## Results" up to (but not including) "## Architecture"
-            sed -n '/^## Results$/,/^## Architecture$/{ /^## Architecture$/d; p; }' "$f" \
-              | sed '1d' > "_includes/${name}.md"
-            # Append Caveats as collapsible
-            sed -n '/^## Caveats$/,/^## /{/^## [^C]/d; p;}' "$f" \
-              | sed '1d' \
-              | sed '1i <details><summary>Caveats</summary>\n' \
-              | sed '$a \\n</details>' >> "_includes/${name}.md"
-            echo "Generated _includes/${name}.md"
+            # Extract from after "## Results" to before "## Architecture",
+            # then from after "## Caveats" to end-of-file.
+            python3 -c "
+          import sys
+          text = open('$f').read()
+          out = []
+          # Results section (between ## Results and ## Architecture)
+          parts = text.split('## ')
+          for p in parts:
+              if p.startswith('Results'):
+                  # Skip the heading line itself
+                  out.append(p[len('Results'):].strip())
+              elif p.startswith('Caveats'):
+                  out.append('**Caveats:** ' + p[len('Caveats'):].strip())
+          print('\n\n'.join(out))
+          " > "_includes/${name}.md"
+            echo "Generated _includes/${name}.md ($(wc -l < "_includes/${name}.md") lines)"
           done
 
       - name: Setup Pages

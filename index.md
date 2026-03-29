@@ -1,5 +1,5 @@
 ---
-layout: home
+layout: default
 title: Results
 ---
 
@@ -10,29 +10,25 @@ title: Results
   <label for="tab-smolvla">SmolVLA</label>
 </div>
 
-<div id="panel-smollm2" class="tab-content active" markdown="1">
+<div id="panel-smollm2" class="tab-panel active" markdown="1">
+
 {% include smollm2-135m.md %}
+
 </div>
 
-<div id="panel-smolvla" class="tab-content" markdown="1">
+<div id="panel-smolvla" class="tab-panel" markdown="1">
+
 {% include smolvla.md %}
-</div>
 
-<ul class="legend">
-  <li><strong>Bold</strong> — best among frameworks running the <strong>same model</strong> as PyTorch.</li>
-  <li><s>Struck through</s> — framework runs a simplified/different model, not comparable.</li>
-  <li><strong>✗</strong> — framework doesn't support this model yet.</li>
-  <li>Framework names link to the exact git revision tested.</li>
-</ul>
+</div>
 
 ---
 
+**Legend:**
+**Bold** = best among matching frameworks.
+~~Struck through~~ = different/simplified model.
+**✗** = not supported.
+Framework names link to the tested git revision.
+
 **Run it yourself:**
-
-```bash
-git clone https://github.com/kvark/infermark && cd infermark
-./run.sh                    # all models, all frameworks
-./run.sh -m SmolLM2-135M    # single model
-```
-
-Results print as markdown tables — paste into the model page and submit a PR.
+`git clone https://github.com/kvark/infermark && cd infermark && ./run.sh`

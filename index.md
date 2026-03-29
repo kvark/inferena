@@ -30,7 +30,3 @@ title: Results
 
 </div>
 
----
-
-**Run it yourself:**
-`git clone https://github.com/kvark/infermark && cd infermark && ./run.sh`

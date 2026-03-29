@@ -11,7 +11,6 @@ kramdown:
 # Render markdown files in models/ as pages.
 include:
   - models
-  - _includes
 
 # Don't render framework source or Rust build artifacts.
 exclude:

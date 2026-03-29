@@ -6,6 +6,7 @@ on:
     paths:
       - "**.md"
       - "_config.yml"
+      - "_layouts/**"
       - ".github/workflows/pages.yml"
 
 permissions:
@@ -22,6 +23,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Generate tab includes from model pages
+        run: |
+          mkdir -p _includes
+          for f in models/*.md; do
+            name=$(basename "$f" .md | tr 'A-Z' 'a-z')
+            # Extract from "## Results" up to (but not including) "## Architecture"
+            sed -n '/^## Results$/,/^## Architecture$/{ /^## Architecture$/d; p; }' "$f" \
+              | sed '1d' > "_includes/${name}.md"
+            # Append Caveats as collapsible
+            sed -n '/^## Caveats$/,/^## /{/^## [^C]/d; p;}' "$f" \
+              | sed '1d' \
+              | sed '1i <details><summary>Caveats</summary>\n' \
+              | sed '$a \\n</details>' >> "_includes/${name}.md"
+            echo "Generated _includes/${name}.md"
+          done
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

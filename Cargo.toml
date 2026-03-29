@@ -17,7 +17,7 @@ candle-transformers = { git = "https://github.com/huggingface/candle", rev = "6b
 luminal = { git = "https://github.com/luminal-ai/luminal", rev = "f32161d43bcf9f74265eee5f0dfcdbcdab3ad027" }
 luminal_nn = { git = "https://github.com/luminal-ai/luminal", rev = "f32161d43bcf9f74265eee5f0dfcdbcdab3ad027" }
 luminal_cuda_lite = { git = "https://github.com/luminal-ai/luminal", rev = "f32161d43bcf9f74265eee5f0dfcdbcdab3ad027" }
-meganeura = { git = "https://github.com/kvark/meganeura", rev = "d56d5d9c1c6aca06b3df40a825d03641df8e28a3" }
+meganeura = { git = "https://github.com/kvark/meganeura", rev = "a480c6d45f35acb51109e81d03a44af534fcdbf7" }
 
 # Shared dependencies.
 serde = { version = "1", features = ["derive"] }

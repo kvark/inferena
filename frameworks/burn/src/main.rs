@@ -8,8 +8,8 @@
 //! randomly initialized. The goal is to match the computational graph so that
 //! timing comparisons are meaningful.
 
-use burn::backend::wgpu::{Wgpu, WgpuDevice};
 use burn::backend::Autodiff;
+use burn::backend::wgpu::{Wgpu, WgpuDevice};
 use burn::nn::{Embedding, EmbeddingConfig, Linear, LinearConfig};
 use burn::prelude::*;
 use burn::tensor::activation::softmax;
@@ -153,8 +153,7 @@ fn cross_entropy_loss<B: Backend>(
     // Manual cross-entropy: -log(softmax(logits))[target]
     let log_probs = burn::tensor::activation::log_softmax(logits_2d, 1);
     // Gather the log-prob at each target index.
-    let target_log_probs: Tensor<B, 2> = log_probs
-        .gather(1, targets_1d.unsqueeze_dim(1));
+    let target_log_probs: Tensor<B, 2> = log_probs.gather(1, targets_1d.unsqueeze_dim(1));
     // Mean negative log-likelihood.
     target_log_probs.neg().mean()
 }
@@ -170,7 +169,9 @@ fn sha256_f32(data: &[f32]) -> String {
 fn main() {
     let model_name = std::env::args().nth(1).unwrap_or("SmolLM2-135M".into());
     let cfg = ModelConfig::from_name(&model_name).unwrap_or_else(|| {
-        eprintln!("Unknown model: {model_name}. Available: SmolLM2-135M, SmolLM2-360M, SmolLM2-1.7B");
+        eprintln!(
+            "Unknown model: {model_name}. Available: SmolLM2-135M, SmolLM2-360M, SmolLM2-1.7B"
+        );
         std::process::exit(1);
     });
 
@@ -185,7 +186,9 @@ fn main() {
 
     // --- Prepare dummy input (deterministic) ---
     // Use fixed values for reproducibility.
-    let input_data: Vec<i64> = (0..seq_len as i64).map(|i| i % cfg.vocab_size as i64).collect();
+    let input_data: Vec<i64> = (0..seq_len as i64)
+        .map(|i| i % cfg.vocab_size as i64)
+        .collect();
     let label_data: Vec<i64> = (0..seq_len as i64)
         .map(|i| (i + 1) % cfg.vocab_size as i64)
         .collect();

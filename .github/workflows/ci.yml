@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Build check on all platforms. Each framework that can't compile on a
+  # given platform is expected to fail gracefully (the harness marks it ✗).
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: Linux
+          - os: macos-latest
+            name: macOS
+          - os: windows-latest
+            name: Windows
+    runs-on: ${{ matrix.os }}
+    name: Check (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: check-${{ matrix.os }}
+
+      - name: Check harness
+        run: cargo check -p infermark-harness
+
+      # Burn (wgpu) should build on all platforms.
+      - name: Check burn
+        run: cargo check -p infermark-burn
+
+      # Luminal: CPU runtime should build everywhere.
+      - name: Check luminal
+        run: cargo check -p infermark-luminal
+
+      # Meganeura depends on blade-graphics (Vulkan/Metal).
+      # May fail on some CI runners — that's expected.
+      - name: Check meganeura
+        run: cargo check -p infermark-meganeura
+        continue-on-error: true
+
+  # Smoke test: run frameworks that work on CPU / software renderers.
+  # Uses Lavapipe (Vulkan software renderer) for wgpu/blade backends.
+  smoke-test:
+    runs-on: ubuntu-latest
+    name: Smoke test (Linux + Lavapipe)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: smoke-test
+
+      - name: Install Lavapipe and Vulkan tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
+
+      - name: Verify Vulkan (Lavapipe)
+        run: vulkaninfo --summary || true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build harness
+        run: cargo build --release -p infermark-harness
+
+      # Build each framework independently; some may fail on CI.
+      - name: Build burn
+        run: cargo build --release -p infermark-burn
+        continue-on-error: true
+
+      - name: Build luminal
+        run: cargo build --release -p infermark-luminal
+        continue-on-error: true
+
+      - name: Build meganeura
+        run: cargo build --release -p infermark-meganeura
+        continue-on-error: true
+
+      # Run the harness. It will try each framework and report ✗ for failures.
+      # We use --frameworks to only run what we know can work on CPU/Lavapipe.
+      - name: Run benchmark (Luminal CPU)
+        run: |
+          chmod +x frameworks/*/run.sh
+          ./target/release/infermark --model SmolLM2-135M --frameworks luminal --root .
+        continue-on-error: true
+
+      - name: Run benchmark (Burn wgpu/Lavapipe)
+        run: ./target/release/infermark --model SmolLM2-135M --frameworks burn --root .
+        env:
+          # Force wgpu to use Vulkan (Lavapipe).
+          WGPU_BACKEND: vulkan
+        continue-on-error: true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: results/
+          if-no-files-found: ignore

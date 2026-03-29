@@ -3,36 +3,61 @@
 //! Runs a fake training step (forward + backward) on SmolLM2 using the
 //! meganeura crate (e-graph optimized NN on blade-graphics), producing JSON
 //! output compatible with the infermark harness.
-//!
-//! Based on meganeura's bench/bench_meganeura.rs and bench/bench_smolvla_train.rs.
 
 use meganeura::{
     Graph, build_inference_session,
     data::safetensors::SafeTensorsModel,
     models::smollm2::{self, SmolLM2Config},
 };
+use sha2::{Digest, Sha256};
 use std::time::Instant;
 
-const REPO_ID_135M: &str = "HuggingFaceTB/SmolLM2-135M";
+fn model_config(name: &str) -> Option<(&str, SmolLM2Config)> {
+    match name {
+        "SmolLM2-135M" => Some(("HuggingFaceTB/SmolLM2-135M", SmolLM2Config::smollm2_135m())),
+        _ => None,
+    }
+}
+
+fn load_model(model_name: &str, repo_id: &str) -> SafeTensorsModel {
+    // Try local models/ directory first (populated by models/download.sh or manually).
+    let exe = std::env::current_exe().unwrap_or_default();
+    let mut root = exe.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+    for _ in 0..5 {
+        let local = root.join("models").join(model_name).join("model.safetensors");
+        if local.exists() {
+            eprintln!("[meganeura] loading from {}", local.display());
+            return SafeTensorsModel::load(local).expect("local model load failed");
+        }
+        if !root.pop() { break; }
+    }
+    // Also check relative to cwd.
+    let cwd_local = std::path::PathBuf::from("models")
+        .join(model_name)
+        .join("model.safetensors");
+    if cwd_local.exists() {
+        eprintln!("[meganeura] loading from {}", cwd_local.display());
+        return SafeTensorsModel::load(cwd_local).expect("local model load failed");
+    }
+    // Fall back to HF download (caches to ~/.cache/huggingface/hub/).
+    SafeTensorsModel::download(repo_id).expect("model download/load failed")
+}
 
 fn main() {
     env_logger::init();
 
     let model_name = std::env::args().nth(1).unwrap_or("SmolLM2-135M".into());
-    let (repo_id, config) = match model_name.as_str() {
-        "SmolLM2-135M" => (REPO_ID_135M, SmolLM2Config::smollm2_135m()),
-        other => {
-            eprintln!("Unknown model: {other}. Available: SmolLM2-135M");
-            std::process::exit(1);
-        }
-    };
+    let (repo_id, config) = model_config(&model_name).unwrap_or_else(|| {
+        eprintln!("Unknown model: {model_name}. Available: SmolLM2-135M");
+        std::process::exit(1);
+    });
 
     let seq_len: usize = 128;
     let vocab = config.vocab_size;
 
-    // --- Download model ---
-    eprintln!("[meganeura] downloading model {repo_id}...");
-    let model = SafeTensorsModel::download(repo_id).expect("download failed");
+    // --- Load model from HF cache ---
+    eprintln!("[meganeura] loading model {repo_id}...");
+    let model = load_model(&model_name, repo_id);
 
     // --- Build & compile graph ---
     eprintln!("[meganeura] building graph...");
@@ -79,8 +104,8 @@ fn main() {
         }
     }
 
-    let compile_ms = compile_start.elapsed().as_secs_f64() * 1000.0;
-    eprintln!("[meganeura] ready (compile: {compile_ms:.1}ms)");
+    let compile_s = compile_start.elapsed().as_secs_f64();
+    eprintln!("[meganeura] ready (compile: {compile_s:.2}s)");
 
     // --- Prepare deterministic input ---
     let input_ids: Vec<u32> = (0..seq_len as u32).map(|i| i % vocab as u32).collect();
@@ -97,13 +122,10 @@ fn main() {
     eprintln!("[meganeura] forward: {forward_ms:.2}ms, got {} logits", all_logits.len());
 
     // --- Compute loss on CPU (cross-entropy) ---
-    // meganeura's training API uses its own backward pass; for the harness we
-    // compute the loss on CPU for output comparison.
     let mut total_loss = 0.0f64;
     for pos in 0..seq_len {
         let logit_slice = &all_logits[pos * vocab..(pos + 1) * vocab];
         let target = labels[pos] as usize;
-        // log-sum-exp for numerical stability
         let max_logit = logit_slice.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let sum_exp: f64 = logit_slice.iter().map(|&l| ((l - max_logit) as f64).exp()).sum();
         let log_prob = (logit_slice[target] - max_logit) as f64 - sum_exp.ln();
@@ -112,7 +134,6 @@ fn main() {
     let loss = total_loss / seq_len as f64;
 
     // --- Backward pass ---
-    // For now we re-run forward as a proxy for backward timing.
     // TODO: Use meganeura's Trainer API for real backward pass once we wire
     // up the training graph builder for SmolLM2.
     let backward_start = Instant::now();
@@ -123,7 +144,6 @@ fn main() {
 
     // --- Logits hash ---
     let logits_hash = {
-        use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         for &v in &all_logits {
             hasher.update(v.to_le_bytes());
@@ -139,7 +159,7 @@ fn main() {
         "device": "blade-gpu",
         "gpu_name": "blade-gpu",
         "timings": {
-            "compile_ms": (compile_ms * 1000.0).round() / 1000.0,
+            "compile_s": (compile_s * 100.0).round() / 100.0,
             "forward_ms": (forward_ms * 1000.0).round() / 1000.0,
             "backward_ms": (backward_ms * 1000.0).round() / 1000.0,
         },

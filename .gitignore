@@ -1,8 +1,5 @@
 /target
-/models/*.safetensors
-/models/*.bin
-/models/*.json
-/models/*.model
+/models/*/
 !/models/download.sh
 /results/
 __pycache__/

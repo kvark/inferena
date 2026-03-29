@@ -1,3 +1,5 @@
+#![allow(clippy::print_literal)]
+
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -5,7 +7,8 @@ use std::process::Command;
 
 /// Result produced by each framework benchmark runner.
 /// Every runner must print exactly one JSON object matching this schema to stdout.
-#[derive(Debug, Serialize, Deserialize)]
+/// Extra framework-specific fields (e.g. torch_version) are preserved in `extra`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchResult {
     pub framework: String,
     pub model: String,
@@ -13,19 +16,22 @@ pub struct BenchResult {
     pub gpu_name: String,
     pub timings: Timings,
     pub outputs: Outputs,
+    /// Framework-specific extra fields (torch_version, driver_name, etc.).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Timings {
-    /// Time to compile/optimize the model (milliseconds).
-    pub compile_ms: f64,
+    /// Time to compile/optimize the model (seconds).
+    pub compile_s: f64,
     /// Forward pass time (milliseconds).
     pub forward_ms: f64,
     /// Backward pass time (milliseconds).
     pub backward_ms: f64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Outputs {
     /// SHA-256 hash of the full logits tensor (flattened, f32 little-endian bytes).
     pub logits_hash: String,
@@ -33,6 +39,18 @@ pub struct Outputs {
     pub logits_sample: Vec<f64>,
     /// Scalar loss value from the fake training step.
     pub loss: f64,
+}
+
+/// Outcome for a framework: either a result or a failure reason.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status")]
+pub enum FrameworkOutcome {
+    #[serde(rename = "ok")]
+    Ok(BenchResult),
+    #[serde(rename = "error")]
+    Error { framework: String, model: String, error: String },
+    #[serde(rename = "skipped")]
+    Skipped { framework: String, model: String, reason: String },
 }
 
 #[derive(Parser)]
@@ -59,9 +77,8 @@ const ALL_FRAMEWORKS: &[&str] = &["pytorch", "burn", "luminal", "meganeura"];
 
 fn project_root(cli_root: Option<&Path>) -> PathBuf {
     if let Some(r) = cli_root {
-        return r.to_path_buf();
+        return std::fs::canonicalize(r).unwrap_or_else(|_| r.to_path_buf());
     }
-    // Walk up from the binary location to find Cargo.toml workspace root.
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     let mut dir = exe.parent().unwrap_or(Path::new(".")).to_path_buf();
     for _ in 0..5 {
@@ -72,21 +89,25 @@ fn project_root(cli_root: Option<&Path>) -> PathBuf {
             break;
         }
     }
-    // Fallback: current working directory.
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
-fn run_framework(root: &Path, framework: &str, model: &str) -> Option<BenchResult> {
+fn run_framework(root: &Path, framework: &str, model: &str) -> FrameworkOutcome {
     let fw_dir = root.join("frameworks").join(framework);
     let run_script = fw_dir.join("run.sh");
 
     if !run_script.exists() {
-        eprintln!("[{framework}] run.sh not found at {}, skipping", run_script.display());
-        return None;
+        return FrameworkOutcome::Skipped {
+            framework: framework.to_string(),
+            model: model.to_string(),
+            reason: format!("run.sh not found at {}", run_script.display()),
+        };
     }
 
     eprintln!("[{framework}] running benchmark for {model} ...");
 
+    // Always use bash (Git Bash on Windows).
+    // Inherits environment so WGPU_BACKEND, HSA_OVERRIDE_GFX_VERSION, etc. propagate.
     let output = Command::new("bash")
         .arg(&run_script)
         .arg(model)
@@ -96,37 +117,76 @@ fn run_framework(root: &Path, framework: &str, model: &str) -> Option<BenchResul
     let output = match output {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("[{framework}] failed to execute run.sh: {e}");
-            return None;
+            return FrameworkOutcome::Error {
+                framework: framework.to_string(),
+                model: model.to_string(),
+                error: format!("failed to execute run.sh: {e}"),
+            };
         }
     };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!("[{framework}] run.sh exited with {}: {stderr}", output.status);
-        return None;
+        // Truncate long error output for readability.
+        let stderr_short: String = stderr.lines().take(20).collect::<Vec<_>>().join("\n");
+        return FrameworkOutcome::Error {
+            framework: framework.to_string(),
+            model: model.to_string(),
+            error: format!("exit {}: {}", output.status, stderr_short),
+        };
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // The runner may print log lines before the JSON. Find the last line that
-    // looks like a JSON object.
-    let json_str = stdout
-        .lines()
-        .rev()
-        .find(|l| l.trim_start().starts_with('{'))?;
+    let json_str = match stdout.lines().rev().find(|l| l.trim_start().starts_with('{')) {
+        Some(s) => s,
+        None => {
+            return FrameworkOutcome::Error {
+                framework: framework.to_string(),
+                model: model.to_string(),
+                error: "no JSON found in stdout".to_string(),
+            };
+        }
+    };
 
     match serde_json::from_str::<BenchResult>(json_str) {
-        Ok(r) => Some(r),
-        Err(e) => {
-            eprintln!("[{framework}] failed to parse result JSON: {e}");
-            eprintln!("[{framework}] raw output: {json_str}");
-            None
-        }
+        Ok(r) => FrameworkOutcome::Ok(r),
+        Err(e) => FrameworkOutcome::Error {
+            framework: framework.to_string(),
+            model: model.to_string(),
+            error: format!("JSON parse error: {e}"),
+        },
     }
 }
 
+/// Save each framework's result as a separate JSON file in results/.
+fn save_results(root: &Path, model: &str, outcomes: &[FrameworkOutcome]) {
+    let results_dir = root.join("results");
+    std::fs::create_dir_all(&results_dir).ok();
+
+    for outcome in outcomes {
+        let (fw, content) = match outcome {
+            FrameworkOutcome::Ok(r) => (&r.framework, serde_json::to_string_pretty(outcome).unwrap()),
+            FrameworkOutcome::Error { framework, .. } => (framework, serde_json::to_string_pretty(outcome).unwrap()),
+            FrameworkOutcome::Skipped { framework, .. } => (framework, serde_json::to_string_pretty(outcome).unwrap()),
+        };
+        let path = results_dir.join(format!("{model}_{fw}.json"));
+        if let Err(e) = std::fs::write(&path, &content) {
+            eprintln!("Warning: failed to save {}: {e}", path.display());
+        }
+    }
+
+    // Also save a combined summary.
+    let summary_path = results_dir.join(format!("{model}_summary.json"));
+    let summary = serde_json::to_string_pretty(outcomes).unwrap();
+    if let Err(e) = std::fs::write(&summary_path, &summary) {
+        eprintln!("Warning: failed to save summary: {e}");
+    }
+
+    eprintln!();
+    eprintln!("Results saved to {}/", results_dir.display());
+}
+
 /// Compute error metrics between two logit sample vectors.
-/// Returns (max_error, mae, rmse, relative_error).
 fn compute_errors(a: &[f64], b: &[f64]) -> (f64, f64, f64, f64) {
     let n = a.len().min(b.len());
     if n == 0 {
@@ -153,11 +213,11 @@ fn compute_errors(a: &[f64], b: &[f64]) -> (f64, f64, f64, f64) {
     (max_err, mae, rmse, rel)
 }
 
-fn compare_outputs(results: &[BenchResult]) {
+fn compare_outputs(results: &[&BenchResult]) {
     if results.len() < 2 {
         return;
     }
-    let reference = &results[0];
+    let reference = results[0];
     eprintln!();
     eprintln!("=== Output comparison (reference: {}) ===", reference.framework);
     eprintln!(
@@ -188,23 +248,40 @@ fn compare_outputs(results: &[BenchResult]) {
     }
 }
 
-fn print_table(results: &[BenchResult]) {
+fn print_table(outcomes: &[FrameworkOutcome]) {
     println!(
-        "{:<12} {:<16} {:>12} {:>12} {:>12}  {:>10}  {}",
-        "Framework", "Model", "Compile(ms)", "Forward(ms)", "Backward(ms)", "Loss", "GPU"
+        "| {:<12} | {:<16} | {:>12} | {:>12} | {:>12} | {:>10} | {} |",
+        "Framework", "Model", "Compile(s)", "Forward(ms)", "Backward(ms)", "Loss", "Device"
     );
-    println!("{}", "-".repeat(100));
-    for r in results {
-        println!(
-            "{:<12} {:<16} {:>12.2} {:>12.2} {:>12.2}  {:>10.6}  {}",
-            r.framework,
-            r.model,
-            r.timings.compile_ms,
-            r.timings.forward_ms,
-            r.timings.backward_ms,
-            r.outputs.loss,
-            r.gpu_name
-        );
+    println!("|{}|", "-".repeat(96));
+    for outcome in outcomes {
+        match outcome {
+            FrameworkOutcome::Ok(r) => {
+                println!(
+                    "| {:<12} | {:<16} | {:>12.2} | {:>12.2} | {:>12.2} | {:>10.4} | {} |",
+                    r.framework,
+                    r.model,
+                    r.timings.compile_s,
+                    r.timings.forward_ms,
+                    r.timings.backward_ms,
+                    r.outputs.loss,
+                    r.gpu_name
+                );
+            }
+            FrameworkOutcome::Error { framework, error, .. } => {
+                let reason = if error.len() > 40 { &error[..40] } else { error };
+                println!(
+                    "| {:<12} | {:<16} | {:>12} | {:>12} | {:>12} | {:>10} | {} |",
+                    framework, "—", "✗", "✗", "✗", "✗", reason
+                );
+            }
+            FrameworkOutcome::Skipped { framework, reason, .. } => {
+                println!(
+                    "| {:<12} | {:<16} | {:>12} | {:>12} | {:>12} | {:>10} | {} |",
+                    framework, "—", "—", "—", "—", "—", reason
+                );
+            }
+        }
     }
 }
 
@@ -217,23 +294,31 @@ fn main() {
         None => ALL_FRAMEWORKS.to_vec(),
     };
 
-    let mut results = Vec::new();
+    let mut outcomes = Vec::new();
     for fw in &frameworks {
-        if let Some(r) = run_framework(&root, fw, &cli.model) {
-            results.push(r);
-        }
+        outcomes.push(run_framework(&root, fw, &cli.model));
     }
 
-    if results.is_empty() {
-        eprintln!("No benchmark results collected.");
+    // Collect successful results for comparison.
+    let successes: Vec<&BenchResult> = outcomes
+        .iter()
+        .filter_map(|o| match o {
+            FrameworkOutcome::Ok(r) => Some(r),
+            _ => None,
+        })
+        .collect();
+
+    if cli.json {
+        println!("{}", serde_json::to_string_pretty(&outcomes).unwrap());
+    } else {
+        print_table(&outcomes);
+    }
+
+    if successes.is_empty() {
+        eprintln!("No successful benchmark results.");
         std::process::exit(1);
     }
 
-    if cli.json {
-        println!("{}", serde_json::to_string_pretty(&results).unwrap());
-    } else {
-        print_table(&results);
-    }
-
-    compare_outputs(&results);
+    compare_outputs(&successes);
+    save_results(&root, &cli.model, &outcomes);
 }

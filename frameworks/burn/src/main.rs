@@ -181,7 +181,7 @@ fn main() {
     // --- Compile / init ---
     let t0 = Instant::now();
     let model = init_model::<MyBackend>(&cfg, &device);
-    let compile_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let compile_s = t0.elapsed().as_secs_f64();
 
     // --- Prepare dummy input (deterministic) ---
     // Use fixed values for reproducibility.
@@ -228,7 +228,7 @@ fn main() {
         "device": format!("{:?}", device),
         "gpu_name": format!("{:?}", device),
         "timings": {
-            "compile_ms": (compile_ms * 1000.0).round() / 1000.0,
+            "compile_s": (compile_s * 100.0).round() / 100.0,
             "forward_ms": (forward_ms * 1000.0).round() / 1000.0,
             "backward_ms": (backward_ms * 1000.0).round() / 1000.0,
         },

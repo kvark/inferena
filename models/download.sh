@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
-# Download model weights from HuggingFace Hub.
-# Usage: ./download.sh [model_name]
+# Download model weights from HuggingFace Hub into the shared HF cache.
 #
-# Requires: huggingface-cli (pip install huggingface-hub)
-# Or: git-lfs + git clone
+# All framework runners should read from the standard HF cache at
+# ~/.cache/huggingface/hub/ (or $HF_HOME). This script pre-populates
+# that cache so framework runners don't each need download logic.
+#
+# Usage: ./download.sh <model_name> [model_name ...]
+#
+# Requires one of:
+#   - huggingface-cli  (pip install huggingface-hub)
+#   - curl + manual download
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -15,6 +21,9 @@ declare -A MODEL_MAP=(
     ["SmolVLM-256M"]="HuggingFaceTB/SmolVLM-256M-Instruct"
 )
 
+# Files needed by each runner. Only download what's actually used.
+MODEL_FILES="config.json model.safetensors tokenizer.json tokenizer_config.json"
+
 download_model() {
     local name="$1"
     local hf_id="${MODEL_MAP[$name]:-}"
@@ -25,25 +34,18 @@ download_model() {
         return 1
     fi
 
-    local dest="$SCRIPT_DIR/$name"
-    if [ -d "$dest" ] && [ -f "$dest/config.json" ]; then
-        echo "Model $name already downloaded at $dest" >&2
-        return 0
-    fi
-
     echo "Downloading $name ($hf_id) ..." >&2
 
     if command -v huggingface-cli &>/dev/null; then
-        huggingface-cli download "$hf_id" --local-dir "$dest"
-    elif command -v git &>/dev/null && git lfs env &>/dev/null 2>&1; then
-        git clone "https://huggingface.co/$hf_id" "$dest"
+        # huggingface-cli downloads to the standard HF cache.
+        huggingface-cli download "$hf_id" $MODEL_FILES
     else
-        echo "Error: need either huggingface-cli or git-lfs to download models." >&2
-        echo "  pip install huggingface-hub   # recommended" >&2
+        echo "Error: huggingface-cli not found." >&2
+        echo "  pip install huggingface-hub" >&2
         return 1
     fi
 
-    echo "Downloaded $name to $dest" >&2
+    echo "Downloaded $name ($hf_id)" >&2
 }
 
 if [ $# -eq 0 ]; then

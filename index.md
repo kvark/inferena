@@ -13,7 +13,7 @@ same models across different ML frameworks on single-GPU hardware.
 | Model | Type | Params | |
 |-------|------|-------:|---|
 | [SmolLM2-135M](models/SmolLM2-135M) | Text LLM | 135M | [results →](models/SmolLM2-135M#results) |
-| [SmolVLM-256M](models/SmolVLM-256M) | Vision-Language | 256M | [results →](models/SmolVLM-256M#results) |
+| [SmolVLA](models/SmolVLA) | Robotics Action Expert | ~14M | [results →](models/SmolVLA#results) |
 
 ## How to read the tables
 

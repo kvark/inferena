@@ -270,7 +270,7 @@ fn compare_outputs(results: &[&BenchResult]) {
             "EXACT MATCH"
         } else if loss_diff < 1e-3 && rel < 0.01 {
             "PASS (<1% rel)"
-        } else if loss_diff < 0.1 && rel < 0.1 {
+        } else if loss_diff < 0.01 || (loss_diff < 0.1 && rel < 0.1) {
             "CLOSE"
         } else {
             "DIFFERENT MODEL"
@@ -297,7 +297,9 @@ fn matching_frameworks(successes: &[&BenchResult]) -> std::collections::HashSet<
             &reference.outputs.logits_sample,
             &other.outputs.logits_sample,
         );
-        if loss_diff < 0.1 && rel < 0.1 {
+        // Match if loss is close. Use absolute OR relative — when outputs
+        // are near-zero, relative error is meaningless.
+        if loss_diff < 0.01 || (loss_diff < 0.1 && rel < 0.1) {
             matching.insert(other.framework.clone());
         }
     }

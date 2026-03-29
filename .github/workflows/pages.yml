@@ -25,30 +25,28 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Generate tab includes from model pages
+        shell: bash
         run: |
           mkdir -p _includes
           for f in models/*.md; do
             name=$(basename "$f" .md | tr 'A-Z' 'a-z')
-            # Extract from after "## Results" to before "## Architecture",
-            # then from after "## Caveats" to end-of-file.
-            python3 -c "
+            model_name=$(basename "$f" .md)
+            python3 - "$f" "$model_name" > "_includes/${name}.md" <<'PYEOF'
           import sys
-          text = open('$f').read()
+          path, model_name = sys.argv[1], sys.argv[2]
+          text = open(path).read()
           out = []
-          # Results section (between ## Results and ## Architecture)
           parts = text.split('## ')
           for p in parts:
               if p.startswith('Results'):
-                  # Skip the heading line itself
                   out.append(p[len('Results'):].strip())
               elif p.startswith('Caveats'):
                   out.append('**Caveats:** ' + p[len('Caveats'):].strip())
-          # Append model-specific run command
-          model_name = '$f'.split('/')[-1].replace('.md', '')
-          out.append(f'**Run it yourself:** `git clone https://github.com/kvark/infermark && cd infermark && ./run.sh -m {model_name}`')
+          cmd = './run.sh -m ' + model_name
+          out.append('**Run it yourself:** `git clone https://github.com/kvark/infermark && cd infermark && ' + cmd + '`')
           print('\n\n'.join(out))
-          " > "_includes/${name}.md"
-            echo "Generated _includes/${name}.md ($(wc -l < "_includes/${name}.md") lines)"
+          PYEOF
+            echo "Generated _includes/${name}.md"
           done
 
       - name: Setup Pages

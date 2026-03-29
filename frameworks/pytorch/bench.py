@@ -9,7 +9,6 @@ Features inspired by meganeura's bench/compare.sh (PR #30):
 - torch.set_float32_matmul_precision("high") for TF32 on Ampere+
 - Device name reporting (not just "cuda:0")
 - torch version in output
-- AMD ROCm HSA_OVERRIDE_GFX_VERSION hint
 """
 
 import hashlib
@@ -22,7 +21,6 @@ import sys
 import time
 
 import torch
-from transformers import AutoModelForCausalLM
 
 
 def sync():
@@ -67,88 +65,165 @@ def clear_compile_cache():
             shutil.rmtree(d, ignore_errors=True)
 
 
-def bench(model_name: str, hf_id: str):
+# --- Model registry ---
+
+MODEL_REGISTRY = {
+    "SmolLM2-135M": {
+        "hf_id": "HuggingFaceTB/SmolLM2-135M",
+        "type": "causal_lm",
+    },
+    "SmolLM2-360M": {
+        "hf_id": "HuggingFaceTB/SmolLM2-360M-Instruct",
+        "type": "causal_lm",
+    },
+    "SmolLM2-1.7B": {
+        "hf_id": "HuggingFaceTB/SmolLM2-1.7B",
+        "type": "causal_lm",
+    },
+    "SmolVLM-256M": {
+        "hf_id": "HuggingFaceTB/SmolVLM-256M-Instruct",
+        "type": "vlm",
+    },
+}
+
+
+def load_model(model_name: str, spec: dict, dev: str):
+    """Load model, trying: local dir -> HF download -> random-init fallback."""
+    from transformers import AutoModelForCausalLM
+
+    hf_id = spec["hf_id"]
+    model_type = spec["type"]
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    root_dir = os.path.dirname(os.path.dirname(script_dir))
+    local_dir = os.path.join(root_dir, "models", model_name)
+
+    model = None
+
+    # Try local dir first.
+    if os.path.isfile(os.path.join(local_dir, "config.json")):
+        print(f"[pytorch] found local model at {local_dir}", file=sys.stderr)
+        try:
+            model = _load_pretrained(model_type, local_dir)
+        except Exception as e:
+            print(f"[pytorch] local load failed ({e})", file=sys.stderr)
+
+    # Try HF download.
+    if model is None:
+        try:
+            model = _load_pretrained(model_type, hf_id)
+        except Exception as e:
+            print(f"[pytorch] HF load failed ({e}), using random-init", file=sys.stderr)
+            model = _random_init(model_type, model_name)
+
+    return model
+
+
+def _load_pretrained(model_type: str, path_or_id: str):
+    if model_type == "vlm":
+        from transformers import SmolVLMForConditionalGeneration
+        return SmolVLMForConditionalGeneration.from_pretrained(path_or_id, torch_dtype=torch.float32)
+    else:
+        from transformers import AutoModelForCausalLM
+        return AutoModelForCausalLM.from_pretrained(path_or_id, torch_dtype=torch.float32)
+
+
+def _random_init(model_type: str, model_name: str):
+    if model_type == "vlm":
+        from transformers import SmolVLMConfig, SmolVLMForConditionalGeneration, LlamaConfig, SmolVLMVisionConfig
+        vision = SmolVLMVisionConfig(
+            hidden_size=768, num_hidden_layers=12, num_attention_heads=12,
+            image_size=384, patch_size=16,
+        )
+        text = LlamaConfig(
+            vocab_size=49152, hidden_size=576, num_hidden_layers=30,
+            num_attention_heads=9, num_key_value_heads=3,
+            intermediate_size=1536, max_position_embeddings=2048,
+        )
+        config = SmolVLMConfig(vision_config=vision, text_config=text)
+        return SmolVLMForConditionalGeneration(config).to(torch.float32)
+    else:
+        from transformers import LlamaConfig, LlamaForCausalLM
+        configs = {
+            "SmolLM2-135M": LlamaConfig(
+                vocab_size=49152, hidden_size=576, num_hidden_layers=30,
+                num_attention_heads=9, num_key_value_heads=3,
+                intermediate_size=1536, max_position_embeddings=2048,
+            ),
+            "SmolLM2-360M": LlamaConfig(
+                vocab_size=49152, hidden_size=960, num_hidden_layers=32,
+                num_attention_heads=15, num_key_value_heads=5,
+                intermediate_size=2560, max_position_embeddings=2048,
+            ),
+            "SmolLM2-1.7B": LlamaConfig(
+                vocab_size=49152, hidden_size=2048, num_hidden_layers=24,
+                num_attention_heads=32, num_key_value_heads=32,
+                intermediate_size=8192, max_position_embeddings=2048,
+            ),
+        }
+        config = configs.get(model_name)
+        if config is None:
+            print(f"[pytorch] no fallback config for {model_name}", file=sys.stderr)
+            sys.exit(1)
+        return LlamaForCausalLM(config).to(torch.float32)
+
+
+def prepare_inputs(model_type: str, model, dev: str, seq_len: int = 128):
+    """Build deterministic dummy inputs matching the model type."""
+    vocab_size = model.config.vocab_size if hasattr(model.config, "vocab_size") else model.config.text_config.vocab_size
+    input_ids = torch.arange(seq_len, device=dev, dtype=torch.long).unsqueeze(0)
+    labels = (torch.arange(1, seq_len + 1, device=dev, dtype=torch.long) % vocab_size).unsqueeze(0)
+    attention_mask = torch.ones(1, seq_len, dtype=torch.long, device=dev)
+
+    kwargs = {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
+
+    if model_type == "vlm":
+        # One dummy 384x384 image.
+        torch.manual_seed(42)
+        kwargs["pixel_values"] = torch.randn(1, 1, 3, 384, 384, device=dev)
+        kwargs["pixel_attention_mask"] = torch.ones(1, 1, 384, 384, dtype=torch.bool, device=dev)
+
+    return kwargs
+
+
+def bench(model_name: str, spec: dict):
     dev = detect_device()
     dev_name = device_name(dev)
+    model_type = spec["type"]
     torch.set_float32_matmul_precision("high")
 
     print(f"[pytorch] device: {dev_name} ({dev}), torch {torch.__version__}", file=sys.stderr)
 
     # --- Load model ---
-    # Try: local models/ dir -> HF cache/download -> random-init fallback.
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    root_dir = os.path.dirname(os.path.dirname(script_dir))
-    local_model_dir = os.path.join(root_dir, "models", model_name)
-
-    print(f"[pytorch] loading {hf_id}...", file=sys.stderr)
+    print(f"[pytorch] loading {spec['hf_id']}...", file=sys.stderr)
     t0 = time.perf_counter()
-    model = None
-    if os.path.isfile(os.path.join(local_model_dir, "config.json")):
-        print(f"[pytorch] found local model at {local_model_dir}", file=sys.stderr)
-        try:
-            model = AutoModelForCausalLM.from_pretrained(local_model_dir, torch_dtype=torch.float32)
-        except Exception as e:
-            print(f"[pytorch] local load failed ({e})", file=sys.stderr)
-    if model is None:
-        try:
-            model = AutoModelForCausalLM.from_pretrained(hf_id, torch_dtype=torch.float32)
-        except Exception as e:
-            print(f"[pytorch] HF load failed ({e}), using random-init", file=sys.stderr)
-            from transformers import LlamaConfig, LlamaForCausalLM
-            fallback_configs = {
-                "HuggingFaceTB/SmolLM2-135M": LlamaConfig(
-                    vocab_size=49152, hidden_size=576, num_hidden_layers=30,
-                    num_attention_heads=9, num_key_value_heads=3,
-                    intermediate_size=1536, max_position_embeddings=2048,
-                ),
-                "HuggingFaceTB/SmolLM2-360M-Instruct": LlamaConfig(
-                    vocab_size=49152, hidden_size=960, num_hidden_layers=32,
-                    num_attention_heads=15, num_key_value_heads=5,
-                    intermediate_size=2560, max_position_embeddings=2048,
-                ),
-                "HuggingFaceTB/SmolLM2-1.7B": LlamaConfig(
-                    vocab_size=49152, hidden_size=2048, num_hidden_layers=24,
-                    num_attention_heads=32, num_key_value_heads=32,
-                    intermediate_size=8192, max_position_embeddings=2048,
-                ),
-            }
-            config = fallback_configs.get(hf_id)
-            if config is None:
-                print(f"[pytorch] no fallback config for {hf_id}", file=sys.stderr)
-                sys.exit(1)
-            model = LlamaForCausalLM(config).to(torch.float32)
+    model = load_model(model_name, spec, dev)
     model.to(dev)
     model.train()
     sync()
     load_ms = (time.perf_counter() - t0) * 1000.0
     print(f"[pytorch] loaded in {load_ms:.0f}ms", file=sys.stderr)
 
-    # --- torch.compile (measure real compilation from clean state) ---
+    # --- torch.compile ---
     print("[pytorch] compiling with torch.compile()...", file=sys.stderr)
     clear_compile_cache()
     compile_t0 = time.perf_counter()
     model = torch.compile(model)
 
     # Force compilation with a dummy forward pass.
-    seq_len = 128
-    vocab_size = model.config.vocab_size
-    dummy_ids = torch.zeros(1, seq_len, dtype=torch.long, device=dev)
-    dummy_labels = torch.zeros(1, seq_len, dtype=torch.long, device=dev)
+    dummy_kwargs = prepare_inputs(model_type, model, dev)
     with torch.no_grad():
-        model(input_ids=dummy_ids, labels=dummy_labels)
+        model(**dummy_kwargs)
     sync()
     compile_s = time.perf_counter() - compile_t0
     print(f"[pytorch] compiled in {compile_s:.2f}s", file=sys.stderr)
 
     # --- Prepare deterministic input ---
-    torch.manual_seed(42)
-    input_ids = torch.randint(0, vocab_size, (1, seq_len), device=dev)
-    labels = torch.randint(0, vocab_size, (1, seq_len), device=dev)
+    fwd_kwargs = prepare_inputs(model_type, model, dev)
 
     # --- Forward ---
     sync()
     t0 = time.perf_counter()
-    outputs = model(input_ids=input_ids, labels=labels)
+    outputs = model(**fwd_kwargs)
     sync()
     forward_ms = (time.perf_counter() - t0) * 1000.0
 
@@ -187,17 +262,10 @@ def bench(model_name: str, hf_id: str):
     print(json.dumps(result))
 
 
-MODEL_MAP = {
-    "SmolLM2-135M": "HuggingFaceTB/SmolLM2-135M",
-    "SmolLM2-360M": "HuggingFaceTB/SmolLM2-360M-Instruct",
-    "SmolLM2-1.7B": "HuggingFaceTB/SmolLM2-1.7B",
-    "SmolVLM-256M": "HuggingFaceTB/SmolVLM-256M-Instruct",
-}
-
 if __name__ == "__main__":
     model_name = sys.argv[1] if len(sys.argv) > 1 else "SmolLM2-135M"
-    hf_id = MODEL_MAP.get(model_name)
-    if hf_id is None:
-        print(f"Unknown model: {model_name}. Available: {list(MODEL_MAP.keys())}", file=sys.stderr)
+    spec = MODEL_REGISTRY.get(model_name)
+    if spec is None:
+        print(f"Unknown model: {model_name}. Available: {list(MODEL_REGISTRY.keys())}", file=sys.stderr)
         sys.exit(1)
-    bench(model_name, hf_id)
+    bench(model_name, spec)

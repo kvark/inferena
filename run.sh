@@ -2,18 +2,19 @@
 # infermark - ML Framework Inference Benchmark
 #
 # Usage:
-#   ./run.sh                         # Run all frameworks, default model
-#   ./run.sh -m SmolLM2-135M         # Specify model
-#   ./run.sh -f pytorch,burn         # Specify frameworks
+#   ./run.sh                         # All models, all frameworks
+#   ./run.sh -m SmolLM2-135M         # Single model
+#   ./run.sh -m SmolLM2-135M -f pytorch  # Single model + framework
 #   ./run.sh --json                  # Output JSON
-#   ./run.sh --download              # Download model before benchmarking
 #   ./run.sh --help                  # Show help
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+ALL_MODELS="SmolLM2-135M SmolVLM-256M"
+
 # --- Parse arguments ---
-MODEL="SmolLM2-135M"
+MODELS=""
 FRAMEWORKS=""
 JSON_FLAG=""
 DOWNLOAD=false
@@ -21,7 +22,7 @@ DOWNLOAD=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -m|--model)
-            MODEL="$2"
+            MODELS="$2"
             shift 2
             ;;
         -f|--frameworks)
@@ -42,13 +43,13 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [options]"
             echo ""
             echo "Options:"
-            echo "  -m, --model <name>        Model to benchmark (default: SmolLM2-135M)"
+            echo "  -m, --model <name>        Model to benchmark (default: all)"
             echo "  -f, --frameworks <list>   Comma-separated frameworks (default: all)"
             echo "  --json                    Output results as JSON"
             echo "  --download                Download model weights before running"
             echo "  -h, --help                Show this help"
             echo ""
-            echo "Models: SmolLM2-135M, SmolLM2-360M, SmolLM2-1.7B, SmolVLM-256M"
+            echo "Models: $ALL_MODELS"
             echo "Frameworks: pytorch, burn, luminal, meganeura"
             exit 0
             ;;
@@ -59,10 +60,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# --- Download model if requested ---
-if [ "$DOWNLOAD" = true ]; then
-    echo "Downloading model $MODEL ..." >&2
-    bash "$ROOT_DIR/models/download.sh" "$MODEL"
+# Default: all models.
+if [ -z "$MODELS" ]; then
+    MODELS="$ALL_MODELS"
 fi
 
 # --- Make runner scripts executable ---
@@ -75,16 +75,30 @@ mkdir -p "$ROOT_DIR/results"
 echo "Building infermark harness..." >&2
 cargo build --release --manifest-path "$ROOT_DIR/Cargo.toml" -p infermark-harness 2>&1 >&2
 
-# --- Run ---
 HARNESS="$ROOT_DIR/target/release/infermark"
-ARGS=("--model" "$MODEL" "--root" "$ROOT_DIR")
 
-if [ -n "$FRAMEWORKS" ]; then
-    ARGS+=("--frameworks" "$FRAMEWORKS")
-fi
+# --- Run each model ---
+for MODEL in $MODELS; do
+    echo "" >&2
+    echo "==============================" >&2
+    echo "  Model: $MODEL" >&2
+    echo "==============================" >&2
 
-if [ -n "$JSON_FLAG" ]; then
-    ARGS+=("--json")
-fi
+    # Download if requested.
+    if [ "$DOWNLOAD" = true ]; then
+        echo "Downloading $MODEL ..." >&2
+        bash "$ROOT_DIR/models/download.sh" "$MODEL" || true
+    fi
 
-exec "$HARNESS" "${ARGS[@]}"
+    ARGS=("--model" "$MODEL" "--root" "$ROOT_DIR")
+
+    if [ -n "$FRAMEWORKS" ]; then
+        ARGS+=("--frameworks" "$FRAMEWORKS")
+    fi
+
+    if [ -n "$JSON_FLAG" ]; then
+        ARGS+=("--json")
+    fi
+
+    "$HARNESS" "${ARGS[@]}" || true
+done

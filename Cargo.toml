@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "harness",
     "frameworks/burn",
+    "frameworks/candle",
     "frameworks/luminal",
     "frameworks/meganeura",
 ]
@@ -10,6 +11,9 @@ members = [
 [workspace.dependencies]
 # Bleeding-edge git dependencies, pinned to specific revisions.
 burn = { git = "https://github.com/tracel-ai/burn", rev = "ed72d2b125a364aff18aed2a53396c128e01cb42", default-features = false }
+candle-core = { git = "https://github.com/huggingface/candle", rev = "6b4d8a1bfb7f19412239e4fb86f6c01507c1ff4d" }
+candle-nn = { git = "https://github.com/huggingface/candle", rev = "6b4d8a1bfb7f19412239e4fb86f6c01507c1ff4d" }
+candle-transformers = { git = "https://github.com/huggingface/candle", rev = "6b4d8a1bfb7f19412239e4fb86f6c01507c1ff4d" }
 luminal = { git = "https://github.com/luminal-ai/luminal", rev = "f32161d43bcf9f74265eee5f0dfcdbcdab3ad027" }
 luminal_nn = { git = "https://github.com/luminal-ai/luminal", rev = "f32161d43bcf9f74265eee5f0dfcdbcdab3ad027" }
 luminal_cuda_lite = { git = "https://github.com/luminal-ai/luminal", rev = "f32161d43bcf9f74265eee5f0dfcdbcdab3ad027" }

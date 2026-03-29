@@ -16,17 +16,15 @@ jobs:
         include:
           - os: ubuntu-latest
             name: Linux
-            # All frameworks build on Linux.
-            packages: "infermark-harness infermark-burn infermark-luminal infermark-meganeura"
+            # All Rust frameworks build on Linux.
+            packages: "infermark-harness infermark-candle infermark-burn infermark-luminal infermark-meganeura"
           - os: macos-latest
             name: macOS
-            # All frameworks build on macOS.
-            packages: "infermark-harness infermark-burn infermark-luminal infermark-meganeura"
+            packages: "infermark-harness infermark-candle infermark-burn infermark-luminal infermark-meganeura"
           - os: windows-latest
             name: Windows
-            # Only harness + meganeura are known to build on Windows.
             # Burn (wgpu bleeding-edge) and Luminal have no Windows CI upstream.
-            packages: "infermark-harness infermark-meganeura"
+            packages: "infermark-harness infermark-candle infermark-meganeura"
     runs-on: ${{ matrix.os }}
     name: Check (${{ matrix.name }})
     steps:

@@ -11,7 +11,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-ALL_MODELS="SmolLM2-135M SmolVLA"
+ALL_MODELS="SmolLM2-135M SmolVLA StableDiffusion"
 
 # --- Parse arguments ---
 MODELS=""

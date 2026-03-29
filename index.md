@@ -8,6 +8,8 @@ title: Results
   <label for="tab-smollm2">SmolLM2-135M</label>
   <input type="radio" name="model" id="tab-smolvla" value="panel-smolvla">
   <label for="tab-smolvla">SmolVLA</label>
+  <input type="radio" name="model" id="tab-sd" value="panel-sd">
+  <label for="tab-sd">Stable Diffusion</label>
 </div>
 
 <div id="panel-smollm2" class="tab-panel active" markdown="1">
@@ -19,6 +21,12 @@ title: Results
 <div id="panel-smolvla" class="tab-panel" markdown="1">
 
 {% include smolvla.md %}
+
+</div>
+
+<div id="panel-sd" class="tab-panel" markdown="1">
+
+{% include stablediffusion.md %}
 
 </div>
 

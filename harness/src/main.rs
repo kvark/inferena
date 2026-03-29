@@ -73,16 +73,18 @@ struct Cli {
     json: bool,
 }
 
-const ALL_FRAMEWORKS: &[&str] = &["pytorch", "burn", "luminal", "meganeura"];
+const ALL_FRAMEWORKS: &[&str] = &["pytorch", "candle", "burn", "luminal", "meganeura", "llama-cpp"];
 
 /// Framework metadata: (display_name, repo_url, git_rev).
 /// git_rev must match the pinned revision in the workspace Cargo.toml.
 fn framework_meta(name: &str) -> (&'static str, &'static str, &'static str) {
     match name {
         "pytorch" => ("PyTorch", "https://github.com/pytorch/pytorch", ""),
+        "candle" => ("Candle", "https://github.com/huggingface/candle", "6b4d8a1"),
         "burn" => ("Burn", "https://github.com/tracel-ai/burn", "ed72d2b"),
         "luminal" => ("Luminal", "https://github.com/luminal-ai/luminal", "f32161d"),
         "meganeura" => ("Meganeura", "https://github.com/kvark/meganeura", "550bb6c"),
+        "llama-cpp" => ("llama.cpp", "https://github.com/ggml-org/llama.cpp", ""),
         _ => ("unknown", "", ""),
     }
 }
@@ -117,9 +119,11 @@ fn framework_md_link(name: &str, extra: &serde_json::Map<String, serde_json::Val
     } else {
         // For Rust frameworks, infer backend from framework name.
         let inferred = match name {
+            "candle" => "CPU",
             "burn" => "wgpu",
             "luminal" => "CPU",
             "meganeura" => "Vulkan",
+            "llama-cpp" => "CPU",
             _ => "",
         };
         if inferred.is_empty() {

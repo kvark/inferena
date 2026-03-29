@@ -14,18 +14,22 @@ All Rust frameworks use bleeding-edge git dependencies pinned to specific revisi
 | Framework | Language | GPU Backend | Rev |
 |-----------|----------|-------------|-----|
 | [PyTorch](https://pytorch.org/) | Python | CUDA / ROCm / MPS | latest pip |
+| [Candle](https://github.com/huggingface/candle) | Rust | CUDA / Metal / CPU | `6b4d8a1` |
 | [Burn](https://github.com/tracel-ai/burn) | Rust | wgpu (Vulkan / Metal / DX12) | `ed72d2b` |
 | [Luminal](https://github.com/luminal-ai/luminal) | Rust | CUDA / Metal / CPU | `f32161d` |
 | [Meganeura](https://github.com/kvark/meganeura) | Rust | blade (Vulkan / Metal) | `550bb6c` |
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) | C++ | CUDA / Metal / Vulkan / CPU | latest |
 
 ## Platform support
 
 | Framework | Linux | macOS | Windows |
 |-----------|:-----:|:-----:|:-------:|
 | PyTorch | CUDA, ROCm, CPU | MPS, CPU | CPU |
+| Candle | CUDA, CPU | Metal, CPU | CPU |
 | Burn | Vulkan, CPU | Metal, CPU | — |
 | Luminal | CUDA, CPU | Metal, CPU | — |
 | Meganeura | Vulkan | Metal | Vulkan |
+| llama.cpp | CUDA, Vulkan, CPU | Metal, CPU | CUDA, Vulkan, CPU |
 
 Frameworks that can't run on a given platform are reported as `✗` in the results.
 
@@ -38,6 +42,7 @@ and results tables.
 |-------|------|-------:|---------|
 | [SmolLM2-135M](models/SmolLM2-135M.md) | Text LLM | 135M | [results](models/SmolLM2-135M.md#results) |
 | [SmolVLA](models/SmolVLA.md) | Robotics Action Expert | ~14M | [results](models/SmolVLA.md#results) |
+| [Stable Diffusion 1.5](models/StableDiffusion.md) | Image Diffusion (UNet) | ~860M | [results](models/StableDiffusion.md#results) |
 
 ## What it measures
 

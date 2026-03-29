@@ -1,0 +1,19 @@
+[package]
+name = "infermark-candle"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Candle framework benchmark runner for infermark"
+
+[[bin]]
+name = "infermark-candle"
+path = "src/main.rs"
+
+[dependencies]
+candle-core = { workspace = true }
+candle-nn = { workspace = true }
+candle-transformers = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+hex = "0.4"

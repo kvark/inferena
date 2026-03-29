@@ -23,8 +23,8 @@ All Rust frameworks use bleeding-edge git dependencies pinned to specific revisi
 | Framework | Linux | macOS | Windows |
 |-----------|:-----:|:-----:|:-------:|
 | PyTorch | CUDA, ROCm, CPU | MPS, CPU | CPU |
-| Burn | Vulkan, CPU | Metal, CPU | DX12, Vulkan, CPU |
-| Luminal | CUDA, CPU | Metal, CPU | CPU |
+| Burn | Vulkan, CPU | Metal, CPU | — |
+| Luminal | CUDA, CPU | Metal, CPU | — |
 | Meganeura | Vulkan | Metal | Vulkan |
 
 Frameworks that can't run on a given platform are reported as `✗` in the results.

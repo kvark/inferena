@@ -9,8 +9,6 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Build check on all platforms. Each framework that can't compile on a
-  # given platform is expected to fail gracefully (the harness marks it ✗).
   check:
     strategy:
       fail-fast: false
@@ -18,10 +16,17 @@ jobs:
         include:
           - os: ubuntu-latest
             name: Linux
+            # All frameworks build on Linux.
+            packages: "infermark-harness infermark-burn infermark-luminal infermark-meganeura"
           - os: macos-latest
             name: macOS
+            # All frameworks build on macOS.
+            packages: "infermark-harness infermark-burn infermark-luminal infermark-meganeura"
           - os: windows-latest
             name: Windows
+            # Only harness + meganeura are known to build on Windows.
+            # Burn (wgpu bleeding-edge) and Luminal have no Windows CI upstream.
+            packages: "infermark-harness infermark-meganeura"
     runs-on: ${{ matrix.os }}
     name: Check (${{ matrix.name }})
     steps:
@@ -33,25 +38,16 @@ jobs:
         with:
           shared-key: check-${{ matrix.os }}
 
-      - name: Check harness
-        run: cargo check -p infermark-harness
-
-      # Burn (wgpu) should build on all platforms.
-      - name: Check burn
-        run: cargo check -p infermark-burn
-
-      # Luminal: CPU runtime should build everywhere.
-      - name: Check luminal
-        run: cargo check -p infermark-luminal
-
-      # Meganeura depends on blade-graphics (Vulkan/Metal).
-      # May fail on some CI runners — that's expected.
-      - name: Check meganeura
-        run: cargo check -p infermark-meganeura
-        continue-on-error: true
+      - name: Check packages
+        shell: bash
+        run: |
+          for pkg in ${{ matrix.packages }}; do
+            echo "::group::cargo check -p $pkg"
+            cargo check -p "$pkg" || true
+            echo "::endgroup::"
+          done
 
   # Smoke test: run frameworks that work on CPU / software renderers.
-  # Uses Lavapipe (Vulkan software renderer) for wgpu/blade backends.
   smoke-test:
     runs-on: ubuntu-latest
     name: Smoke test (Linux + Lavapipe)
@@ -92,8 +88,7 @@ jobs:
         run: cargo build --release -p infermark-meganeura
         continue-on-error: true
 
-      # Run the harness. It will try each framework and report ✗ for failures.
-      # We use --frameworks to only run what we know can work on CPU/Lavapipe.
+      # Run the harness with frameworks that work on CPU/Lavapipe.
       - name: Run benchmark (Luminal CPU)
         run: |
           chmod +x frameworks/*/run.sh
@@ -103,7 +98,6 @@ jobs:
       - name: Run benchmark (Burn wgpu/Lavapipe)
         run: ./target/release/infermark --model SmolLM2-135M --frameworks burn --root .
         env:
-          # Force wgpu to use Vulkan (Lavapipe).
           WGPU_BACKEND: vulkan
         continue-on-error: true
 

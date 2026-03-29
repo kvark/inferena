@@ -68,6 +68,9 @@
     tr:nth-child(even) td { background: #f9f9f9; }
     tr:hover td { background: #e8f0fe; }
     td:nth-child(n+3) { text-align: center; font-variant-numeric: tabular-nums; }
+    /* Bold platform separator: thick top border on rows that start a new platform */
+    td:first-child:not(:empty) { font-weight: 600; }
+    tr:has(> td:first-child:not(:empty)) td { border-top: 3px solid #1a1a2e; }
 
     /* Markdown content in tabs */
     .tab-panel p { margin: 8px 0; }

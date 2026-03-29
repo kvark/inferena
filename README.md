@@ -63,8 +63,11 @@ Each run saves JSON to `results/` and the table below shows the latest.
 | Intel Xeon @ 2.10GHz | Luminal `f32161d` (CPU) | 3.98 | 11695 | 11662 | 10.81 |
 | Intel Xeon @ 2.10GHz (Lavapipe) | Meganeura `550bb6c` (blade) | 2.07 | 3301 | 2944 | 10.98 |
 
-> Backward for Luminal is estimated as a second forward pass (training graph not yet wired).
-> All frameworks use random-init weights; MISMATCH in outputs is expected.
+> **Note:** PyTorch and Meganeura run the real SmolLM2 architecture (GQA, RoPE, RMSNorm,
+> causal attention). Burn and Luminal currently use a simplified LLaMA-style model (single-head
+> attention, no RoPE/RMSNorm) — forward times are not directly comparable until those
+> implementations are upgraded. Backward for Luminal is estimated as a second forward pass
+> (training graph not yet wired). All frameworks use random-init weights.
 
 Run `./run.sh` on your machine and share results via a PR to populate this table!
 

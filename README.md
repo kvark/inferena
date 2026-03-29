@@ -9,16 +9,18 @@ Inspired by [meganeura's bench/compare.sh](https://github.com/kvark/meganeura/tr
 
 ## Frameworks
 
-All Rust frameworks use bleeding-edge git dependencies pinned to specific revisions.
+All Rust frameworks use bleeding-edge git dependencies pinned to specific
+revisions in `Cargo.toml`. The harness reads these at build time — framework
+links in the results tables always point to the exact revision tested.
 
-| Framework | Language | GPU Backend | Rev |
-|-----------|----------|-------------|-----|
-| [PyTorch](https://pytorch.org/) | Python | CUDA / ROCm / MPS | latest pip |
-| [Candle](https://github.com/huggingface/candle) | Rust | CUDA / Metal / CPU | `6b4d8a1` |
-| [Burn](https://github.com/tracel-ai/burn) | Rust | wgpu (Vulkan / Metal / DX12) | `ed72d2b` |
-| [Luminal](https://github.com/luminal-ai/luminal) | Rust | CUDA / Metal / CPU | `f32161d` |
-| [Meganeura](https://github.com/kvark/meganeura) | Rust | blade (Vulkan / Metal) | `c43315d` |
-| [llama.cpp](https://github.com/ggml-org/llama.cpp) | C++ | CUDA / Metal / Vulkan / CPU | latest |
+| Framework | Language | GPU Backend |
+|-----------|----------|-------------|
+| [PyTorch](https://pytorch.org/) | Python | CUDA / ROCm / MPS |
+| [Candle](https://github.com/huggingface/candle) | Rust | CUDA / Metal / CPU |
+| [Burn](https://github.com/tracel-ai/burn) | Rust | wgpu (Vulkan / Metal / DX12) |
+| [Luminal](https://github.com/luminal-ai/luminal) | Rust | CUDA / Metal / CPU |
+| [Meganeura](https://github.com/kvark/meganeura) | Rust | blade (Vulkan / Metal) |
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) | C++ | CUDA / Metal / Vulkan / CPU |
 
 ## Platform support
 

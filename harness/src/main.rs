@@ -91,18 +91,31 @@ const ALL_FRAMEWORKS: &[&str] = &[
 ];
 
 /// Framework metadata: (display_name, repo_url, git_rev).
-/// git_rev must match the pinned revision in the workspace Cargo.toml.
+/// Git revisions are extracted from the workspace Cargo.toml at build time
+/// by build.rs — single source of truth, no manual sync needed.
 fn framework_meta(name: &str) -> (&'static str, &'static str, &'static str) {
     match name {
         "pytorch" => ("PyTorch", "https://github.com/pytorch/pytorch", ""),
-        "candle" => ("Candle", "https://github.com/huggingface/candle", "6b4d8a1"),
-        "burn" => ("Burn", "https://github.com/tracel-ai/burn", "ed72d2b"),
+        "candle" => (
+            "Candle",
+            "https://github.com/huggingface/candle",
+            env!("CANDLE_REV"),
+        ),
+        "burn" => (
+            "Burn",
+            "https://github.com/tracel-ai/burn",
+            env!("BURN_REV"),
+        ),
         "luminal" => (
             "Luminal",
             "https://github.com/luminal-ai/luminal",
-            "f32161d",
+            env!("LUMINAL_REV"),
         ),
-        "meganeura" => ("Meganeura", "https://github.com/kvark/meganeura", "c43315d"),
+        "meganeura" => (
+            "Meganeura",
+            "https://github.com/kvark/meganeura",
+            env!("MEGANEURA_REV"),
+        ),
         "llama-cpp" => ("llama.cpp", "https://github.com/ggml-org/llama.cpp", ""),
         _ => ("unknown", "", ""),
     }

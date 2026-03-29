@@ -22,7 +22,7 @@ Two benchmark configurations are used depending on framework capabilities:
 |  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~5290~~ | ~~—~~ | ~~0.00~~ |
 |  | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu) | ✗ | ✗ | ✗ | |
 |  | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) (CPU) | ✗ | ✗ | ✗ | |
-|  | [Meganeura](https://github.com/kvark/meganeura/tree/a480c6d) (Vulkan) | **1.28** | 52 | 141 | 0.57 |
+|  | [Meganeura](https://github.com/kvark/meganeura/tree/c43315d) (Vulkan) | **1.28** | 52 | 141 | 0.57 |
 |  | [llama.cpp](https://github.com/ggml-org/llama.cpp) (CPU) | ✗ | ✗ | ✗ | |
 
 *Run `./run.sh -m StableDiffusion` to populate this table.*

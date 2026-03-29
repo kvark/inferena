@@ -18,12 +18,12 @@ Benchmark config: seq_len=128, float32, input=[0,1,...,127].
 | | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.31~~ | ~~373~~ | ~~—~~ | ~~11.11~~ |
 | | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/Lavapipe) | ~~0.00~~ | ~~2288~~ | ~~4143~~ | ~~11.70~~ |
 | | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) (CPU) | ~~3.31~~ | ~~14585~~ | ~~14299~~ | ~~10.81~~ |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/d56d5d9) (Vulkan/Lavapipe) | **2.80** | **3972** | **3434** | 10.98 |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/c43315d) (Vulkan/Lavapipe) | **2.80** | **3972** | **3434** | 10.98 |
 | AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | **52.86** | **63** | **113** | 8.35 |
 |  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~247~~ | ~~—~~ | ~~10.80~~ |
 |  | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu) | ~~0.00~~ | ~~171~~ | ~~206~~ | ~~11.68~~ |
 |  | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) (CPU) | ~~1.59~~ | ~~7621~~ | ~~7561~~ | ~~10.81~~ |
-|  | [Meganeura](https://github.com/kvark/meganeura/tree/a480c6d) (Vulkan) | ~~1.03~~ | ~~73~~ | ~~77~~ | ~~9.38~~ |
+|  | [Meganeura](https://github.com/kvark/meganeura/tree/c43315d) (Vulkan) | — | — | — | *re-run needed* |
 |  | [llama.cpp](https://github.com/ggml-org/llama.cpp) (CPU) | ✗ | ✗ | ✗ | |
 
 **Correctness:** PyTorch vs Meganeura: **PASS** (max error 1.7e-6, loss diff 6.4e-4).

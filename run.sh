@@ -50,7 +50,7 @@ while [[ $# -gt 0 ]]; do
             echo "  -h, --help                Show this help"
             echo ""
             echo "Models: $ALL_MODELS"
-            echo "Frameworks: pytorch, burn, luminal, meganeura, candle, llama-cpp"
+            echo "Frameworks: pytorch, mlx, candle, burn, luminal, meganeura, llama-cpp"
             exit 0
             ;;
         *)
@@ -71,9 +71,9 @@ chmod +x "$ROOT_DIR"/frameworks/*/run.sh 2>/dev/null || true
 # --- Create results directory ---
 mkdir -p "$ROOT_DIR/results"
 
-# --- Build the harness ---
-echo "Building infermark harness..." >&2
-cargo build --release --manifest-path "$ROOT_DIR/Cargo.toml" -p infermark-harness 2>&1 >&2
+# --- Build all Rust crates (harness + framework runners) at once ---
+echo "Building infermark (all Rust crates)..." >&2
+cargo build --release --manifest-path "$ROOT_DIR/Cargo.toml" --workspace 2>&1 >&2
 
 HARNESS="$ROOT_DIR/target/release/infermark"
 

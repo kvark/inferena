@@ -83,6 +83,7 @@ struct Cli {
 
 const ALL_FRAMEWORKS: &[&str] = &[
     "pytorch",
+    "mlx",
     "candle",
     "burn",
     "luminal",
@@ -94,6 +95,7 @@ const ALL_FRAMEWORKS: &[&str] = &[
 fn framework_meta(name: &str) -> (&'static str, &'static str) {
     match name {
         "pytorch" => ("PyTorch", "https://github.com/pytorch/pytorch"),
+        "mlx" => ("MLX", "https://github.com/ml-explore/mlx"),
         "candle" => ("Candle", "https://github.com/huggingface/candle"),
         "burn" => ("Burn", "https://github.com/tracel-ai/burn"),
         "luminal" => ("Luminal", "https://github.com/luminal-ai/luminal"),
@@ -144,7 +146,14 @@ fn framework_md_link(name: &str, extra: &serde_json::Map<String, serde_json::Val
             "candle" => "CPU",
             "burn" => "wgpu",
             "luminal" => "CPU",
-            "meganeura" => "Vulkan",
+            "meganeura" => {
+                if cfg!(target_os = "macos") {
+                    "Metal"
+                } else {
+                    "Vulkan"
+                }
+            }
+            "mlx" => "MLX",
             "llama-cpp" => "CPU",
             _ => "",
         };

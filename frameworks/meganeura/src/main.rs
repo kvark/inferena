@@ -127,16 +127,18 @@ fn bench_smollm2(model_name: &str) {
 
     let all_logits = session.read_output(seq_len * vocab);
 
-    // Cross-entropy loss on CPU.
+    // Cross-entropy loss on CPU (HF-compatible: shifted labels).
+    // HF internally shifts: logits[0..seq-1] predict labels[1..seq].
     let mut total_loss = 0.0f64;
-    for pos in 0..seq_len {
+    let loss_positions = seq_len - 1;
+    for pos in 0..loss_positions {
         let sl = &all_logits[pos * vocab..(pos + 1) * vocab];
-        let target = labels[pos] as usize;
+        let target = labels[pos + 1] as usize; // shifted: predict next label
         let max_l = sl.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let sum_exp: f64 = sl.iter().map(|&l| ((l - max_l) as f64).exp()).sum();
         total_loss -= (sl[target] - max_l) as f64 - sum_exp.ln();
     }
-    let loss = total_loss / seq_len as f64;
+    let loss = total_loss / loss_positions as f64;
 
     // Backward (re-run forward as proxy).
     session.set_input_u32("token_ids", &input_ids);
@@ -164,14 +166,19 @@ fn bench_smolvla() {
     let expert_hidden = config.expert.hidden_size;
     let action_dim = config.max_action_dim;
 
-    // --- Build training graph (includes backward) ---
-    eprintln!("[meganeura] building SmolVLA training graph...");
     let compile_start = Instant::now();
-    let training_g = smolvla::build_action_expert_training(&config, action_seq_len, vlm_seq_len);
 
+    // Inference graph: forward only, outputs predictions.
+    eprintln!("[meganeura] building SmolVLA inference graph...");
+    let mut infer_g = Graph::new();
+    let pred = smolvla::build_action_expert(&mut infer_g, &config, action_seq_len, vlm_seq_len);
+    infer_g.set_outputs(vec![pred]);
     eprintln!("[meganeura] compiling inference session...");
-    let mut infer_session = build_inference_session(&training_g);
+    let mut infer_session = build_inference_session(&infer_g);
 
+    // Training graph: forward + backward + loss.
+    eprintln!("[meganeura] building SmolVLA training graph...");
+    let training_g = smolvla::build_action_expert_training(&config, action_seq_len, vlm_seq_len);
     eprintln!("[meganeura] compiling training session...");
     let mut train_session = build_session(&training_g);
 
@@ -179,15 +186,16 @@ fn bench_smolvla() {
     eprintln!("[meganeura] ready (compile: {compile_s:.2}s)");
 
     // --- Initialize with deterministic random values ---
+    // Use infer_session's param list (avoids fused param names from optimizer).
     eprintln!("[meganeura] initializing parameters...");
-    for (i, (name, buf_ref)) in train_session
+    for (i, (name, buf_ref)) in infer_session
         .plan()
         .param_buffers
         .clone()
         .iter()
         .enumerate()
     {
-        let n = train_session.plan().buffers[buf_ref.0 as usize] / 4;
+        let n = infer_session.plan().buffers[buf_ref.0 as usize] / 4;
         let data: Vec<f32> = (0..n)
             .map(|j| (j as f32 * 0.01 + i as f32).sin() * 0.1)
             .collect();
@@ -233,6 +241,24 @@ fn bench_smolvla() {
     );
 
     // MSE loss on CPU.
+    let nan_indices: Vec<usize> = output
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| v.is_nan())
+        .map(|(i, _)| i)
+        .collect();
+    if !nan_indices.is_empty() {
+        let action_dim = config.max_action_dim;
+        let positions: Vec<String> = nan_indices
+            .iter()
+            .map(|&i| format!("[seq={}, dim={}]", i / action_dim, i % action_dim))
+            .collect();
+        eprintln!(
+            "[meganeura] WARNING: {} NaN values at: {}",
+            nan_indices.len(),
+            positions.join(", ")
+        );
+    }
     let loss: f64 = output.iter().map(|&v| (v as f64).powi(2)).sum::<f64>() / output.len() as f64;
 
     // --- Training step (forward + backward + SGD) ---
@@ -250,6 +276,16 @@ fn bench_smolvla() {
     emit_result("SmolVLA", compile_s, forward_ms, backward_ms, &output, loss);
 }
 
+fn detect_backend() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Metal"
+    } else if cfg!(target_os = "windows") {
+        "Vulkan/DX12"
+    } else {
+        "Vulkan"
+    }
+}
+
 fn emit_result(
     model: &str,
     compile_s: f64,
@@ -260,6 +296,7 @@ fn emit_result(
 ) {
     let hash = sha256_f32(output);
     let sample: Vec<f64> = output.iter().take(16).map(|&v| v as f64).collect();
+    let backend = detect_backend();
 
     let rev = std::env::var("FRAMEWORK_REV").unwrap_or_default();
 
@@ -267,8 +304,9 @@ fn emit_result(
         "framework": "meganeura",
         "framework_rev": rev,
         "model": model,
-        "device": "blade-gpu",
-        "gpu_name": "blade-gpu",
+        "device": backend,
+        "gpu_name": backend,
+        "backend": backend,
         "timings": {
             "compile_s": (compile_s * 100.0).round() / 100.0,
             "forward_ms": (forward_ms * 1000.0).round() / 1000.0,
@@ -277,7 +315,7 @@ fn emit_result(
         "outputs": {
             "logits_hash": hash,
             "logits_sample": sample,
-            "loss": (loss * 1_000_000.0).round() / 1_000_000.0,
+            "loss": if loss.is_nan() { -1.0 } else { (loss * 1_000_000.0).round() / 1_000_000.0 },
         },
     });
 

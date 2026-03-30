@@ -220,6 +220,8 @@ class ActionExpert(nn.Module):
 def sync():
     if torch.cuda.is_available():
         torch.cuda.synchronize()
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        torch.mps.synchronize()
 
 
 def detect_device() -> str:
@@ -413,17 +415,19 @@ def prepare_inputs(model_type: str, model, dev: str, seq_len: int = 128):
         return {"noisy_latent": noisy, "noise_target": target}
 
     if model_type == "smolvla":
-        # SmolVLA action expert inputs: noisy_actions, timestep, vlm_kv.
+        # SmolVLA action expert inputs — deterministic, matching meganeura.
         chunk_size = 50
         action_dim = 32
         expert_hidden = 720
         vlm_seq_len = 16
         vlm_kv_dim = 320
-        torch.manual_seed(42)
+        noisy_actions = torch.sin(torch.arange(chunk_size * action_dim, dtype=torch.float32) * 0.01).view(1, chunk_size, action_dim).to(dev)
+        timestep = torch.sin(torch.arange(expert_hidden * 2, dtype=torch.float32) * 0.005).view(1, 1, expert_hidden * 2).to(dev)
+        vlm_kv = torch.cos(torch.arange(vlm_seq_len * vlm_kv_dim, dtype=torch.float32) * 0.01).view(1, vlm_seq_len, vlm_kv_dim).to(dev)
         return {
-            "noisy_actions": torch.randn(1, chunk_size, action_dim, device=dev),
-            "timestep": torch.randn(1, 1, expert_hidden * 2, device=dev),
-            "vlm_kv": torch.randn(1, vlm_seq_len, vlm_kv_dim, device=dev),
+            "noisy_actions": noisy_actions,
+            "timestep": timestep,
+            "vlm_kv": vlm_kv,
         }
 
     vocab_size = model.config.vocab_size if hasattr(model.config, "vocab_size") else model.config.text_config.vocab_size
@@ -453,29 +457,33 @@ def bench(model_name: str, spec: dict):
     load_ms = (time.perf_counter() - t0) * 1000.0
     print(f"[pytorch] loaded in {load_ms:.0f}ms", file=sys.stderr)
 
-    # --- torch.compile ---
-    print("[pytorch] compiling with torch.compile()...", file=sys.stderr)
-    clear_compile_cache()
-    compile_t0 = time.perf_counter()
-    model = torch.compile(model)
-
-    # Force compilation with a dummy forward+backward pass.
-    # Must run WITH gradients — compiling under no_grad() produces different
-    # code, causing a costly recompilation on the first grad-enabled forward.
-    dummy_kwargs = prepare_inputs(model_type, model, dev)
-    if model_type == "sd_unet":
-        dummy_out = model(dummy_kwargs["noisy_latent"])
-        F.mse_loss(dummy_out, dummy_kwargs["noise_target"]).backward()
-    elif model_type == "smolvla":
-        dummy_out = model(**dummy_kwargs)
-        F.mse_loss(dummy_out, torch.zeros_like(dummy_out)).backward()
+    # --- torch.compile (skip on MPS — poorly supported, adds overhead) ---
+    if dev == "mps":
+        compile_s = 0.0
+        print("[pytorch] skipping torch.compile on MPS (not well supported)", file=sys.stderr)
     else:
-        dummy_out = model(**dummy_kwargs)
-        dummy_out.loss.backward()
-    model.zero_grad()
-    sync()
-    compile_s = time.perf_counter() - compile_t0
-    print(f"[pytorch] compiled in {compile_s:.2f}s", file=sys.stderr)
+        print("[pytorch] compiling with torch.compile()...", file=sys.stderr)
+        clear_compile_cache()
+        compile_t0 = time.perf_counter()
+        model = torch.compile(model)
+
+        # Force compilation with a dummy forward+backward pass.
+        # Must run WITH gradients — compiling under no_grad() produces different
+        # code, causing a costly recompilation on the first grad-enabled forward.
+        dummy_kwargs = prepare_inputs(model_type, model, dev)
+        if model_type == "sd_unet":
+            dummy_out = model(dummy_kwargs["noisy_latent"])
+            F.mse_loss(dummy_out, dummy_kwargs["noise_target"]).backward()
+        elif model_type == "smolvla":
+            dummy_out = model(**dummy_kwargs)
+            F.mse_loss(dummy_out, torch.zeros_like(dummy_out)).backward()
+        else:
+            dummy_out = model(**dummy_kwargs)
+            dummy_out.loss.backward()
+        model.zero_grad()
+        sync()
+        compile_s = time.perf_counter() - compile_t0
+        print(f"[pytorch] compiled in {compile_s:.2f}s", file=sys.stderr)
 
     # --- Prepare deterministic input ---
     fwd_kwargs = prepare_inputs(model_type, model, dev)

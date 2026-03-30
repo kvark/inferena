@@ -14,8 +14,8 @@ Benchmark config: chunk_size=50, vlm_seq_len=16, float32, random weights, MSE lo
 
 | Platform | Framework | Compile (s) | Forward (ms) | Backward (ms) | Loss |
 |----------|-----------|:-----------:|:------------:|:--------------:|:----:|
-| Intel Xeon @ 2.10GHz | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CPU) | 37.26 | 15475 | 8184 | 0.00 |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/c43315d) (Vulkan) | **0.16** | **903** | **4280** | 0.00 |
+| Intel Xeon @ 2.10GHz | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CPU) | 49.11 | **37** | **105** | 0.00 |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/3d34aad) (Vulkan/Lavapipe) | **5.88** | 854 | 3646 | 0.01 |
 | | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) | ✗ | ✗ | ✗ | |
 | | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) | ✗ | ✗ | ✗ | |
 | AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 18.97 | 25 | 38 | 0.00 |

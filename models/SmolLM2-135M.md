@@ -14,11 +14,11 @@ Benchmark config: seq_len=128, float32, input=[0,1,...,127].
 
 | Platform | Framework | Compile (s) | Forward (ms) | Backward (ms) | Loss |
 |----------|-----------|:-----------:|:------------:|:--------------:|:----:|
-| Intel Xeon @ 2.10GHz | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CPU) | 59.26 | 38907 | 21049 | 10.98 |
-| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.31~~ | ~~373~~ | ~~—~~ | ~~11.11~~ |
+| Intel Xeon @ 2.10GHz | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CPU) | 107.69 | **133** | **323** | 10.98 |
+| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.37~~ | ~~352~~ | ~~—~~ | ~~11.11~~ |
 | | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/Lavapipe) | ~~0.00~~ | ~~2288~~ | ~~4143~~ | ~~11.70~~ |
 | | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) (CPU) | ~~3.31~~ | ~~14585~~ | ~~14299~~ | ~~10.81~~ |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/c43315d) (Vulkan/Lavapipe) | **2.80** | **3972** | **3434** | 10.98 |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/3d34aad) (Vulkan/Lavapipe) | **8.33** | 4943 | 3283 | 10.99 |
 | AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | **53.81** | **67** | **112** | 8.35 |
 |  | [MLX](https://github.com/ml-explore/mlx) (MLX) | ✗ | ✗ | ✗ | |
 |  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~300~~ | ~~—~~ | ~~10.80~~ |

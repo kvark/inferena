@@ -68,9 +68,10 @@
     tr:nth-child(even) td { background: #f9f9f9; }
     tr:hover td { background: #e8f0fe; }
     td:nth-child(n+3) { text-align: center; font-variant-numeric: tabular-nums; }
-    /* Bold platform separator: thick top border on rows that start a new platform */
-    td:first-child:not(:empty) { font-weight: 600; }
-    tr:has(> td:first-child:not(:empty)) td { border-top: 3px solid #1a1a2e; }
+    /* Platform separator: applied via JS since CSS :empty doesn't work
+       with markdown-rendered whitespace-only cells */
+    tr.platform-start td { border-top: 3px solid #1a1a2e; }
+    tr.platform-start td:first-child { font-weight: 600; }
 
     /* Markdown content in tabs */
     .tab-panel p { margin: 8px 0; }
@@ -123,11 +124,19 @@
   </footer>
 
   <script>
+    // Tab switching.
     document.querySelectorAll('.tabs input[type="radio"]').forEach(function(r) {
       r.addEventListener('change', function() {
         document.querySelectorAll('.tab-panel').forEach(function(p) { p.classList.remove('active'); });
         document.getElementById(r.value).classList.add('active');
       });
+    });
+    // Mark rows that start a new platform group (first cell has real text).
+    document.querySelectorAll('table tbody tr').forEach(function(tr) {
+      var td = tr.querySelector('td:first-child');
+      if (td && td.textContent.trim().length > 0) {
+        tr.classList.add('platform-start');
+      }
     });
   </script>
 </body>

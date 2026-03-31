@@ -21,12 +21,13 @@ Two benchmark configurations are used depending on framework capabilities:
 | Intel Xeon @ 2.10GHz | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CPU) | 51.02 | **12** | **27** | 0.57 |
 |  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~10302~~ | ~~—~~ | ~~0.00~~ |
 |  | [Meganeura](https://github.com/kvark/meganeura/tree/3d34aad) (Vulkan/Lavapipe) | **2.57** | 672 | 27282 | 0.57 |
-| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 12.80 | **3** | **5** | 0.57 |
+| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 12.51 | **2** | **5** | 0.57 |
 |  | [MLX](https://github.com/ml-explore/mlx) (MLX) | ✗ | ✗ | ✗ | |
-|  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~5457~~ | ~~—~~ | ~~0.00~~ |
+|  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~5271~~ | ~~—~~ | ~~0.00~~ |
 |  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | |
 |  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | |
-|  | [Meganeura](https://github.com/kvark/meganeura/tree/3d34aad) (Vulkan) | **1.29** | 9 | 113 | 0.57 |
+|  | [Meganeura](https://github.com/kvark/meganeura/tree/77ceb78) (Vulkan) | **1.17** | 9 | 25 | 0.57 |
+|  | [llama.cpp](https://github.com/ggml-org/llama.cpp) (CPU) | ✗ | ✗ | ✗ | |
 | Apple M3 | [PyTorch 2.11.0](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (MPS) | 0.00 | 504 | **192** | 0.57 |
 |  | [MLX](https://github.com/ml-explore/mlx) (MLX) | ~~0.00~~ | ~~6~~ | ~~8~~ | ~~0.51~~ |
 |  | [Candle](https://github.com/huggingface/candle) (CPU) | ~~0.08~~ | ~~9962~~ | ~~—~~ | ~~0.00~~ |

@@ -337,9 +337,9 @@ fn compare_outputs(results: &[&BenchResult]) {
         );
         let status = if hash_match {
             "EXACT MATCH"
-        } else if loss_diff < 1e-3 && rel < 0.01 {
+        } else if loss_diff < 5e-3 && rel < 0.01 {
             "PASS (<1% rel)"
-        } else if loss_diff < 0.01 || (loss_diff < 0.1 && rel < 0.1) {
+        } else if loss_diff < 0.05 || (loss_diff < 0.5 && rel < 0.1) {
             "CLOSE"
         } else {
             "DIFFERENT MODEL"

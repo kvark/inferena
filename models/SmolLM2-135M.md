@@ -19,12 +19,12 @@ Benchmark config: seq_len=128, float32, input=[0,1,...,127].
 | | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/Lavapipe) | ~~0.00~~ | ~~2288~~ | ~~4143~~ | ~~11.70~~ |
 | | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) (CPU) | ~~3.31~~ | ~~14585~~ | ~~14299~~ | ~~10.81~~ |
 | | [Meganeura](https://github.com/kvark/meganeura/tree/3d34aad) (Vulkan/Lavapipe) | **8.33** | 4943 | 3283 | 10.99 |
-| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | **53.81** | **67** | **112** | 8.35 |
+| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | **52.71** | **66** | **111** | 8.35 |
 |  | [MLX](https://github.com/ml-explore/mlx) (MLX) | ✗ | ✗ | ✗ | |
-|  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~300~~ | ~~—~~ | ~~10.80~~ |
-|  | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu) | ~~0.00~~ | ~~195~~ | ~~238~~ | ~~11.70~~ |
-|  | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) (CPU) | ~~1.62~~ | ~~7784~~ | ~~7634~~ | ~~10.81~~ |
-|  | [Meganeura](https://github.com/kvark/meganeura/tree/3d34aad) (Vulkan) | ~~1.08~~ | ~~44~~ | ~~40~~ | ~~9.46~~ |
+|  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~261~~ | ~~—~~ | ~~10.80~~ |
+|  | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu) | ~~0.00~~ | ~~189~~ | ~~197~~ | ~~11.67~~ |
+|  | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) (CPU) | ~~1.55~~ | ~~7452~~ | ~~7323~~ | ~~10.81~~ |
+|  | [Meganeura](https://github.com/kvark/meganeura/tree/77ceb78) (Vulkan) | ~~1.09~~ | ~~77~~ | ~~79~~ | ~~8.64~~ |
 | Apple M3 | [PyTorch 2.11.0](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (MPS) | 0.00 | **216** | **354** | 8.35 |
 |  | [MLX](https://github.com/ml-explore/mlx) (MLX) | ~~0.00~~ | ~~82~~ | ~~188~~ | ~~8.64~~ |
 |  | [Candle](https://github.com/huggingface/candle) (CPU) | ~~0.05~~ | ~~254~~ | ~~—~~ | ~~10.80~~ |

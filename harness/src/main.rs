@@ -31,7 +31,7 @@ pub struct Timings {
     #[serde(default)]
     pub latency_ms: f64,
     /// Training backward pass time (milliseconds).
-    pub train_ms: f64,
+    pub training_ms: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -418,7 +418,7 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
     let mut best_compile = f64::MAX;
     let mut best_inference = f64::MAX;
     let mut best_latency = f64::MAX;
-    let mut best_train = f64::MAX;
+    let mut best_training = f64::MAX;
     for o in outcomes {
         if let FrameworkOutcome::Ok(r) = o
             && matching.contains(&r.framework)
@@ -432,8 +432,8 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
             if r.timings.latency_ms > 0.0 && r.timings.latency_ms < best_latency {
                 best_latency = r.timings.latency_ms;
             }
-            if r.timings.train_ms > 0.0 && r.timings.train_ms < best_train {
-                best_train = r.timings.train_ms;
+            if r.timings.training_ms > 0.0 && r.timings.training_ms < best_training {
+                best_training = r.timings.training_ms;
             }
         }
     }
@@ -484,7 +484,7 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
                 let compile = fmt_val(r.timings.compile_s, best_compile, false);
                 let inference = fmt_val(r.timings.inference_ms, best_inference, true);
                 let latency = fmt_val(r.timings.latency_ms, best_latency, true);
-                let train = fmt_val(r.timings.train_ms, best_train, true);
+                let training = fmt_val(r.timings.training_ms, best_training, true);
                 let loss = if is_matching {
                     format!("{:.2}", r.outputs.loss)
                 } else {
@@ -492,7 +492,7 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
                 };
 
                 println!(
-                    "| {platform} | {link} | {compile} | {inference} | {latency} | {train} | {loss} |"
+                    "| {platform} | {link} | {compile} | {inference} | {latency} | {training} | {loss} |"
                 );
             }
             FrameworkOutcome::Error { framework, .. } => {

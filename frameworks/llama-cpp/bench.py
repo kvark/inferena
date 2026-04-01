@@ -121,7 +121,7 @@ def main():
             "compile_s": round(compile_s, 2),
             "inference_ms": round(inference_ms, 3),
             "latency_ms": round(latency_ms, 3),
-            "train_ms": 0.0,
+            "training_ms": 0.0,
         },
         "outputs": {
             "logits_hash": logits_hash,

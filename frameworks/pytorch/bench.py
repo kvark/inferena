@@ -527,7 +527,7 @@ def bench(model_name: str, spec: dict):
     t0 = time.perf_counter()
     loss.backward()
     sync()
-    train_ms = (time.perf_counter() - t0) * 1000.0
+    training_ms = (time.perf_counter() - t0) * 1000.0
 
     # --- Latency (single-token / minimal-input forward) ---
     # For causal LMs: forward with seq_len=1 to measure per-token decode latency.
@@ -561,7 +561,7 @@ def bench(model_name: str, spec: dict):
             "compile_s": round(compile_s, 2),
             "inference_ms": round(inference_ms, 3),
             "latency_ms": round(latency_ms, 3),
-            "train_ms": round(train_ms, 3),
+            "training_ms": round(training_ms, 3),
         },
         "outputs": {
             "logits_hash": logits_hash,

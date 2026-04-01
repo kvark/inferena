@@ -692,7 +692,7 @@ def bench(model_name, spec):
             "compile_s": 0.0,
             "inference_ms": round(forward_ms, 3),
             "latency_ms": 0.0,
-            "train_ms": round(backward_ms, 3),
+            "training_ms": round(backward_ms, 3),
         },
         "outputs": {
             "logits_hash": logits_hash,

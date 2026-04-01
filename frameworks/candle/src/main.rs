@@ -84,7 +84,7 @@ fn emit_result(
             "compile_s": (compile_s * 100.0).round() / 100.0,
             "inference_ms": (forward_ms * 1000.0).round() / 1000.0,
             "latency_ms": 0.0,
-            "train_ms": backward_ms,
+            "training_ms": backward_ms,
         },
         "outputs": {
             "logits_hash": logits_hash,

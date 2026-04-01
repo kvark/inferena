@@ -49,6 +49,8 @@ and results tables.
 | [SmolLM2-135M](models/SmolLM2-135M.md) | Text LLM | 135M | [results](models/SmolLM2-135M.md#results) |
 | [SmolVLA](models/SmolVLA.md) | Robotics Action Expert | ~14M | [results](models/SmolVLA.md#results) |
 | [Stable Diffusion 1.5](models/StableDiffusion.md) | Image Diffusion (UNet) | ~860M | [results](models/StableDiffusion.md#results) |
+| [ResNet-50](models/ResNet-50.md) | Image Classification (CNN) | 25.6M | [results](models/ResNet-50.md#results) |
+| [Whisper-tiny](models/Whisper-tiny.md) | Speech Recognition | ~39M | [results](models/Whisper-tiny.md#results) |
 
 ## What it measures
 

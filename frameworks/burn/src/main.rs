@@ -9,7 +9,10 @@
 //! timing comparisons are meaningful.
 
 use burn::backend::Autodiff;
-use burn::backend::wgpu::{Wgpu, WgpuDevice};
+use burn::backend::wgpu::{
+    Wgpu, WgpuDevice,
+    graphics::{AutoGraphicsApi, GraphicsApi},
+};
 use burn::nn::{Embedding, EmbeddingConfig, Linear, LinearConfig};
 use burn::prelude::*;
 use burn::tensor::activation::softmax;
@@ -225,12 +228,15 @@ fn main() {
     let logits_hash = sha256_f32(&logits_data);
     let logits_sample: Vec<f64> = logits_data.iter().take(16).map(|&v| v as f64).collect();
 
+    let wgpu_backend = AutoGraphicsApi::backend();
+
     let result = serde_json::json!({
         "framework": "burn",
         "framework_rev": std::env::var("FRAMEWORK_REV").unwrap_or_default(),
         "model": model_name,
         "device": format!("{:?}", device),
         "gpu_name": format!("{:?}", device),
+        "backend": format!("wgpu/{wgpu_backend}"),
         "timings": {
             "compile_s": (compile_s * 100.0).round() / 100.0,
             "forward_ms": (forward_ms * 1000.0).round() / 1000.0,

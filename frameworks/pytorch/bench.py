@@ -220,6 +220,8 @@ class ActionExpert(nn.Module):
 def sync():
     if torch.cuda.is_available():
         torch.cuda.synchronize()
+    elif hasattr(torch, "xpu") and torch.xpu.is_available():
+        torch.xpu.synchronize()
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         torch.mps.synchronize()
 
@@ -227,6 +229,8 @@ def sync():
 def detect_device() -> str:
     if torch.cuda.is_available():
         return "cuda:0"
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        return "xpu:0"
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return "mps"
     return "cpu"
@@ -235,6 +239,8 @@ def detect_device() -> str:
 def device_name(dev: str) -> str:
     if dev.startswith("cuda"):
         return torch.cuda.get_device_name(0)
+    if dev.startswith("xpu"):
+        return torch.xpu.get_device_name(0)
     if dev == "mps":
         return f"Apple {platform.processor()}"
     return "cpu"
@@ -249,6 +255,8 @@ def backend_name(dev: str) -> str:
         if version:
             return f"CUDA {version}"
         return "CUDA"
+    if dev.startswith("xpu"):
+        return "XPU"
     if dev == "mps":
         return "MPS"
     return "CPU"

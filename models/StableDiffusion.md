@@ -22,7 +22,6 @@ Two benchmark configurations are used depending on framework capabilities:
 |  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~10302~~ | ~~—~~ | ~~0.00~~ |
 |  | [Meganeura](https://github.com/kvark/meganeura/tree/3d34aad) (Vulkan/Lavapipe) | **2.57** | 672 | 27282 | 0.57 |
 | AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 12.51 | **2** | **5** | 0.57 |
-|  | [MLX](https://github.com/ml-explore/mlx) (MLX) | ✗ | ✗ | ✗ | |
 |  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~5271~~ | ~~—~~ | ~~0.00~~ |
 |  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | |
 |  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | |
@@ -34,6 +33,12 @@ Two benchmark configurations are used depending on framework capabilities:
 |  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | |
 |  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | |
 |  | [Meganeura](https://github.com/kvark/meganeura) (Metal) | 3.29 | **21** | 490 | 0.57 |
+| Intel Graphics (RPL-U) | [PyTorch](https://github.com/pytorch/pytorch) | ✗ | ✗ | ✗ | |
+|  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | 0.00 | **16876** | — | 0.00 |
+|  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | |
+|  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | |
+|  | [Meganeura](https://github.com/kvark/meganeura/tree/77ceb78) (Vulkan) | ~~3.56~~ | ~~44~~ | ~~38~~ | ~~0.57~~ |
+|  | [llama.cpp](https://github.com/ggml-org/llama.cpp) (CPU) | ✗ | ✗ | ✗ | |
 
 *Run `./run.sh -m StableDiffusion` to populate this table.*
 

@@ -4,3 +4,5 @@ numpy
 llama-cpp-python
 onnxruntime
 onnx
+jax
+jaxlib

@@ -14,12 +14,13 @@ Benchmark config: seq_len=128, float32, input=[0,1,...,127].
 
 | Platform | Framework | Compile (s) | Inference (ms) | Latency (ms) | Training (ms) | Loss |
 |----------|-----------|:-----------:|:--------------:|:------------:|:-------------:|:----:|
-| Intel Xeon @ 2.10GHz | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CPU) | 83.74 | **116** | 19 | **309** | 10.98 |
-| | [ONNX Runtime 1.24.4](https://github.com/microsoft/onnxruntime) (CPU) | 2.85 | 127 | **18** | — | 10.98 |
-| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | **0.33** | 386 | 68 | — | 11.11 |
-| | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) (CPU) | 4.26 | 11411 | — | 11218 | 10.81 |
-| | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/Lavapipe) | ~~0.00~~ | ~~1917~~ | ~~305~~ | ~~3436~~ | ~~11.62~~ |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/0b91e08) (Vulkan/Lavapipe) | 2.09 | 3011 | 685 | 3061 | 10.99 |
+| Intel Xeon @ 2.10GHz | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CPU) | 135.63 | 188 | **18** | **486** | 10.98 |
+| | [ONNX Runtime 1.24.4](https://github.com/microsoft/onnxruntime) (CPU) | 65.50 | **118** | 20 | — | 10.98 |
+| | [JAX 0.9.2](https://github.com/jax-ml/jax) (CPU) | 6.79 | 194 | 31 | 2107 | 10.98 |
+| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | **0.31** | 453 | 61 | — | 11.11 |
+| | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) (CPU) | 3.37 | 17006 | — | 14459 | 10.81 |
+| | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/Lavapipe) | ~~0.00~~ | ~~2369~~ | ~~320~~ | ~~5700~~ | ~~11.73~~ |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/0b91e08) (Vulkan/Lavapipe) | 7.29 | 3933 | 852 | 3651 | 10.99 |
 | | [llama.cpp](https://github.com/ggml-org/llama.cpp/tree/5a0ed51) (CPU) | 0.10 | 221 | 24 | — | 10.98 |
 | AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | **52.71** | **66** | — | **111** | 8.35 |
 |  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~261~~ | — | ~~—~~ | ~~10.80~~ |
@@ -40,6 +41,7 @@ Benchmark config: seq_len=128, float32, input=[0,1,...,127].
 |  | [llama.cpp](https://github.com/ggml-org/llama.cpp) (CPU) | ✗ | ✗ | ✗ | ✗ | |
 
 **Correctness:** PyTorch vs ONNX Runtime: **PASS** (loss diff 3.2e-3).
+PyTorch vs JAX: **PASS** (loss diff 3.2e-3).
 PyTorch vs Meganeura: **PASS** (max error 1.7e-6, loss diff 5.3e-3).
 PyTorch vs llama.cpp: **PASS** (loss diff 4.5e-3). Candle, Luminal: **CLOSE**.
 Struck-through values are from frameworks running a different (simplified) model.

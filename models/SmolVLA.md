@@ -19,7 +19,6 @@ Benchmark config: chunk_size=50, vlm_seq_len=16, float32, random weights, MSE lo
 | | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) | ✗ | ✗ | ✗ | |
 | | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) | ✗ | ✗ | ✗ | |
 | AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 18.97 | 25 | 38 | 0.00 |
-|  | [MLX](https://github.com/ml-explore/mlx) (MLX) | ✗ | ✗ | ✗ | |
 |  | [Candle](https://github.com/huggingface/candle) (CPU) | ✗ | ✗ | ✗ | |
 |  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | |
 |  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | |
@@ -30,6 +29,12 @@ Benchmark config: chunk_size=50, vlm_seq_len=16, float32, random weights, MSE lo
 |  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | |
 |  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | |
 |  | [Meganeura](https://github.com/kvark/meganeura) (Metal) | 0.59 | 53 | **32** | 0.01 |
+| Intel Graphics (RPL-U) | [PyTorch](https://github.com/pytorch/pytorch) | ✗ | ✗ | ✗ | |
+|  | [Candle](https://github.com/huggingface/candle) (CPU) | ✗ | ✗ | ✗ | |
+|  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | |
+|  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | |
+|  | [Meganeura](https://github.com/kvark/meganeura/tree/77ceb78) (Vulkan) | **2.62** | **114** | **188** | 0.01 |
+|  | [llama.cpp](https://github.com/ggml-org/llama.cpp) (CPU) | ✗ | ✗ | ✗ | |
 
 **Correctness:** PyTorch vs Meganeura: **CLOSE** (loss diff 1e-5, max error 4.6e-3).
 

@@ -20,7 +20,6 @@ Benchmark config: seq_len=128, float32, input=[0,1,...,127].
 | | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) (CPU) | ~~3.31~~ | ~~14585~~ | ~~14299~~ | ~~10.81~~ |
 | | [Meganeura](https://github.com/kvark/meganeura/tree/3d34aad) (Vulkan/Lavapipe) | **8.33** | 4943 | 3283 | 10.99 |
 | AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | **52.71** | **66** | **111** | 8.35 |
-|  | [MLX](https://github.com/ml-explore/mlx) (MLX) | ✗ | ✗ | ✗ | |
 |  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~261~~ | ~~—~~ | ~~10.80~~ |
 |  | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu) | ~~0.00~~ | ~~189~~ | ~~197~~ | ~~11.67~~ |
 |  | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) (CPU) | ~~1.55~~ | ~~7452~~ | ~~7323~~ | ~~10.81~~ |
@@ -31,6 +30,12 @@ Benchmark config: seq_len=128, float32, input=[0,1,...,127].
 |  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ~~0.00~~ | ~~925~~ | ~~797~~ | ~~11.37~~ |
 |  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ~~1.95~~ | ~~14650~~ | ~~14704~~ | ~~10.81~~ |
 |  | [Meganeura](https://github.com/kvark/meganeura) (Metal) | ~~1.60~~ | ~~99~~ | ~~80~~ | ~~9.46~~ |
+| Intel Graphics (RPL-U) | [PyTorch](https://github.com/pytorch/pytorch) | ✗ | ✗ | ✗ | |
+|  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | 0.00 | **605** | — | 10.80 |
+|  | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu) | ~~0.00~~ | ~~1502~~ | ~~5248~~ | ~~11.82~~ |
+|  | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) (CPU) | 3.70 | 15959 | **15948** | 10.81 |
+|  | [Meganeura](https://github.com/kvark/meganeura/tree/77ceb78) (Vulkan) | ~~2.34~~ | ~~227~~ | ~~190~~ | ~~8.64~~ |
+|  | [llama.cpp](https://github.com/ggml-org/llama.cpp) (CPU) | ✗ | ✗ | ✗ | |
 
 **Correctness:** PyTorch vs Meganeura: **PASS** (max error 1.7e-6, loss diff 6.4e-4).
 Struck-through values are from frameworks running a different (simplified) model.

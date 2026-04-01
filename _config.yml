@@ -1,7 +1,7 @@
-title: infermark
-description: ML Framework Inference Benchmark
+title: inferena
+description: InferenceArena
 url: https://kvark.github.io
-baseurl: /infermark
+baseurl: /inferena
 
 # Enable markdown inside HTML blocks (for tab panels).
 kramdown:

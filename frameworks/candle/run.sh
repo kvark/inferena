@@ -11,6 +11,6 @@ source "$ROOT_DIR/scripts/cargo-rev.sh"
 export FRAMEWORK_REV=$(cargo_rev_short candle-core "$ROOT_DIR")
 
 echo "[candle] Building release binary..." >&2
-cargo build --release --manifest-path "$ROOT_DIR/Cargo.toml" -p infermark-candle 2>&1 >&2
+cargo build --release --manifest-path "$ROOT_DIR/Cargo.toml" -p inferena-candle 2>&1 >&2
 
-exec "$ROOT_DIR/target/release/infermark-candle" "$MODEL"
+exec "$ROOT_DIR/target/release/inferena-candle" "$MODEL"

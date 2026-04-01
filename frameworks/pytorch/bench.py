@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PyTorch benchmark runner for infermark.
+"""PyTorch benchmark runner for inferena.
 
 Runs a fake training step (forward + backward) on a given model and prints
 a JSON result to stdout matching the BenchResult schema.

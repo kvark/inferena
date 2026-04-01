@@ -1,12 +1,4 @@
 #!/usr/bin/env bash
-# infermark - ML Framework Inference Benchmark
-#
-# Usage:
-#   ./run.sh                         # All models, all frameworks
-#   ./run.sh -m SmolLM2-135M         # Single model
-#   ./run.sh -m SmolLM2-135M -f pytorch  # Single model + framework
-#   ./run.sh --json                  # Output JSON
-#   ./run.sh --help                  # Show help
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -38,7 +30,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -h|--help)
-            echo "infermark - ML Framework Inference Benchmark"
+            echo "inferena - Inference Arena"
             echo ""
             echo "Usage: $0 [options]"
             echo ""
@@ -72,10 +64,10 @@ chmod +x "$ROOT_DIR"/frameworks/*/run.sh 2>/dev/null || true
 mkdir -p "$ROOT_DIR/results"
 
 # --- Build all Rust crates (harness + framework runners) at once ---
-echo "Building infermark (all Rust crates)..." >&2
+echo "Building all Rust crates..." >&2
 cargo build --release --manifest-path "$ROOT_DIR/Cargo.toml" --workspace 2>&1 >&2
 
-HARNESS="$ROOT_DIR/target/release/infermark"
+HARNESS="$ROOT_DIR/target/release/inferena"
 
 # --- Run each model ---
 for MODEL in $MODELS; do

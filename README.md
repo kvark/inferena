@@ -1,6 +1,6 @@
-# infermark
+# inferena
 
-[![CI](https://github.com/kvark/infermark/actions/workflows/ci.yml/badge.svg)](https://github.com/kvark/infermark/actions/workflows/ci.yml)
+[![CI](https://github.com/kvark/inferena/actions/workflows/ci.yml/badge.svg)](https://github.com/kvark/inferena/actions/workflows/ci.yml)
 
 ML framework inference benchmark. Compares inference and training performance of
 the same models across different ML frameworks on single-GPU hardware.
@@ -83,7 +83,7 @@ python3 models/generate_weights.py SmolLM2-135M
 ## Project structure
 
 ```
-infermark/
+./
 ├── run.sh                    # Main entry point
 ├── .github/workflows/ci.yml  # CI: build check + smoke test with Lavapipe
 ├── harness/                  # Rust: orchestration, timing, output comparison

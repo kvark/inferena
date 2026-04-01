@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""llama.cpp benchmark wrapper for infermark.
+"""llama.cpp benchmark wrapper for inferena.
 
 Runs llama-bench for forward-only (prompt processing) performance and
-outputs JSON matching the infermark BenchResult schema.
+outputs JSON matching the inferena BenchResult schema.
 Backward pass is not supported (inference-only framework).
 """
 

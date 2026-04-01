@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MLX benchmark runner for infermark.
+"""MLX benchmark runner for inferena.
 
 Runs a forward + backward training step on a given model using Apple's MLX
 framework and prints a JSON result to stdout matching the BenchResult schema.

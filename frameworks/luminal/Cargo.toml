@@ -1,12 +1,12 @@
 [package]
-name = "infermark-luminal"
+name = "inferena-luminal"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "Luminal framework benchmark runner for infermark"
+description = "Luminal framework benchmark runner for inferena"
 
 [[bin]]
-name = "infermark-luminal"
+name = "inferena-luminal"
 path = "src/main.rs"
 
 [dependencies]

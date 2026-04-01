@@ -3196,7 +3196,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "infermark-burn"
+name = "inferena-burn"
 version = "0.1.0"
 dependencies = [
  "burn",
@@ -3207,7 +3207,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "infermark-candle"
+name = "inferena-candle"
 version = "0.1.0"
 dependencies = [
  "candle-core",
@@ -3220,7 +3220,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "infermark-harness"
+name = "inferena-harness"
 version = "0.1.0"
 dependencies = [
  "clap",
@@ -3229,7 +3229,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "infermark-luminal"
+name = "inferena-luminal"
 version = "0.1.0"
 dependencies = [
  "hex",
@@ -3241,7 +3241,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "infermark-meganeura"
+name = "inferena-meganeura"
 version = "0.1.0"
 dependencies = [
  "env_logger",

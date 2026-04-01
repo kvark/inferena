@@ -1,12 +1,12 @@
 [package]
-name = "infermark-meganeura"
+name = "inferena-meganeura"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "Meganeura framework benchmark runner for infermark"
+description = "Meganeura framework benchmark runner for inferena"
 
 [[bin]]
-name = "infermark-meganeura"
+name = "inferena-meganeura"
 path = "src/main.rs"
 
 [dependencies]

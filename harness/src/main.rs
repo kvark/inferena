@@ -62,7 +62,7 @@ pub enum FrameworkOutcome {
 }
 
 #[derive(Parser)]
-#[command(name = "infermark", about = "ML framework inference benchmark")]
+#[command(name = "inferena", about = "Inference Arena")]
 struct Cli {
     /// Which frameworks to benchmark (omit for all).
     #[arg(short, long, value_delimiter = ',')]

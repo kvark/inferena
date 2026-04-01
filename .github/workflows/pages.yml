@@ -43,7 +43,7 @@ jobs:
               elif p.startswith('Caveats'):
                   out.append('**Caveats:** ' + p[len('Caveats'):].strip())
           cmd = './run.sh -m ' + model_name
-          out.append('**Run it yourself:** `git clone https://github.com/kvark/infermark && cd infermark && ' + cmd + '`')
+          out.append('**Run it yourself:** `git clone https://github.com/kvark/inferena && cd inferena && ' + cmd + '`')
           print('\n\n'.join(out))
           PYEOF
             echo "Generated _includes/${name}.md"

@@ -14,11 +14,12 @@ Benchmark config: seq_len=128, float32, input=[0,1,...,127].
 
 | Platform | Framework | Compile (s) | Inference (ms) | Latency (ms) | Training (ms) | Loss |
 |----------|-----------|:-----------:|:--------------:|:------------:|:-------------:|:----:|
-| Intel Xeon @ 2.10GHz | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CPU) | 107.69 | **133** | — | **323** | 10.98 |
-| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.37~~ | ~~352~~ | — | ~~—~~ | ~~11.11~~ |
-| | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/Lavapipe) | ~~0.00~~ | ~~2288~~ | — | ~~4143~~ | ~~11.70~~ |
-| | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) (CPU) | ~~3.31~~ | ~~14585~~ | — | ~~14299~~ | ~~10.81~~ |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/3d34aad) (Vulkan/Lavapipe) | **8.33** | 4943 | — | 3283 | 10.99 |
+| Intel Xeon @ 2.10GHz | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CPU) | 128.05 | **138** | **20** | **347** | 10.98 |
+| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | **0.51** | 400 | — | — | 11.11 |
+| | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) (CPU) | 3.62 | 17503 | — | 14767 | 10.81 |
+| | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/Lavapipe) | ~~0.00~~ | ~~2447~~ | ~~—~~ | ~~4371~~ | ~~11.73~~ |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/77ceb78) (Vulkan/Lavapipe) | 4.92 | 3765 | — | 3445 | 10.99 |
+| | [llama.cpp](https://github.com/ggml-org/llama.cpp/tree/5a0ed51) (CPU) | 44.09 | 221 | 24 | — | 10.98 |
 | AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | **52.71** | **66** | — | **111** | 8.35 |
 |  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~261~~ | — | ~~—~~ | ~~10.80~~ |
 |  | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu) | ~~0.00~~ | ~~189~~ | — | ~~197~~ | ~~11.67~~ |
@@ -37,7 +38,8 @@ Benchmark config: seq_len=128, float32, input=[0,1,...,127].
 |  | [Meganeura](https://github.com/kvark/meganeura/tree/77ceb78) (Vulkan) | ~~2.34~~ | ~~227~~ | — | ~~190~~ | ~~8.64~~ |
 |  | [llama.cpp](https://github.com/ggml-org/llama.cpp) (CPU) | ✗ | ✗ | ✗ | ✗ | |
 
-**Correctness:** PyTorch vs Meganeura: **PASS** (max error 1.7e-6, loss diff 6.4e-4).
+**Correctness:** PyTorch vs Meganeura: **PASS** (max error 1.7e-6, loss diff 5.3e-3).
+PyTorch vs llama.cpp: **PASS** (loss diff 4.5e-3). Candle, Luminal: **CLOSE**.
 Struck-through values are from frameworks running a different (simplified) model.
 
 ## Architecture

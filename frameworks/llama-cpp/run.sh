@@ -20,9 +20,9 @@ if ! python3 -c "import llama_cpp" 2>/dev/null; then
     }
 fi
 
-# --- Clone llama.cpp for the GGUF converter (if model needs conversion) ---
+# --- Clone llama.cpp for gguf-py library (needed for GGUF conversion) ---
 if [ ! -d "$LLAMA_CPP_DIR" ]; then
-    echo "[llama-cpp] cloning llama.cpp (for GGUF converter)..." >&2
+    echo "[llama-cpp] cloning llama.cpp (for gguf-py)..." >&2
     git clone --depth 1 https://github.com/ggml-org/llama.cpp "$LLAMA_CPP_DIR" 2>&1 >&2
 fi
 
@@ -36,8 +36,7 @@ if [ ! -f "$GGUF_FILE" ]; then
         echo "[llama-cpp] model.safetensors not found at $MODEL_DIR" >&2
         exit 1
     fi
-    python3 "$LLAMA_CPP_DIR/convert_hf_to_gguf.py" "$MODEL_DIR" \
-        --outfile "$GGUF_FILE" --outtype f32 2>&1 >&2
+    python3 "$SCRIPT_DIR/convert_to_gguf.py" "$MODEL_DIR" "$GGUF_FILE" 2>&1 >&2
 fi
 
 # --- Run benchmark via Python wrapper ---

@@ -140,6 +140,51 @@ fn bench_smollm2(model_name: &str) {
     }
     let loss = total_loss / loss_positions as f64;
 
+    // --- Latency (single-token forward) ---
+    // Build a separate seq_len=1 inference graph.
+    eprintln!("[meganeura] measuring single-token latency...");
+    let mut lat_g = Graph::new();
+    let lat_logits = smollm2::build_graph(&mut lat_g, &config, 1);
+    lat_g.set_outputs(vec![lat_logits]);
+    let mut lat_session = build_inference_session(&lat_g);
+    // Copy weights from main session.
+    for (name, _) in lat_session.plan().param_buffers.clone() {
+        if !model.tensor_info().contains_key(&name) && name != "lm_head.weight" {
+            continue;
+        }
+        if name == "lm_head.weight" {
+            if model.tensor_info().contains_key("lm_head.weight") {
+                let data = if transposed_set.contains(name.as_str()) {
+                    model.tensor_f32_auto_transposed(&name)
+                } else {
+                    model.tensor_f32_auto(&name)
+                };
+                lat_session.set_parameter(&name, &data.unwrap());
+            } else {
+                let data = model
+                    .tensor_f32_auto_transposed("model.embed_tokens.weight")
+                    .unwrap();
+                lat_session.set_parameter("lm_head.weight", &data);
+            }
+        } else if transposed_set.contains(name.as_str()) {
+            let data = model.tensor_f32_auto_transposed(&name).unwrap();
+            lat_session.set_parameter(&name, &data);
+        } else {
+            let data = model.tensor_f32_auto(&name).unwrap();
+            lat_session.set_parameter(&name, &data);
+        }
+    }
+    // Warm-up.
+    lat_session.set_input_u32("token_ids", &[0u32]);
+    lat_session.step();
+    lat_session.wait();
+    // Measure.
+    lat_session.set_input_u32("token_ids", &[0u32]);
+    let lat_start = Instant::now();
+    lat_session.step();
+    lat_session.wait();
+    let latency_ms = lat_start.elapsed().as_secs_f64() * 1000.0;
+
     // Backward (re-run forward as proxy).
     session.set_input_u32("token_ids", &input_ids);
     let bwd_start = Instant::now();
@@ -154,6 +199,7 @@ fn bench_smollm2(model_name: &str) {
         backward_ms,
         &all_logits,
         loss,
+        latency_ms,
     );
 }
 
@@ -273,7 +319,15 @@ fn bench_smolvla() {
     // Approximate backward as train_step - forward.
     let backward_ms = (train_ms - forward_ms).max(0.0);
 
-    emit_result("SmolVLA", compile_s, forward_ms, backward_ms, &output, loss);
+    emit_result(
+        "SmolVLA",
+        compile_s,
+        forward_ms,
+        backward_ms,
+        &output,
+        loss,
+        0.0,
+    );
 }
 
 fn detect_backend() -> &'static str {
@@ -293,6 +347,7 @@ fn emit_result(
     backward_ms: f64,
     output: &[f32],
     loss: f64,
+    latency_ms: f64,
 ) {
     let hash = sha256_f32(output);
     let sample: Vec<f64> = output.iter().take(16).map(|&v| v as f64).collect();
@@ -310,7 +365,7 @@ fn emit_result(
         "timings": {
             "compile_s": (compile_s * 100.0).round() / 100.0,
             "inference_ms": (forward_ms * 1000.0).round() / 1000.0,
-            "latency_ms": 0.0,
+            "latency_ms": (latency_ms * 1000.0).round() / 1000.0,
             "training_ms": (backward_ms * 1000.0).round() / 1000.0,
         },
         "outputs": {
@@ -403,6 +458,7 @@ fn bench_stable_diffusion() {
         backward_ms,
         &logits_data,
         loss_val,
+        0.0, // latency: not meaningful for non-autoregressive models
     );
 }
 

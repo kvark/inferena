@@ -213,6 +213,19 @@ fn main() {
     let logits_data: Vec<f32> = logits.to_data().to_vec().unwrap();
     let forward_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
+    // --- Latency (single-token forward) ---
+    let lat_data: Vec<i64> = vec![0];
+    let lat_input = Tensor::<MyBackend, 1, Int>::from_data(
+        burn::tensor::TensorData::new(lat_data, [1]),
+        &device,
+    )
+    .unsqueeze::<2>();
+    // Warm-up.
+    let _ = forward(&model, lat_input.clone()).to_data();
+    let t0 = Instant::now();
+    let _ = forward(&model, lat_input).to_data();
+    let latency_ms = t0.elapsed().as_secs_f64() * 1000.0;
+
     // --- Loss + Backward ---
     let logits2 = forward(&model, input_ids);
     let loss = cross_entropy_loss(logits2, labels);
@@ -240,7 +253,7 @@ fn main() {
         "timings": {
             "compile_s": (compile_s * 100.0).round() / 100.0,
             "inference_ms": (forward_ms * 1000.0).round() / 1000.0,
-            "latency_ms": 0.0,
+            "latency_ms": (latency_ms * 1000.0).round() / 1000.0,
             "training_ms": (backward_ms * 1000.0).round() / 1000.0,
         },
         "outputs": {

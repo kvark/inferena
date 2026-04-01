@@ -67,6 +67,7 @@ fn emit_result(
     model_name: &str,
     compile_s: f64,
     forward_ms: f64,
+    latency_ms: f64,
     backward_ms: f64,
     logits_data: &[f32],
     loss: f64,
@@ -83,7 +84,7 @@ fn emit_result(
         "timings": {
             "compile_s": (compile_s * 100.0).round() / 100.0,
             "inference_ms": (forward_ms * 1000.0).round() / 1000.0,
-            "latency_ms": 0.0,
+            "latency_ms": (latency_ms * 1000.0).round() / 1000.0,
             "training_ms": backward_ms,
         },
         "outputs": {
@@ -143,7 +144,25 @@ fn bench_smollm2(model_name: &str) -> Result<(), Box<dyn std::error::Error>> {
         .sum();
     let loss = -((logits_data[target] - max_logit) as f64 - sum_exp.ln());
 
-    emit_result(model_name, compile_s, forward_ms, 0.0, &logits_data, loss);
+    // --- Latency (single-token forward) ---
+    let lat_input = Tensor::new(&[0u32], &device)?.unsqueeze(0)?;
+    let mut lat_cache = llama_model::Cache::new(false, dtype, &config, &device)?;
+    // Warm-up.
+    let _ = model.forward(&lat_input, 0, &mut lat_cache)?;
+    let mut lat_cache = llama_model::Cache::new(false, dtype, &config, &device)?;
+    let lat_start = Instant::now();
+    let _ = model.forward(&lat_input, 0, &mut lat_cache)?;
+    let latency_ms = lat_start.elapsed().as_secs_f64() * 1000.0;
+
+    emit_result(
+        model_name,
+        compile_s,
+        forward_ms,
+        latency_ms,
+        0.0,
+        &logits_data,
+        loss,
+    );
     Ok(())
 }
 
@@ -242,6 +261,7 @@ fn bench_stable_diffusion() -> Result<(), Box<dyn std::error::Error>> {
         "StableDiffusion",
         compile_s,
         forward_ms,
+        0.0, // latency: not meaningful for non-autoregressive models
         0.0,
         &output_flat,
         loss,

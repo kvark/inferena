@@ -57,9 +57,6 @@ if [ -z "$MODELS" ]; then
     MODELS="$ALL_MODELS"
 fi
 
-# --- Make runner scripts executable ---
-chmod +x "$ROOT_DIR"/frameworks/*/run.sh 2>/dev/null || true
-
 # --- Create results directory ---
 mkdir -p "$ROOT_DIR/results"
 

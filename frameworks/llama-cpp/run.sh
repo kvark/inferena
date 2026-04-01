@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # llama.cpp benchmark runner wrapper (inference/forward only).
+# Uses llama-cpp-python bindings for proper logit output.
 # Usage: ./run.sh <model_name>
 set -euo pipefail
 
@@ -10,17 +11,19 @@ MODEL="${1:-SmolLM2-135M}"
 LLAMA_CPP_DIR="$SCRIPT_DIR/llama.cpp"
 BENCH_SCRIPT="$SCRIPT_DIR/bench.py"
 
-# --- Clone & build llama.cpp if needed ---
-if [ ! -d "$LLAMA_CPP_DIR" ]; then
-    echo "[llama-cpp] cloning llama.cpp..." >&2
-    git clone --depth 1 https://github.com/ggml-org/llama.cpp "$LLAMA_CPP_DIR" 2>&1 >&2
+# --- Ensure llama-cpp-python is importable ---
+if ! python3 -c "import llama_cpp" 2>/dev/null; then
+    echo "[llama-cpp] installing llama-cpp-python..." >&2
+    pip install llama-cpp-python --quiet 2>&1 >&2 || {
+        echo "[llama-cpp] failed to install llama-cpp-python" >&2
+        exit 1
+    }
 fi
 
-if [ ! -f "$LLAMA_CPP_DIR/build/bin/llama-bench" ]; then
-    echo "[llama-cpp] building..." >&2
-    cmake -B "$LLAMA_CPP_DIR/build" -S "$LLAMA_CPP_DIR" \
-        -DCMAKE_BUILD_TYPE=Release 2>&1 >&2
-    cmake --build "$LLAMA_CPP_DIR/build" --target llama-bench -j"$(nproc)" 2>&1 >&2
+# --- Clone llama.cpp for the GGUF converter (if model needs conversion) ---
+if [ ! -d "$LLAMA_CPP_DIR" ]; then
+    echo "[llama-cpp] cloning llama.cpp (for GGUF converter)..." >&2
+    git clone --depth 1 https://github.com/ggml-org/llama.cpp "$LLAMA_CPP_DIR" 2>&1 >&2
 fi
 
 # --- Find or convert model to GGUF ---

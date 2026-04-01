@@ -12,29 +12,29 @@ permalink: /models/SmolVLA
 
 Benchmark config: chunk_size=50, vlm_seq_len=16, float32, random weights, MSE loss.
 
-| Platform | Framework | Compile (s) | Forward (ms) | Backward (ms) | Loss |
-|----------|-----------|:-----------:|:------------:|:--------------:|:----:|
-| Intel Xeon @ 2.10GHz | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CPU) | 49.11 | **37** | **105** | 0.00 |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/3d34aad) (Vulkan/Lavapipe) | **5.88** | 854 | 3646 | 0.01 |
-| | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) | ✗ | ✗ | ✗ | |
-| | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) | ✗ | ✗ | ✗ | |
-| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 18.97 | 25 | 38 | 0.00 |
-|  | [Candle](https://github.com/huggingface/candle) (CPU) | ✗ | ✗ | ✗ | |
-|  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | |
-|  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | |
-|  | [Meganeura](https://github.com/kvark/meganeura/tree/3d34aad) (Vulkan) | **0.46** | **18** | **34** | 0.01 |
-| Apple M3 | [PyTorch 2.11.0](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (MPS) | 0.00 | 199 | 136 | 0.00 |
-|  | [MLX](https://github.com/ml-explore/mlx) (MLX) | 0.00 | **14** | 105 | 0.00 |
-|  | [Candle](https://github.com/huggingface/candle) (CPU) | ✗ | ✗ | ✗ | |
-|  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | |
-|  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | |
-|  | [Meganeura](https://github.com/kvark/meganeura) (Metal) | 0.59 | 53 | **32** | 0.01 |
-| Intel Graphics (RPL-U) | [PyTorch](https://github.com/pytorch/pytorch) | ✗ | ✗ | ✗ | |
-|  | [Candle](https://github.com/huggingface/candle) (CPU) | ✗ | ✗ | ✗ | |
-|  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | |
-|  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | |
-|  | [Meganeura](https://github.com/kvark/meganeura/tree/77ceb78) (Vulkan) | **2.62** | **114** | **188** | 0.01 |
-|  | [llama.cpp](https://github.com/ggml-org/llama.cpp) (CPU) | ✗ | ✗ | ✗ | |
+| Platform | Framework | Compile (s) | Inference (ms) | Latency (ms) | Training (ms) | Loss |
+|----------|-----------|:-----------:|:--------------:|:------------:|:-------------:|:----:|
+| Intel Xeon @ 2.10GHz | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CPU) | 49.11 | **37** | — | **105** | 0.00 |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/3d34aad) (Vulkan/Lavapipe) | **5.88** | 854 | — | 3646 | 0.01 |
+| | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) | ✗ | ✗ | ✗ | ✗ | |
+| | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) | ✗ | ✗ | ✗ | ✗ | |
+| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 18.97 | 25 | — | 38 | 0.00 |
+|  | [Candle](https://github.com/huggingface/candle) (CPU) | ✗ | ✗ | ✗ | ✗ | |
+|  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | ✗ | |
+|  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | ✗ | |
+|  | [Meganeura](https://github.com/kvark/meganeura/tree/3d34aad) (Vulkan) | **0.46** | **18** | — | **34** | 0.01 |
+| Apple M3 | [PyTorch 2.11.0](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (MPS) | 0.00 | 199 | — | 136 | 0.00 |
+|  | [MLX](https://github.com/ml-explore/mlx) (MLX) | 0.00 | **14** | — | 105 | 0.00 |
+|  | [Candle](https://github.com/huggingface/candle) (CPU) | ✗ | ✗ | ✗ | ✗ | |
+|  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | ✗ | |
+|  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | ✗ | |
+|  | [Meganeura](https://github.com/kvark/meganeura) (Metal) | 0.59 | 53 | — | **32** | 0.01 |
+| Intel Graphics (RPL-U) | [PyTorch](https://github.com/pytorch/pytorch) | ✗ | ✗ | ✗ | ✗ | |
+|  | [Candle](https://github.com/huggingface/candle) (CPU) | ✗ | ✗ | ✗ | ✗ | |
+|  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | ✗ | |
+|  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | ✗ | |
+|  | [Meganeura](https://github.com/kvark/meganeura/tree/77ceb78) (Vulkan) | **2.62** | **114** | — | **188** | 0.01 |
+|  | [llama.cpp](https://github.com/ggml-org/llama.cpp) (CPU) | ✗ | ✗ | ✗ | ✗ | |
 
 **Correctness:** PyTorch vs Meganeura: **CLOSE** (loss diff 1e-5, max error 4.6e-3).
 

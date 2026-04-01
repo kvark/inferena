@@ -82,8 +82,9 @@ fn emit_result(
         "gpu_name": "cpu",
         "timings": {
             "compile_s": (compile_s * 100.0).round() / 100.0,
-            "forward_ms": (forward_ms * 1000.0).round() / 1000.0,
-            "backward_ms": backward_ms,
+            "inference_ms": (forward_ms * 1000.0).round() / 1000.0,
+            "latency_ms": 0.0,
+            "train_ms": backward_ms,
         },
         "outputs": {
             "logits_hash": logits_hash,

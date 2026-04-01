@@ -51,8 +51,9 @@ and results tables.
 Each framework runs a fake training step on the selected model:
 
 1. **Compile** — Time to build, compile/optimize, and prepare the model (seconds).
-2. **Forward** — Single forward pass with a fixed dummy input (milliseconds).
-3. **Backward** — Backpropagation from a cross-entropy loss (milliseconds).
+2. **Inference** — Full forward pass with a fixed dummy input (milliseconds).
+3. **Latency** — Single-token / minimal-input forward pass (milliseconds).
+4. **Training** — Backpropagation from a cross-entropy loss (milliseconds).
 
 Outputs (logits, loss) are compared across frameworks to verify they run
 the same model — flagged as **PASS**, **CLOSE**, or **DIFFERENT MODEL**.

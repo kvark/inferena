@@ -690,8 +690,9 @@ def bench(model_name, spec):
         "backend": "MLX",
         "timings": {
             "compile_s": 0.0,
-            "forward_ms": round(forward_ms, 3),
-            "backward_ms": round(backward_ms, 3),
+            "inference_ms": round(forward_ms, 3),
+            "latency_ms": 0.0,
+            "train_ms": round(backward_ms, 3),
         },
         "outputs": {
             "logits_hash": logits_hash,

@@ -506,7 +506,7 @@ def bench(model_name: str, spec: dict):
     else:
         outputs = model(**fwd_kwargs)
     sync()
-    forward_ms = (time.perf_counter() - t0) * 1000.0
+    inference_ms = (time.perf_counter() - t0) * 1000.0
 
     # --- Loss ---
     if model_type == "sd_unet":
@@ -527,7 +527,23 @@ def bench(model_name: str, spec: dict):
     t0 = time.perf_counter()
     loss.backward()
     sync()
-    backward_ms = (time.perf_counter() - t0) * 1000.0
+    train_ms = (time.perf_counter() - t0) * 1000.0
+
+    # --- Latency (single-token / minimal-input forward) ---
+    # For causal LMs: forward with seq_len=1 to measure per-token decode latency.
+    # For other model types: same as inference (not separately meaningful).
+    model.zero_grad()
+    if model_type == "causal_lm":
+        lat_input = torch.tensor([[0]], device=dev, dtype=torch.long)
+        lat_mask = torch.ones(1, 1, dtype=torch.long, device=dev)
+        sync()
+        t0 = time.perf_counter()
+        with torch.no_grad():
+            model(input_ids=lat_input, attention_mask=lat_mask)
+        sync()
+        latency_ms = (time.perf_counter() - t0) * 1000.0
+    else:
+        latency_ms = 0.0
 
     # --- Collect outputs ---
     logits_hash = sha256_f32_tensor(logits)
@@ -543,8 +559,9 @@ def bench(model_name: str, spec: dict):
         "backend": backend,
         "timings": {
             "compile_s": round(compile_s, 2),
-            "forward_ms": round(forward_ms, 3),
-            "backward_ms": round(backward_ms, 3),
+            "inference_ms": round(inference_ms, 3),
+            "latency_ms": round(latency_ms, 3),
+            "train_ms": round(train_ms, 3),
         },
         "outputs": {
             "logits_hash": logits_hash,

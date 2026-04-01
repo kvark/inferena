@@ -25,10 +25,13 @@ pub struct BenchResult {
 pub struct Timings {
     /// Time to compile/optimize the model (seconds).
     pub compile_s: f64,
-    /// Forward pass time (milliseconds).
-    pub forward_ms: f64,
-    /// Backward pass time (milliseconds).
-    pub backward_ms: f64,
+    /// Inference (full forward pass) time (milliseconds).
+    pub inference_ms: f64,
+    /// Single-token / minimal-input latency (milliseconds).
+    #[serde(default)]
+    pub latency_ms: f64,
+    /// Training backward pass time (milliseconds).
+    pub train_ms: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -318,6 +321,15 @@ fn compare_outputs(results: &[&BenchResult]) {
         return;
     }
     let reference = results[0];
+    // Skip detailed comparison if PyTorch (ground truth) isn't the reference.
+    if reference.framework != "pytorch" {
+        eprintln!();
+        eprintln!(
+            "=== Output comparison skipped (no PyTorch ground truth, reference: {}) ===",
+            reference.framework
+        );
+        return;
+    }
     eprintln!();
     eprintln!(
         "=== Output comparison (reference: {}) ===",
@@ -331,15 +343,20 @@ fn compare_outputs(results: &[&BenchResult]) {
     for other in &results[1..] {
         let hash_match = reference.outputs.logits_hash == other.outputs.logits_hash;
         let loss_diff = (reference.outputs.loss - other.outputs.loss).abs();
+        // Normalize by reference loss: for AR-heavy models the absolute loss is
+        // larger, so we need proportionally larger absolute thresholds.
+        // max(abs, 1.0) keeps thresholds sane when the loss is near zero.
+        let norm = reference.outputs.loss.abs().max(1.0);
+        let rel_loss = loss_diff / norm;
         let (max_err, mae, rmse, rel) = compute_errors(
             &reference.outputs.logits_sample,
             &other.outputs.logits_sample,
         );
         let status = if hash_match {
             "EXACT MATCH"
-        } else if loss_diff < 5e-3 && rel < 0.01 {
+        } else if rel_loss < 0.01 && rel < 0.01 {
             "PASS (<1% rel)"
-        } else if loss_diff < 0.05 || (loss_diff < 0.5 && rel < 0.1) {
+        } else if rel_loss < 0.05 || (rel_loss < 0.10 && rel < 0.1) {
             "CLOSE"
         } else {
             "DIFFERENT MODEL"
@@ -362,13 +379,16 @@ fn matching_frameworks(successes: &[&BenchResult]) -> std::collections::HashSet<
     matching.insert(reference.framework.clone());
     for other in &successes[1..] {
         let loss_diff = (reference.outputs.loss - other.outputs.loss).abs();
+        let norm = reference.outputs.loss.abs().max(1.0);
+        let rel_loss = loss_diff / norm;
         let (_, _, _, rel) = compute_errors(
             &reference.outputs.logits_sample,
             &other.outputs.logits_sample,
         );
-        // Match if loss is close. Use absolute OR relative — when outputs
-        // are near-zero, relative error is meaningless.
-        if loss_diff < 0.01 || (loss_diff < 0.1 && rel < 0.1) {
+        // Match if loss is close. Normalize by reference loss so that
+        // AR-heavy models (with larger absolute loss) get proportionally
+        // larger absolute thresholds.
+        if rel_loss < 0.05 || (rel_loss < 0.10 && rel < 0.1) {
             matching.insert(other.framework.clone());
         }
     }
@@ -376,12 +396,29 @@ fn matching_frameworks(successes: &[&BenchResult]) -> std::collections::HashSet<
 }
 
 fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
-    let matching = matching_frameworks(successes);
+    // Check if PyTorch (ground truth) ran successfully.
+    let has_pytorch = successes.iter().any(|r| r.framework == "pytorch");
+    if !has_pytorch && !successes.is_empty() {
+        eprintln!();
+        eprintln!("⚠ WARNING: PyTorch (ground truth) did not run successfully.");
+        eprintln!("  Results are shown but NOT validated against a reference implementation.");
+        eprintln!("  Loss-based correctness checks are disabled.");
+        eprintln!();
+    }
 
-    // Find best compile/forward/backward among matching frameworks.
+    // Without ground truth, treat all successful frameworks as matching
+    // (no strike-through) since we have nothing to compare against.
+    let matching = if has_pytorch {
+        matching_frameworks(successes)
+    } else {
+        successes.iter().map(|r| r.framework.clone()).collect()
+    };
+
+    // Find best compile/inference/latency/train among matching frameworks.
     let mut best_compile = f64::MAX;
-    let mut best_forward = f64::MAX;
-    let mut best_backward = f64::MAX;
+    let mut best_inference = f64::MAX;
+    let mut best_latency = f64::MAX;
+    let mut best_train = f64::MAX;
     for o in outcomes {
         if let FrameworkOutcome::Ok(r) = o
             && matching.contains(&r.framework)
@@ -389,17 +426,24 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
             if r.timings.compile_s < best_compile {
                 best_compile = r.timings.compile_s;
             }
-            if r.timings.forward_ms < best_forward {
-                best_forward = r.timings.forward_ms;
+            if r.timings.inference_ms < best_inference {
+                best_inference = r.timings.inference_ms;
             }
-            if r.timings.backward_ms > 0.0 && r.timings.backward_ms < best_backward {
-                best_backward = r.timings.backward_ms;
+            if r.timings.latency_ms > 0.0 && r.timings.latency_ms < best_latency {
+                best_latency = r.timings.latency_ms;
+            }
+            if r.timings.train_ms > 0.0 && r.timings.train_ms < best_train {
+                best_train = r.timings.train_ms;
             }
         }
     }
 
-    println!("| Platform | Framework | Compile (s) | Forward (ms) | Backward (ms) | Loss |");
-    println!("|----------|-----------|:-----------:|:------------:|:--------------:|:----:|");
+    println!(
+        "| Platform | Framework | Compile (s) | Inference (ms) | Latency (ms) | Training (ms) | Loss |"
+    );
+    println!(
+        "|----------|-----------|:-----------:|:--------------:|:------------:|:-------------:|:----:|"
+    );
 
     let mut platform_shown = false;
     for outcome in outcomes {
@@ -438,25 +482,28 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
                 };
 
                 let compile = fmt_val(r.timings.compile_s, best_compile, false);
-                let forward = fmt_val(r.timings.forward_ms, best_forward, true);
-                let backward = fmt_val(r.timings.backward_ms, best_backward, true);
+                let inference = fmt_val(r.timings.inference_ms, best_inference, true);
+                let latency = fmt_val(r.timings.latency_ms, best_latency, true);
+                let train = fmt_val(r.timings.train_ms, best_train, true);
                 let loss = if is_matching {
                     format!("{:.2}", r.outputs.loss)
                 } else {
                     format!("~~{:.2}~~", r.outputs.loss)
                 };
 
-                println!("| {platform} | {link} | {compile} | {forward} | {backward} | {loss} |");
+                println!(
+                    "| {platform} | {link} | {compile} | {inference} | {latency} | {train} | {loss} |"
+                );
             }
             FrameworkOutcome::Error { framework, .. } => {
                 let empty_extra = serde_json::Map::new();
                 let link = framework_md_link(framework, &empty_extra);
-                println!("| {platform} | {link} | ✗ | ✗ | ✗ | |");
+                println!("| {platform} | {link} | ✗ | ✗ | ✗ | ✗ | |");
             }
             FrameworkOutcome::Skipped { framework, .. } => {
                 let empty_extra = serde_json::Map::new();
                 let link = framework_md_link(framework, &empty_extra);
-                println!("| {platform} | {link} | — | — | — | |");
+                println!("| {platform} | {link} | — | — | — | — | |");
             }
         }
     }

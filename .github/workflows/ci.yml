@@ -71,17 +71,10 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Build all Rust frameworks
-        run: |
-          cargo build --release -p inferena-harness
-          cargo build --release -p inferena-candle || true
-          cargo build --release -p inferena-burn || true
-          cargo build --release -p inferena-luminal || true
-          cargo build --release -p inferena-meganeura || true
+        run: cargo build --release --workspace
 
       - name: Run SmolLM2-135M (CPU frameworks)
-        run: |
-          chmod +x frameworks/*/run.sh
-          ./target/release/inferena --model SmolLM2-135M --frameworks pytorch,candle,luminal,burn --root .
+        run: ./target/release/inferena --model SmolLM2-135M --frameworks pytorch,candle,luminal,burn --root .
         continue-on-error: true
 
       - name: Upload results
@@ -111,16 +104,10 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Build Rust frameworks
-        run: |
-          cargo build --release -p inferena-harness
-          cargo build --release -p inferena-candle || true
-          cargo build --release -p inferena-burn || true
-          cargo build --release -p inferena-meganeura || true
+        run: cargo build --release --workspace
 
       - name: Run SmolLM2-135M
-        run: |
-          chmod +x frameworks/*/run.sh
-          ./target/release/inferena --model SmolLM2-135M --frameworks pytorch,candle,burn --root .
+        run: ./target/release/inferena --model SmolLM2-135M --frameworks pytorch,candle,burn --root .
         continue-on-error: true
 
       - name: Upload results

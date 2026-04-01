@@ -532,10 +532,13 @@ def bench(model_name: str, spec: dict):
     # --- Latency (single-token / minimal-input forward) ---
     # For causal LMs: forward with seq_len=1 to measure per-token decode latency.
     # For other model types: same as inference (not separately meaningful).
+    # Warm-up pass first so torch.compile doesn't recompile during timing.
     model.zero_grad()
     if model_type == "causal_lm":
         lat_input = torch.tensor([[0]], device=dev, dtype=torch.long)
         lat_mask = torch.ones(1, 1, dtype=torch.long, device=dev)
+        with torch.no_grad():
+            model(input_ids=lat_input, attention_mask=lat_mask)
         sync()
         t0 = time.perf_counter()
         with torch.no_grad():

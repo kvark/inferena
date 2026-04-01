@@ -77,14 +77,26 @@ def generate(name: str):
     n_params = sum(p.numel() for p in model.parameters())
     print(f"  {name}/model.safetensors ({len(state)} tensors, {n_params:,} params)", file=sys.stderr)
 
-    # Generate minimal tokenizer.
+    # Generate minimal tokenizer compatible with llama.cpp GGUF converter.
     vocab_size = spec["config_args"]["vocab_size"]
-    tok = Tokenizer(tok_models.BPE(
-        vocab={f"<tok_{i}>": i for i in range(vocab_size)}, merges=[],
-    ))
-    tok.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    import json
+
+    # Build a GPT-2/BPE-style vocab.json + merges.txt that the GGUF converter
+    # can parse via its get_vocab_base() path.
+    # Reserve the last slot for <|endoftext|> which GPT2Tokenizer adds automatically.
+    vocab = {f"<tok_{i}>": i for i in range(vocab_size - 1)}
+    vocab["<|endoftext|>"] = vocab_size - 1
+    with open(os.path.join(out_dir, "vocab.json"), "w") as f:
+        json.dump(vocab, f)
+    with open(os.path.join(out_dir, "merges.txt"), "w") as f:
+        f.write("#version: 0.2\n")  # empty merges
+    # tokenizer_config.json tells the converter which class to use.
+    with open(os.path.join(out_dir, "tokenizer_config.json"), "w") as f:
+        json.dump({"tokenizer_class": "GPT2Tokenizer", "model_max_length": 2048}, f)
+    # Also save a tokenizer.json for frameworks that read it directly.
+    tok = Tokenizer(tok_models.BPE(vocab=vocab, merges=[]))
     tok.save(os.path.join(out_dir, "tokenizer.json"))
-    print(f"  {name}/tokenizer.json", file=sys.stderr)
+    print(f"  {name}/tokenizer.json + vocab.json + merges.txt", file=sys.stderr)
 
     return True
 

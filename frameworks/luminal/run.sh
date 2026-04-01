@@ -11,6 +11,6 @@ source "$ROOT_DIR/scripts/cargo-rev.sh"
 export FRAMEWORK_REV=$(cargo_rev_short luminal "$ROOT_DIR")
 
 echo "[luminal] Building release binary..." >&2
-cargo build --release --manifest-path "$ROOT_DIR/Cargo.toml" -p infermark-luminal 2>&1 >&2
+cargo build --release --manifest-path "$ROOT_DIR/Cargo.toml" -p inferena-luminal 2>&1 >&2
 
-exec "$ROOT_DIR/target/release/infermark-luminal" "$MODEL"
+exec "$ROOT_DIR/target/release/inferena-luminal" "$MODEL"

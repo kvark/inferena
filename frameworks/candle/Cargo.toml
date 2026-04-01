@@ -1,12 +1,12 @@
 [package]
-name = "infermark-candle"
+name = "inferena-candle"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "Candle framework benchmark runner for infermark"
+description = "Candle framework benchmark runner for inferena"
 
 [[bin]]
-name = "infermark-candle"
+name = "inferena-candle"
 path = "src/main.rs"
 
 [dependencies]

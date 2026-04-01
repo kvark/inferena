@@ -1,4 +1,4 @@
-//! Meganeura framework benchmark runner for infermark.
+//! Meganeura framework benchmark runner for inferena.
 //!
 //! Supports SmolLM2 (text LLM) and SmolVLA (action expert) models
 //! using the meganeura crate (e-graph optimized NN on blade-graphics).

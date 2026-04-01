@@ -1,8 +1,8 @@
-//! Burn framework benchmark runner for infermark.
+//! Burn framework benchmark runner for inferena.
 //!
 //! Implements a minimal LLaMA-style transformer (matching SmolLM2 architecture)
 //! and runs a fake training step (forward + backward), producing JSON output
-//! compatible with the infermark harness.
+//! compatible with the inferena harness.
 //!
 //! This is a scaffold — the model architecture is simplified and weights are
 //! randomly initialized. The goal is to match the computational graph so that

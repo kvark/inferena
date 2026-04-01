@@ -16,14 +16,14 @@ jobs:
         include:
           - os: ubuntu-latest
             name: Linux
-            packages: "infermark-harness infermark-candle infermark-burn infermark-luminal infermark-meganeura"
+            packages: "inferena-harness inferena-candle inferena-burn inferena-luminal inferena-meganeura"
           - os: macos-latest
             name: macOS
-            packages: "infermark-harness infermark-candle infermark-burn infermark-luminal infermark-meganeura"
+            packages: "inferena-harness inferena-candle inferena-burn inferena-luminal inferena-meganeura"
           - os: windows-latest
             name: Windows
             # Burn (wgpu bleeding-edge) and Luminal have no Windows CI upstream.
-            packages: "infermark-harness infermark-candle infermark-meganeura"
+            packages: "inferena-harness inferena-candle inferena-meganeura"
     runs-on: ${{ matrix.os }}
     name: Check (${{ matrix.name }})
     steps:
@@ -72,16 +72,16 @@ jobs:
 
       - name: Build all Rust frameworks
         run: |
-          cargo build --release -p infermark-harness
-          cargo build --release -p infermark-candle || true
-          cargo build --release -p infermark-burn || true
-          cargo build --release -p infermark-luminal || true
-          cargo build --release -p infermark-meganeura || true
+          cargo build --release -p inferena-harness
+          cargo build --release -p inferena-candle || true
+          cargo build --release -p inferena-burn || true
+          cargo build --release -p inferena-luminal || true
+          cargo build --release -p inferena-meganeura || true
 
       - name: Run SmolLM2-135M (CPU frameworks)
         run: |
           chmod +x frameworks/*/run.sh
-          ./target/release/infermark --model SmolLM2-135M --frameworks pytorch,candle,luminal,burn --root .
+          ./target/release/inferena --model SmolLM2-135M --frameworks pytorch,candle,luminal,burn --root .
         continue-on-error: true
 
       - name: Upload results
@@ -112,15 +112,15 @@ jobs:
 
       - name: Build Rust frameworks
         run: |
-          cargo build --release -p infermark-harness
-          cargo build --release -p infermark-candle || true
-          cargo build --release -p infermark-burn || true
-          cargo build --release -p infermark-meganeura || true
+          cargo build --release -p inferena-harness
+          cargo build --release -p inferena-candle || true
+          cargo build --release -p inferena-burn || true
+          cargo build --release -p inferena-meganeura || true
 
       - name: Run SmolLM2-135M
         run: |
           chmod +x frameworks/*/run.sh
-          ./target/release/infermark --model SmolLM2-135M --frameworks pytorch,candle,burn --root .
+          ./target/release/inferena --model SmolLM2-135M --frameworks pytorch,candle,burn --root .
         continue-on-error: true
 
       - name: Upload results

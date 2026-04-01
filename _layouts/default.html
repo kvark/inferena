@@ -1,143 +1,269 @@
 <!doctype html>
 <html lang="{{ site.lang | default: 'en-US' }}">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ page.title | default: site.title }}</title>
-  {% seo %}
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      color: #333; background: #f5f5f5; font-size: 15px; line-height: 1.5;
-    }
-    a { color: #0366d6; text-decoration: none; }
-    a:hover { text-decoration: underline; }
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>{{ page.title | default: site.title }}</title>
+        {% seo %}
+        <style>
+            * {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }
+            body {
+                font-family:
+                    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                    Helvetica, Arial, sans-serif;
+                color: #333;
+                background: #f5f5f5;
+                font-size: 15px;
+                line-height: 1.5;
+            }
+            a {
+                color: #0366d6;
+                text-decoration: none;
+            }
+            a:hover {
+                text-decoration: underline;
+            }
 
-    /* Top bar */
-    .topbar {
-      background: #1a1a2e; color: #fff; padding: 14px 24px;
-      display: flex; align-items: center; gap: 20px;
-    }
-    .topbar h1 { font-size: 1.4em; font-weight: 700; }
-    .topbar h1 a { color: #fff; }
-    .topbar .subtitle { color: #aab; font-size: 0.85em; }
-    .topbar .github-link {
-      margin-left: auto; color: #aab; font-size: 0.85em;
-      display: flex; align-items: center; gap: 6px;
-    }
-    .topbar .github-link:hover { color: #fff; }
+            /* Top bar */
+            .topbar {
+                background: #1a1a2e;
+                color: #fff;
+                padding: 14px 24px;
+                display: flex;
+                align-items: center;
+                gap: 20px;
+            }
+            .topbar h1 {
+                font-size: 1.4em;
+                font-weight: 700;
+            }
+            .topbar h1 a {
+                color: #fff;
+            }
+            .topbar .subtitle {
+                color: #aab;
+                font-size: 0.85em;
+            }
+            .topbar .github-link {
+                margin-left: auto;
+                color: #aab;
+                font-size: 0.85em;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+            .topbar .github-link:hover {
+                color: #fff;
+            }
 
-    /* Main content */
-    .content { max-width: 1200px; margin: 0 auto; padding: 20px 24px; }
+            /* Main content */
+            .content {
+                max-width: 1200px;
+                margin: 0 auto;
+                padding: 20px 24px;
+            }
 
-    /* Tabs */
-    .tabs {
-      display: flex; gap: 0; border-bottom: 3px solid #1a1a2e;
-      margin-bottom: 0;
-    }
-    .tabs input[type="radio"] { display: none; }
-    .tabs label {
-      padding: 10px 24px; cursor: pointer; font-weight: 600; font-size: 0.95em;
-      background: #e8e8e8; color: #555; border: 1px solid #ccc;
-      border-bottom: none; border-radius: 6px 6px 0 0;
-      margin-bottom: -3px; margin-right: 2px;
-    }
-    .tabs label:hover { background: #ddd; }
-    .tabs input[type="radio"]:checked + label {
-      background: #fff; color: #1a1a2e; border-color: #1a1a2e;
-      border-bottom-color: #fff;
-    }
-    .tab-panel {
-      display: none; background: #fff; padding: 20px;
-      border: 1px solid #ddd; border-top: none;
-      border-radius: 0 0 6px 6px;
-    }
-    .tab-panel.active { display: block; }
+            /* Tabs */
+            .tabs {
+                display: flex;
+                gap: 0;
+                border-bottom: 3px solid #1a1a2e;
+                margin-bottom: 0;
+            }
+            .tabs input[type="radio"] {
+                display: none;
+            }
+            .tabs label {
+                padding: 10px 24px;
+                cursor: pointer;
+                font-weight: 600;
+                font-size: 0.95em;
+                background: #e8e8e8;
+                color: #555;
+                border: 1px solid #ccc;
+                border-bottom: none;
+                border-radius: 6px 6px 0 0;
+                margin-bottom: -3px;
+                margin-right: 2px;
+            }
+            .tabs label:hover {
+                background: #ddd;
+            }
+            .tabs input[type="radio"]:checked + label {
+                background: #fff;
+                color: #1a1a2e;
+                border-color: #1a1a2e;
+                border-bottom-color: #fff;
+            }
+            .tab-panel {
+                display: none;
+                background: #fff;
+                padding: 20px;
+                border: 1px solid #ddd;
+                border-top: none;
+                border-radius: 0 0 6px 6px;
+            }
+            .tab-panel.active {
+                display: block;
+            }
 
-    /* Tables — gpuinfo style */
-    table {
-      width: 100%; border-collapse: collapse; font-size: 0.9em;
-      margin: 12px 0;
-    }
-    th {
-      background: #1a1a2e; color: #fff; font-weight: 600;
-      padding: 8px 12px; text-align: left; white-space: nowrap;
-    }
-    td { padding: 7px 12px; border-bottom: 1px solid #e0e0e0; }
-    tr:nth-child(even) td { background: #f9f9f9; }
-    tr:hover td { background: #e8f0fe; }
-    td:nth-child(n+3) { text-align: center; font-variant-numeric: tabular-nums; }
-    /* Platform separator: applied via JS since CSS :empty doesn't work
+            /* Tables — gpuinfo style */
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 0.9em;
+                margin: 12px 0;
+            }
+            th {
+                background: #1a1a2e;
+                color: #fff;
+                font-weight: 600;
+                padding: 8px 12px;
+                text-align: left;
+                white-space: nowrap;
+            }
+            td {
+                padding: 7px 12px;
+                border-bottom: 1px solid #e0e0e0;
+            }
+            tr:nth-child(even) td {
+                background: #f9f9f9;
+            }
+            tr:hover td {
+                background: #e8f0fe;
+            }
+            td:nth-child(n + 3) {
+                text-align: center;
+                font-variant-numeric: tabular-nums;
+            }
+            /* Platform separator: applied via JS since CSS :empty doesn't work
        with markdown-rendered whitespace-only cells */
-    tr.platform-start td { border-top: 3px solid #1a1a2e; }
-    tr.platform-start td:first-child { font-weight: 600; }
+            tr.platform-start td {
+                border-top: 3px solid #1a1a2e;
+            }
+            tr.platform-start td:first-child {
+                font-weight: 600;
+            }
 
-    /* Markdown content in tabs */
-    .tab-panel p { margin: 8px 0; }
-    .tab-panel strong { color: #1a1a2e; }
-    .tab-panel code {
-      background: #f0f0f0; padding: 2px 6px; border-radius: 3px;
-      font-size: 0.9em;
-    }
-    .tab-panel ul, .tab-panel ol { margin: 8px 0 8px 20px; }
-    .tab-panel del { color: #999; }
+            /* Markdown content in tabs */
+            .tab-panel p {
+                margin: 8px 0;
+            }
+            .tab-panel strong {
+                color: #1a1a2e;
+            }
+            .tab-panel code {
+                background: #f0f0f0;
+                padding: 2px 6px;
+                border-radius: 3px;
+                font-size: 0.9em;
+            }
+            .tab-panel ul,
+            .tab-panel ol {
+                margin: 8px 0 8px 20px;
+            }
+            .tab-panel del {
+                color: #999;
+            }
 
-    /* Legend bar */
-    .legend {
-      display: flex; gap: 24px; align-items: center; flex-wrap: wrap;
-      padding: 10px 20px; background: #fff; border: 1px solid #ddd;
-      border-top: none; margin-bottom: 20px; font-size: 0.85em; color: #666;
-    }
-    .legend span { display: inline-flex; align-items: center; gap: 4px; }
+            /* Legend bar */
+            .legend {
+                display: flex;
+                gap: 24px;
+                align-items: center;
+                flex-wrap: wrap;
+                padding: 10px 20px;
+                background: #fff;
+                border: 1px solid #ddd;
+                border-top: none;
+                margin-bottom: 20px;
+                font-size: 0.85em;
+                color: #666;
+            }
+            .legend span {
+                display: inline-flex;
+                align-items: center;
+                gap: 4px;
+            }
 
-    /* Footer */
-    footer {
-      text-align: center; padding: 20px; font-size: 0.8em; color: #999;
-    }
-  </style>
-</head>
-<body>
-  <div class="topbar">
-    <h1><a href="{{ site.baseurl }}/">{{ site.title }}</a></h1>
-    <span class="subtitle">{{ site.description }}</span>
-    <a class="github-link" href="https://github.com/kvark/infermark">
-      <svg height="16" width="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-      View on GitHub
-    </a>
-  </div>
+            /* Footer */
+            footer {
+                text-align: center;
+                padding: 20px;
+                font-size: 0.8em;
+                color: #999;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="topbar">
+            <h1><a href="{{ site.baseurl }}/">{{ site.title }}</a></h1>
+            <span class="subtitle">{{ site.description }}</span>
+            <a class="github-link" href="https://github.com/kvark/inferena">
+                <svg
+                    height="16"
+                    width="16"
+                    viewBox="0 0 16 16"
+                    fill="currentColor"
+                >
+                    <path
+                        d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                    />
+                </svg>
+                View on GitHub
+            </a>
+        </div>
 
-  <div class="content">
-    {{ content }}
+        <div class="content">
+            {{ content }}
 
-    <div class="legend">
-      <span><strong>Legend:</strong></span>
-      <span><strong>Bold</strong> = best among matching frameworks</span>
-      <span><del>Struck through</del> = different / simplified model</span>
-      <span><strong>✗</strong> = not supported</span>
-      <span>Framework names link to tested revision</span>
-    </div>
-  </div>
+            <div class="legend">
+                <span><strong>Legend:</strong></span>
+                <span
+                    ><strong>Bold</strong> = best among matching
+                    frameworks</span
+                >
+                <span
+                    ><del>Struck through</del> = different / simplified
+                    model</span
+                >
+                <span><strong>✗</strong> = not supported</span>
+                <span>Framework names link to tested revision</span>
+            </div>
+        </div>
 
-  <footer>
-    <a href="https://github.com/kvark/infermark">infermark</a> · Hosted on GitHub Pages
-  </footer>
+        <footer>
+            <a href="https://github.com/kvark/inferena">inferena</a> · Hosted on
+            GitHub Pages
+        </footer>
 
-  <script>
-    // Tab switching.
-    document.querySelectorAll('.tabs input[type="radio"]').forEach(function(r) {
-      r.addEventListener('change', function() {
-        document.querySelectorAll('.tab-panel').forEach(function(p) { p.classList.remove('active'); });
-        document.getElementById(r.value).classList.add('active');
-      });
-    });
-    // Mark rows that start a new platform group (first cell has real text).
-    document.querySelectorAll('table tbody tr').forEach(function(tr) {
-      var td = tr.querySelector('td:first-child');
-      if (td && td.textContent.trim().length > 0) {
-        tr.classList.add('platform-start');
-      }
-    });
-  </script>
-</body>
+        <script>
+            // Tab switching.
+            document
+                .querySelectorAll('.tabs input[type="radio"]')
+                .forEach(function (r) {
+                    r.addEventListener("change", function () {
+                        document
+                            .querySelectorAll(".tab-panel")
+                            .forEach(function (p) {
+                                p.classList.remove("active");
+                            });
+                        document
+                            .getElementById(r.value)
+                            .classList.add("active");
+                    });
+                });
+            // Mark rows that start a new platform group (first cell has real text).
+            document.querySelectorAll("table tbody tr").forEach(function (tr) {
+                var td = tr.querySelector("td:first-child");
+                if (td && td.textContent.trim().length > 0) {
+                    tr.classList.add("platform-start");
+                }
+            });
+        </script>
+    </body>
 </html>

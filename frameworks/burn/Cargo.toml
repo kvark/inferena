@@ -1,12 +1,12 @@
 [package]
-name = "infermark-burn"
+name = "inferena-burn"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "Burn framework benchmark runner for infermark"
+description = "Burn framework benchmark runner for inferena"
 
 [[bin]]
-name = "infermark-burn"
+name = "inferena-burn"
 path = "src/main.rs"
 
 [dependencies]

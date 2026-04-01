@@ -12,6 +12,6 @@ source "$ROOT_DIR/scripts/cargo-rev.sh"
 export FRAMEWORK_REV=$(cargo_rev_short meganeura "$ROOT_DIR")
 
 echo "[meganeura] Building release binary..." >&2
-cargo build --release --manifest-path "$ROOT_DIR/Cargo.toml" -p infermark-meganeura 2>&1 >&2
+cargo build --release --manifest-path "$ROOT_DIR/Cargo.toml" -p inferena-meganeura 2>&1 >&2
 
-exec "$ROOT_DIR/target/release/infermark-meganeura" "$MODEL"
+exec "$ROOT_DIR/target/release/inferena-meganeura" "$MODEL"

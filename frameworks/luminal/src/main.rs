@@ -1,4 +1,4 @@
-//! Luminal framework benchmark runner for infermark.
+//! Luminal framework benchmark runner for inferena.
 //!
 //! Luminal is a graph-based Rust ML framework that compiles computation graphs
 //! to optimized GPU kernels using e-graph rewriting.

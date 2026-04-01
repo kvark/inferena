@@ -1,4 +1,4 @@
-//! Candle framework benchmark runner for infermark.
+//! Candle framework benchmark runner for inferena.
 //!
 //! Uses candle-transformers' LLaMA implementation with random-init weights
 //! on CPU. Candle supports CUDA and Metal but we default to CPU here.

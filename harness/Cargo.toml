@@ -1,12 +1,12 @@
 [package]
-name = "infermark-harness"
+name = "inferena-harness"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
 description = "ML inference benchmark harness: orchestration, timing collection, and output comparison"
 
 [[bin]]
-name = "infermark"
+name = "inferena"
 path = "src/main.rs"
 
 [dependencies]

@@ -3,7 +3,7 @@
 //! Uses candle-transformers' LLaMA implementation with random-init weights
 //! on CPU. Candle supports CUDA and Metal but we default to CPU here.
 
-use candle_core::{DType, Device, Tensor};
+use candle_core::{DType, Device, Module, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::llama as llama_model;
 use sha2::{Digest, Sha256};
@@ -269,13 +269,144 @@ fn bench_stable_diffusion() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn bench_resnet() -> Result<(), Box<dyn std::error::Error>> {
+    use candle_transformers::models::resnet;
+
+    let device = Device::Cpu;
+    let dtype = DType::F32;
+    let batch = 4usize;
+
+    eprintln!("[candle] building ResNet-18...");
+    let compile_start = Instant::now();
+    let vb = VarBuilder::zeros(dtype, &device);
+    let model = resnet::resnet18(1000, vb)?;
+    let compile_s = compile_start.elapsed().as_secs_f64();
+    eprintln!("[candle] built in {compile_s:.2}s");
+
+    let in_size = batch * 3 * 224 * 224;
+    let images_data: Vec<f32> = (0..in_size).map(|i| (i as f32 * 0.001).sin()).collect();
+    let images = Tensor::new(&images_data[..], &device)?.reshape((batch, 3, 224, 224))?;
+
+    let fwd_start = Instant::now();
+    let logits = model.forward(&images)?;
+    let forward_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
+
+    let logits_data: Vec<f32> = logits.flatten_all()?.to_vec1()?;
+
+    // Cross-entropy loss.
+    let mut total_loss = 0.0f64;
+    for b in 0..batch {
+        let sl = &logits_data[b * 1000..(b + 1) * 1000];
+        let target = b % 1000;
+        let max_l = sl.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let sum_exp: f64 = sl.iter().map(|&l| ((l - max_l) as f64).exp()).sum();
+        total_loss -= (sl[target] - max_l) as f64 - sum_exp.ln();
+    }
+    let loss = total_loss / batch as f64;
+
+    // Latency (single-image).
+    let lat_img = Tensor::zeros((1, 3, 224, 224), dtype, &device)?;
+    let _ = model.forward(&lat_img)?;
+    let lat_start = Instant::now();
+    let _ = model.forward(&lat_img)?;
+    let latency_ms = lat_start.elapsed().as_secs_f64() * 1000.0;
+
+    emit_result(
+        "ResNet-50",
+        compile_s,
+        forward_ms,
+        latency_ms,
+        0.0,
+        &logits_data,
+        loss,
+    );
+    Ok(())
+}
+
+fn bench_whisper() -> Result<(), Box<dyn std::error::Error>> {
+    use candle_transformers::models::whisper as whisper_mod;
+
+    let device = Device::Cpu;
+    let dtype = DType::F32;
+
+    // Whisper-tiny config.
+    let config = whisper_mod::Config {
+        num_mel_bins: 80,
+        max_source_positions: 1500,
+        max_target_positions: 448,
+        d_model: 384,
+        encoder_attention_heads: 6,
+        decoder_attention_heads: 6,
+        encoder_layers: 4,
+        decoder_layers: 4,
+        vocab_size: 51865,
+        suppress_tokens: vec![],
+    };
+
+    eprintln!("[candle] building Whisper-tiny (zeros init)...");
+    let compile_start = Instant::now();
+    let vb = VarBuilder::zeros(dtype, &device);
+    let mut model = whisper_mod::model::Whisper::load(&vb, config.clone())?;
+    let compile_s = compile_start.elapsed().as_secs_f64();
+    eprintln!("[candle] built in {compile_s:.2}s");
+
+    // Mel spectrogram input: (1, 80, 3000).
+    let mel_len = 3000usize;
+    let mel_size = 80 * mel_len;
+    let mel_data: Vec<f32> = (0..mel_size).map(|i| (i as f32 * 0.001).sin()).collect();
+    let mel = Tensor::new(&mel_data[..], &device)?.reshape((1, 80, mel_len))?;
+
+    // Decoder input tokens.
+    let dec_ids = Tensor::new(&[50258u32, 50259, 50359, 50363], &device)?.unsqueeze(0)?;
+
+    let fwd_start = Instant::now();
+    let encoder_out = model.encoder.forward(&mel, true)?;
+    let logits = model.decoder.forward(&dec_ids, &encoder_out, true)?;
+    let forward_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
+
+    let logits_data: Vec<f32> = logits.flatten_all()?.to_vec1()?;
+
+    // Cross-entropy loss on decoder outputs.
+    let vocab = config.vocab_size;
+    let n_tokens = logits_data.len() / vocab;
+    let dec_targets = [50258u32, 50259, 50359, 50363];
+    let mut total_loss = 0.0f64;
+    for t in 0..n_tokens {
+        let sl = &logits_data[t * vocab..(t + 1) * vocab];
+        let target = dec_targets.get(t).copied().unwrap_or(0) as usize % vocab;
+        let max_l = sl.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let sum_exp: f64 = sl.iter().map(|&l| ((l - max_l) as f64).exp()).sum();
+        total_loss -= (sl[target] - max_l) as f64 - sum_exp.ln();
+    }
+    let loss = if n_tokens > 0 {
+        total_loss / n_tokens as f64
+    } else {
+        0.0
+    };
+
+    emit_result(
+        "Whisper-tiny",
+        compile_s,
+        forward_ms,
+        0.0,
+        0.0,
+        &logits_data,
+        loss,
+    );
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model_name = std::env::args().nth(1).unwrap_or("SmolLM2-135M".into());
     match model_name.as_str() {
         "SmolLM2-135M" => bench_smollm2(&model_name)?,
         "StableDiffusion" => bench_stable_diffusion()?,
+        "ResNet-50" => bench_resnet()?,
+        "Whisper-tiny" => bench_whisper()?,
         other => {
-            eprintln!("Unknown model: {other}. Available: SmolLM2-135M, StableDiffusion");
+            eprintln!(
+                "Unknown model: {other}. Available: SmolLM2-135M, StableDiffusion, ResNet-50, Whisper-tiny"
+            );
             std::process::exit(1);
         }
     }

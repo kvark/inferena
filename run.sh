@@ -10,6 +10,7 @@ MODELS=""
 FRAMEWORKS=""
 JSON_FLAG=""
 DOWNLOAD=false
+CHECK_ONLY=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -29,6 +30,10 @@ while [[ $# -gt 0 ]]; do
             DOWNLOAD=true
             shift
             ;;
+        --check)
+            CHECK_ONLY=true
+            shift
+            ;;
         -h|--help)
             echo "inferena - Inference Arena"
             echo ""
@@ -39,10 +44,11 @@ while [[ $# -gt 0 ]]; do
             echo "  -f, --frameworks <list>   Comma-separated frameworks (default: all)"
             echo "  --json                    Output results as JSON"
             echo "  --download                Download model weights before running"
+            echo "  --check                   Check framework availability (don't run benchmarks)"
             echo "  -h, --help                Show this help"
             echo ""
             echo "Models: $ALL_MODELS"
-            echo "Frameworks: pytorch, mlx, candle, burn, luminal, meganeura, llama-cpp"
+            echo "Frameworks: pytorch, mlx, candle, burn, luminal, meganeura, llama-cpp, onnxruntime, jax"
             exit 0
             ;;
         *)
@@ -55,6 +61,74 @@ done
 # Default: all models.
 if [ -z "$MODELS" ]; then
     MODELS="$ALL_MODELS"
+fi
+
+# --- Check framework availability ---
+if [ "$CHECK_ONLY" = true ]; then
+    echo "Framework availability:"
+    echo ""
+
+    # Python frameworks
+    check_python() {
+        local name="$1" mod="$2" extra="${3:-}"
+        if python3 -c "import $mod" 2>/dev/null; then
+            ver=$(python3 -c "import $mod; print(getattr($mod, '__version__', 'unknown'))" 2>/dev/null)
+            echo "  ✓ $name ($ver)$extra"
+        else
+            echo "  ✗ $name — python3 -c 'import $mod' failed (pip install $mod)"
+        fi
+    }
+
+    check_python "PyTorch" "torch"
+    check_python "ONNX Runtime" "onnxruntime"
+    check_python "JAX" "jax"
+    check_python "MLX" "mlx.core" "(macOS only)"
+
+    # llama.cpp
+    if python3 -c "import llama_cpp" 2>/dev/null; then
+        ver=$(python3 -c "import llama_cpp; print(getattr(llama_cpp, '__version__', 'unknown'))" 2>/dev/null)
+        echo "  ✓ llama.cpp ($ver via llama-cpp-python)"
+    else
+        echo "  ✗ llama.cpp — pip install llama-cpp-python"
+    fi
+
+    echo ""
+
+    # Rust frameworks — check if binaries exist or can compile
+    RUST_FW="inferena-candle inferena-burn inferena-luminal inferena-meganeura"
+    for pkg in $RUST_FW; do
+        name="${pkg#inferena-}"
+        bin="$ROOT_DIR/target/release/$pkg"
+        if [ -f "$bin" ]; then
+            echo "  ✓ $name (binary at $bin)"
+        elif cargo check -p "$pkg" --manifest-path "$ROOT_DIR/Cargo.toml" 2>/dev/null; then
+            echo "  ~ $name (compiles, not yet built — run without --check to build)"
+        else
+            echo "  ✗ $name — cargo check -p $pkg failed"
+        fi
+    done
+
+    echo ""
+
+    # GPU backends
+    echo "GPU backends:"
+    if command -v vulkaninfo &>/dev/null; then
+        dev=$(vulkaninfo --summary 2>/dev/null | grep "deviceName" | head -1 | sed 's/.*= //')
+        echo "  ✓ Vulkan ($dev)"
+    else
+        echo "  ✗ Vulkan — vulkaninfo not found"
+    fi
+    if [ "$(uname -s)" = "Darwin" ]; then
+        echo "  ✓ Metal (macOS detected)"
+    fi
+    if python3 -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+        dev=$(python3 -c "import torch; print(torch.cuda.get_device_name(0))" 2>/dev/null)
+        echo "  ✓ CUDA ($dev)"
+    else
+        echo "  ✗ CUDA — torch.cuda.is_available() is False"
+    fi
+
+    exit 0
 fi
 
 # --- Create results directory ---

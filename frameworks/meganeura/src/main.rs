@@ -319,6 +319,43 @@ fn bench_smolvla() {
     // Approximate backward as train_step - forward.
     let backward_ms = (train_ms - forward_ms).max(0.0);
 
+    // --- Latency (single action chunk) ---
+    eprintln!("[meganeura] measuring single-chunk latency...");
+    let mut lat_g = Graph::new();
+    let lat_pred = smolvla::build_action_expert(&mut lat_g, &config, 1, vlm_seq_len);
+    lat_g.set_outputs(vec![lat_pred]);
+    let mut lat_session = build_inference_session(&lat_g);
+    for (i, (name, buf_ref)) in lat_session.plan().param_buffers.clone().iter().enumerate() {
+        let n = lat_session.plan().buffers[buf_ref.0 as usize] / 4;
+        let data: Vec<f32> = (0..n)
+            .map(|j| (j as f32 * 0.01 + i as f32).sin() * 0.1)
+            .collect();
+        lat_session.set_parameter(name, &data);
+    }
+    let lat_actions: Vec<f32> = (0..action_dim).map(|i| (i as f32 * 0.01).sin()).collect();
+    let lat_timestep = &timestep;
+    lat_session.set_input("noisy_actions", &lat_actions);
+    lat_session.set_input("timestep", lat_timestep);
+    for i in 0..config.expert.num_layers {
+        if i % config.expert.self_attn_every_n_layers != 0 {
+            lat_session.set_input(&format!("vlm_kv_layer_{i}"), &vlm_kv);
+        }
+    }
+    // Warm-up.
+    lat_session.step();
+    lat_session.wait();
+    lat_session.set_input("noisy_actions", &lat_actions);
+    lat_session.set_input("timestep", lat_timestep);
+    for i in 0..config.expert.num_layers {
+        if i % config.expert.self_attn_every_n_layers != 0 {
+            lat_session.set_input(&format!("vlm_kv_layer_{i}"), &vlm_kv);
+        }
+    }
+    let lat_start = Instant::now();
+    lat_session.step();
+    lat_session.wait();
+    let latency_ms = lat_start.elapsed().as_secs_f64() * 1000.0;
+
     emit_result(
         "SmolVLA",
         compile_s,
@@ -326,7 +363,7 @@ fn bench_smolvla() {
         backward_ms,
         &output,
         loss,
-        0.0,
+        latency_ms,
     );
 }
 
@@ -451,6 +488,18 @@ fn bench_stable_diffusion() {
     let train_ms = bwd_start.elapsed().as_secs_f64() * 1000.0;
     let backward_ms = (train_ms - forward_ms).max(0.0);
 
+    // --- Latency (re-run forward, batch=2 is already minimal) ---
+    infer_session.set_input("noisy_latent", &noisy_latent);
+    infer_session.set_input("noise_target", &noise_target);
+    infer_session.step();
+    infer_session.wait();
+    infer_session.set_input("noisy_latent", &noisy_latent);
+    infer_session.set_input("noise_target", &noise_target);
+    let lat_start = Instant::now();
+    infer_session.step();
+    infer_session.wait();
+    let latency_ms = lat_start.elapsed().as_secs_f64() * 1000.0;
+
     emit_result(
         "StableDiffusion",
         compile_s,
@@ -458,7 +507,159 @@ fn bench_stable_diffusion() {
         backward_ms,
         &logits_data,
         loss_val,
-        0.0, // latency: not meaningful for non-autoregressive models
+        latency_ms,
+    );
+}
+
+fn bench_resnet() {
+    use meganeura::models::resnet;
+
+    let batch: u32 = 4;
+
+    eprintln!("[meganeura] building ResNet graph...");
+    let compile_start = Instant::now();
+    let mut g = Graph::new();
+    let logits = resnet::build_resnet50(&mut g, batch);
+    g.set_outputs(vec![logits]);
+
+    eprintln!("[meganeura] compiling...");
+    let mut session = build_inference_session(&g);
+
+    let compile_s = compile_start.elapsed().as_secs_f64();
+    eprintln!("[meganeura] ready (compile: {compile_s:.2}s)");
+
+    // --- Initialize with deterministic values ---
+    // BN fused_bias params are spatially broadcast — zero-init to avoid exploding
+    // activations. Conv weights get small deterministic values.
+    for (i, (name, buf_ref)) in session.plan().param_buffers.clone().iter().enumerate() {
+        let n = session.plan().buffers[buf_ref.0 as usize] / 4;
+        let data: Vec<f32> = if name.contains("fused_bias") {
+            vec![0.0; n]
+        } else {
+            (0..n)
+                .map(|j| (j as f32 * 0.01 + i as f32).sin() * 0.1)
+                .collect()
+        };
+        session.set_parameter(name, &data);
+    }
+
+    // --- Forward ---
+    let in_size = (batch * 3 * 224 * 224) as usize;
+    let images: Vec<f32> = (0..in_size).map(|i| (i as f32 * 0.001).sin()).collect();
+    session.set_input("image", &images);
+
+    let fwd_start = Instant::now();
+    session.step();
+    session.wait();
+    let forward_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
+
+    let output = session.read_output((batch * 1000) as usize);
+
+    // Cross-entropy loss.
+    let labels: Vec<usize> = (0..batch as usize).map(|i| i % 1000).collect();
+    let mut total_loss = 0.0f64;
+    for b in 0..batch as usize {
+        let sl = &output[b * 1000..(b + 1) * 1000];
+        let max_l = sl.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let sum_exp: f64 = sl.iter().map(|&l| ((l - max_l) as f64).exp()).sum();
+        total_loss -= (sl[labels[b]] - max_l) as f64 - sum_exp.ln();
+    }
+    let loss = total_loss / batch as f64;
+
+    // --- Latency (single-image) ---
+    let lat_images: Vec<f32> = vec![0.0; (3 * 224 * 224) as usize];
+    // Build single-batch graph.
+    let mut lat_g = Graph::new();
+    let lat_logits = resnet::build_resnet50(&mut lat_g, 1);
+    lat_g.set_outputs(vec![lat_logits]);
+    let mut lat_session = build_inference_session(&lat_g);
+    for (i, (name, buf_ref)) in lat_session.plan().param_buffers.clone().iter().enumerate() {
+        let n = lat_session.plan().buffers[buf_ref.0 as usize] / 4;
+        let data: Vec<f32> = if name.contains("fused_bias") {
+            vec![0.0; n]
+        } else {
+            (0..n)
+                .map(|j| (j as f32 * 0.01 + i as f32).sin() * 0.1)
+                .collect()
+        };
+        lat_session.set_parameter(name, &data);
+    }
+    lat_session.set_input("image", &lat_images);
+    lat_session.step();
+    lat_session.wait();
+    lat_session.set_input("image", &lat_images);
+    let lat_start = Instant::now();
+    lat_session.step();
+    lat_session.wait();
+    let latency_ms = lat_start.elapsed().as_secs_f64() * 1000.0;
+
+    emit_result(
+        "ResNet-50",
+        compile_s,
+        forward_ms,
+        0.0,
+        &output,
+        loss,
+        latency_ms,
+    );
+}
+
+fn bench_whisper() {
+    use meganeura::models::whisper::{self, WhisperConfig};
+
+    let config = WhisperConfig::whisper_tiny();
+    let batch: u32 = 1;
+    let mel_len: u32 = 3000;
+    let d_model = config.d_model;
+
+    eprintln!("[meganeura] building Whisper encoder graph...");
+    let compile_start = Instant::now();
+    let mut g = Graph::new();
+    let encoder_out = whisper::build_encoder(&mut g, &config, batch, mel_len);
+    g.set_outputs(vec![encoder_out]);
+
+    eprintln!("[meganeura] compiling...");
+    let mut session = build_inference_session(&g);
+
+    // Load weights with deterministic init.
+    let transposed = whisper::transposed_weight_names(&config);
+    let transposed_set: std::collections::HashSet<&str> =
+        transposed.iter().map(|s| s.as_str()).collect();
+    for (i, (name, buf_ref)) in session.plan().param_buffers.clone().iter().enumerate() {
+        let n = session.plan().buffers[buf_ref.0 as usize] / 4;
+        let data: Vec<f32> = (0..n)
+            .map(|j| (j as f32 * 0.01 + i as f32).sin() * 0.1)
+            .collect();
+        session.set_parameter(name, &data);
+    }
+
+    let compile_s = compile_start.elapsed().as_secs_f64();
+    eprintln!("[meganeura] ready (compile: {compile_s:.2}s)");
+
+    // --- Forward ---
+    let mel_size = (batch * config.n_mels as u32 * mel_len) as usize;
+    let mel: Vec<f32> = (0..mel_size).map(|i| (i as f32 * 0.001).sin()).collect();
+    session.set_input("mel", &mel);
+
+    let fwd_start = Instant::now();
+    session.step();
+    session.wait();
+    let forward_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
+
+    let seq_len = mel_len / 2; // stride-2 in conv2
+    let output = session.read_output((batch * seq_len * d_model as u32) as usize);
+
+    // MSE loss (encoder output vs zero).
+    let loss: f64 = output.iter().map(|&v| (v as f64).powi(2)).sum::<f64>() / output.len() as f64;
+
+    emit_result(
+        "Whisper-tiny",
+        compile_s,
+        forward_ms,
+        0.0,
+        &output,
+        loss,
+        0.0,
     );
 }
 
@@ -470,8 +671,12 @@ fn main() {
         "SmolLM2-135M" => bench_smollm2(&model_name),
         "SmolVLA" => bench_smolvla(),
         "StableDiffusion" => bench_stable_diffusion(),
+        "ResNet-50" => bench_resnet(),
+        "Whisper-tiny" => bench_whisper(),
         other => {
-            eprintln!("Unknown model: {other}. Available: SmolLM2-135M, SmolVLA, StableDiffusion");
+            eprintln!(
+                "Unknown model: {other}. Available: SmolLM2-135M, SmolVLA, StableDiffusion, ResNet-50, Whisper-tiny"
+            );
             std::process::exit(1);
         }
     }

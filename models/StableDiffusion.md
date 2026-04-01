@@ -18,9 +18,13 @@ Two benchmark configurations are used depending on framework capabilities:
 
 | Platform | Framework | Compile (s) | Inference (ms) | Latency (ms) | Training (ms) | Loss |
 |----------|-----------|:-----------:|:--------------:|:------------:|:-------------:|:----:|
-| Intel Xeon @ 2.10GHz | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CPU) | 51.02 | **12** | — | **27** | 0.57 |
-|  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~10302~~ | — | ~~—~~ | ~~0.00~~ |
-|  | [Meganeura](https://github.com/kvark/meganeura/tree/3d34aad) (Vulkan/Lavapipe) | **2.57** | 672 | — | 27282 | 0.57 |
+| Intel Xeon @ 2.10GHz | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CPU) | 83.70 | **49** | **19** | **256** | 0.57 |
+|  | [Meganeura](https://github.com/kvark/meganeura/tree/0b91e08) (Vulkan/Lavapipe) | **8.26** | 1751 | 1244 | 2715 | 0.57 |
+|  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.01~~ | ~~25124~~ | ~~—~~ | ~~—~~ | ~~0.00~~ |
+|  | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CPU) | ✗ | ✗ | ✗ | ✗ | |
+|  | [JAX](https://github.com/jax-ml/jax) (CPU) | ✗ | ✗ | ✗ | ✗ | |
+|  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | ✗ | |
+|  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | ✗ | |
 | AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 12.51 | **2** | — | **5** | 0.57 |
 |  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~5271~~ | — | ~~—~~ | ~~0.00~~ |
 |  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | ✗ | |

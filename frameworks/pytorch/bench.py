@@ -313,6 +313,14 @@ MODEL_REGISTRY = {
         "hf_id": "stable-diffusion-v1-5/stable-diffusion-v1-5",
         "type": "sd_unet",
     },
+    "ResNet-50": {
+        "hf_id": "torchvision/resnet50",
+        "type": "resnet",
+    },
+    "Whisper-tiny": {
+        "hf_id": "openai/whisper-tiny",
+        "type": "whisper",
+    },
 }
 
 
@@ -325,6 +333,22 @@ def load_model(model_name: str, spec: dict, dev: str):
     if model_type in ("smolvla", "sd_unet"):
         print(f"[pytorch] {model_name}: random-init (custom architecture)", file=sys.stderr)
         return _random_init(model_type, model_name)
+
+    if model_type == "resnet":
+        import torchvision.models as tv_models
+        model = tv_models.resnet50(weights=None)
+        return _deterministic_init(model)
+
+    if model_type == "whisper":
+        from transformers import WhisperForConditionalGeneration, WhisperConfig
+        config = WhisperConfig(
+            d_model=384, encoder_layers=4, decoder_layers=4,
+            encoder_attention_heads=6, decoder_attention_heads=6,
+            encoder_ffn_dim=1536, decoder_ffn_dim=1536,
+            vocab_size=51865, max_source_positions=1500,
+            max_target_positions=448, num_mel_bins=80,
+        )
+        return _deterministic_init(WhisperForConditionalGeneration(config))
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     root_dir = os.path.dirname(os.path.dirname(script_dir))
@@ -438,6 +462,30 @@ def prepare_inputs(model_type: str, model, dev: str, seq_len: int = 128):
             "vlm_kv": vlm_kv,
         }
 
+    if model_type == "resnet":
+        # ImageNet-style input: batch=4, 3×224×224.
+        batch, c, h, w = 4, 3, 224, 224
+        in_size = batch * c * h * w
+        images = torch.tensor(
+            [(i * 0.001) for i in range(in_size)],
+            dtype=torch.float32, device=dev,
+        ).sin().reshape(batch, c, h, w)
+        labels = torch.arange(batch, device=dev, dtype=torch.long) % 1000
+        return {"images": images, "labels": labels}
+
+    if model_type == "whisper":
+        # 30s mel spectrogram: (1, 80, 3000).
+        mel_len = 3000
+        n_mels = 80
+        mel_size = n_mels * mel_len
+        mel = torch.tensor(
+            [(i * 0.001) for i in range(mel_size)],
+            dtype=torch.float32, device=dev,
+        ).sin().reshape(1, n_mels, mel_len)
+        # Decoder input: short token sequence.
+        dec_ids = torch.tensor([[50258, 50259, 50359, 50363]], device=dev, dtype=torch.long)
+        return {"input_features": mel, "decoder_input_ids": dec_ids}
+
     vocab_size = model.config.vocab_size if hasattr(model.config, "vocab_size") else model.config.text_config.vocab_size
     input_ids = torch.arange(seq_len, device=dev, dtype=torch.long).unsqueeze(0)
     labels = (torch.arange(1, seq_len + 1, device=dev, dtype=torch.long) % vocab_size).unsqueeze(0)
@@ -485,6 +533,13 @@ def bench(model_name: str, spec: dict):
         elif model_type == "smolvla":
             dummy_out = model(**dummy_kwargs)
             F.mse_loss(dummy_out, torch.zeros_like(dummy_out)).backward()
+        elif model_type == "resnet":
+            dummy_out = model(dummy_kwargs["images"])
+            F.cross_entropy(dummy_out, dummy_kwargs["labels"]).backward()
+        elif model_type == "whisper":
+            dummy_out = model(input_features=dummy_kwargs["input_features"],
+                              decoder_input_ids=dummy_kwargs["decoder_input_ids"])
+            dummy_out.logits.sum().backward()
         else:
             dummy_out = model(**dummy_kwargs)
             dummy_out.loss.backward()
@@ -503,6 +558,11 @@ def bench(model_name: str, spec: dict):
         noisy = fwd_kwargs["noisy_latent"]
         target = fwd_kwargs["noise_target"]
         outputs = model(noisy)
+    elif model_type == "resnet":
+        outputs = model(fwd_kwargs["images"])
+    elif model_type == "whisper":
+        outputs = model(input_features=fwd_kwargs["input_features"],
+                        decoder_input_ids=fwd_kwargs["decoder_input_ids"])
     else:
         outputs = model(**fwd_kwargs)
     sync()
@@ -510,14 +570,21 @@ def bench(model_name: str, spec: dict):
 
     # --- Loss ---
     if model_type == "sd_unet":
-        # MSE loss: mean((pred - target)²)
         loss = F.mse_loss(outputs, target)
         logits = outputs
     elif model_type == "smolvla":
-        # MSE loss against target actions (zeros as target).
         target = torch.zeros_like(outputs)
         loss = F.mse_loss(outputs, target)
         logits = outputs
+    elif model_type == "resnet":
+        logits = outputs
+        loss = F.cross_entropy(outputs, fwd_kwargs["labels"])
+    elif model_type == "whisper":
+        logits = outputs.logits
+        loss = logits.sum() * 0  + F.cross_entropy(
+            logits.view(-1, logits.size(-1)),
+            fwd_kwargs["decoder_input_ids"][:, :logits.size(1)].reshape(-1),
+        )
     else:
         loss = outputs.loss
         logits = outputs.logits
@@ -529,20 +596,38 @@ def bench(model_name: str, spec: dict):
     sync()
     training_ms = (time.perf_counter() - t0) * 1000.0
 
-    # --- Latency (single-token / minimal-input forward) ---
-    # For causal LMs: forward with seq_len=1 to measure per-token decode latency.
-    # For other model types: same as inference (not separately meaningful).
+    # --- Latency (minimal-input forward) ---
+    # Measure single-sample / single-token / minimal-batch forward pass.
     # Warm-up pass first so torch.compile doesn't recompile during timing.
     model.zero_grad()
     if model_type == "causal_lm":
         lat_input = torch.tensor([[0]], device=dev, dtype=torch.long)
         lat_mask = torch.ones(1, 1, dtype=torch.long, device=dev)
+        lat_fn = lambda: model(input_ids=lat_input, attention_mask=lat_mask)
+    elif model_type == "resnet":
+        lat_img = torch.zeros(1, 3, 224, 224, device=dev, dtype=torch.float32)
+        lat_fn = lambda: model(lat_img)
+    elif model_type == "sd_unet":
+        # Single-sample latency (batch=1).
+        lat_noisy = fwd_kwargs["noisy_latent"][:1]
+        lat_fn = lambda: model(lat_noisy)
+    elif model_type == "smolvla":
+        # Single action chunk (batch=1, chunk_size=1).
+        lat_kw = {k: v[:, :1] if v.dim() >= 2 else v for k, v in fwd_kwargs.items()}
+        lat_fn = lambda: model(**lat_kw)
+    elif model_type == "whisper":
+        lat_fn = lambda: model(input_features=fwd_kwargs["input_features"],
+                               decoder_input_ids=fwd_kwargs["decoder_input_ids"][:, :1])
+    else:
+        lat_fn = None
+
+    if lat_fn is not None:
         with torch.no_grad():
-            model(input_ids=lat_input, attention_mask=lat_mask)
+            lat_fn()
         sync()
         t0 = time.perf_counter()
         with torch.no_grad():
-            model(input_ids=lat_input, attention_mask=lat_mask)
+            lat_fn()
         sync()
         latency_ms = (time.perf_counter() - t0) * 1000.0
     else:

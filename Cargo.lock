@@ -3671,7 +3671,7 @@ checksum = "ae960838283323069879657ca3de837e9f7bbb4c7bf6ea7f1b290d5e9476d2e0"
 [[package]]
 name = "meganeura"
 version = "0.1.0"
-source = "git+https://github.com/kvark/meganeura?rev=0b91e08d9166f0ebba7d35ab39964a48a82416f1#0b91e08d9166f0ebba7d35ab39964a48a82416f1"
+source = "git+https://github.com/kvark/meganeura?rev=2ef151e50f040b78fa285db2a6d76675da4a1d11#2ef151e50f040b78fa285db2a6d76675da4a1d11"
 dependencies = [
  "blade-graphics",
  "blade-macros",
@@ -4550,7 +4550,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

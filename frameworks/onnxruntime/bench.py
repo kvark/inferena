@@ -16,6 +16,14 @@ import time
 import numpy as np
 
 
+def _name_seed(name: str) -> float:
+    """Deterministic seed from parameter name — framework-independent init."""
+    h = 0
+    for c in name.encode('ascii'):
+        h = ((h * 31) + c) & 0xFFFFFFFF
+    return float(h % 10000)
+
+
 MODEL_REGISTRY = {
     "SmolLM2-135M": {
         "hf_id": "HuggingFaceTB/SmolLM2-135M",
@@ -50,16 +58,28 @@ def cross_entropy_np(logits_2d, labels_1d):
 
 
 def export_resnet_onnx(onnx_path):
-    """Export ResNet-50 to ONNX."""
+    """Export ResNet-50 to ONNX with name-seeded init matching PyTorch/meganeura."""
     import torch
     import torchvision.models as tv_models
 
+    scale = 0.01  # small scale — identity BN, no explosion
     model = tv_models.resnet50(weights=None)
-    # Match PyTorch bench.py's deterministic init.
     with torch.no_grad():
-        for i, p in enumerate(model.parameters()):
-            n = p.numel()
-            p.copy_(torch.sin(torch.arange(n, dtype=torch.float32) * 0.01 + i).view_as(p) * 0.1)
+        for name, p in model.named_parameters():
+            if '.bn' in name or '.downsample.1.' in name:
+                if 'weight' in name:
+                    p.fill_(1.0)
+                else:
+                    p.zero_()
+            elif name == 'fc.weight':
+                seed = _name_seed(name)
+                out_f, in_f = p.shape
+                w = torch.sin(torch.arange(in_f * out_f, dtype=torch.float32) * 0.01 + seed).view(in_f, out_f) * scale
+                p.copy_(w.T)
+            else:
+                seed = _name_seed(name)
+                n = p.numel()
+                p.copy_(torch.sin(torch.arange(n, dtype=torch.float32) * 0.01 + seed).view_as(p) * scale)
     model.eval()
     dummy = torch.randn(1, 3, 224, 224)
     torch.onnx.export(model, dummy, onnx_path, input_names=["images"],
@@ -68,11 +88,16 @@ def export_resnet_onnx(onnx_path):
                       dynamo=False)
 
 
-def export_whisper_onnx(onnx_dir):
-    """Export Whisper-tiny to ONNX via optimum."""
-    from optimum.onnxruntime import ORTModelForSpeechSeq2Seq
+_WHISPER_TRANSPOSED = frozenset([
+    'q_proj.weight', 'k_proj.weight', 'v_proj.weight', 'out_proj.weight',
+    'fc1.weight', 'fc2.weight',
+])
+
+
+def export_whisper_encoder_onnx(onnx_path):
+    """Export Whisper-tiny encoder to ONNX with name-seeded init."""
+    import torch
     from transformers import WhisperConfig, WhisperForConditionalGeneration
-    import tempfile
 
     config = WhisperConfig(
         d_model=384, encoder_layers=4, decoder_layers=4,
@@ -81,18 +106,24 @@ def export_whisper_onnx(onnx_dir):
         vocab_size=51865, max_source_positions=1500,
         max_target_positions=448, num_mel_bins=80,
     )
-    model = WhisperForConditionalGeneration(config)
-    # Match PyTorch bench.py's deterministic init.
-    import torch
+    full_model = WhisperForConditionalGeneration(config)
+    encoder = full_model.get_encoder()
     with torch.no_grad():
-        for i, p in enumerate(model.parameters()):
-            n = p.numel()
-            p.copy_(torch.sin(torch.arange(n, dtype=torch.float32) * 0.01 + i).view_as(p) * 0.1)
+        for name, p in encoder.named_parameters():
+            seed = _name_seed(name)
+            if any(name.endswith(s) for s in _WHISPER_TRANSPOSED):
+                out_f, in_f = p.shape
+                w = torch.sin(torch.arange(in_f * out_f, dtype=torch.float32) * 0.01 + seed).view(in_f, out_f) * 0.1
+                p.copy_(w.T)
+            else:
+                n = p.numel()
+                p.copy_(torch.sin(torch.arange(n, dtype=torch.float32) * 0.01 + seed).view_as(p) * 0.1)
+    encoder.eval()
 
-    with tempfile.TemporaryDirectory() as tmp:
-        model.save_pretrained(tmp)
-        ort_model = ORTModelForSpeechSeq2Seq.from_pretrained(tmp, export=True)
-        ort_model.save_pretrained(onnx_dir)
+    dummy_mel = torch.randn(1, 80, 3000)
+    torch.onnx.export(encoder, dummy_mel, onnx_path, input_names=["mel"],
+                      output_names=["hidden_states"], opset_version=17,
+                      dynamo=False)
 
 
 def bench_causal_lm(model_name):
@@ -183,37 +214,32 @@ def bench_resnet(model_name):
 
 
 def bench_whisper(model_name):
-    from optimum.onnxruntime import ORTModelForSpeechSeq2Seq
-    import torch
+    import onnxruntime as ort
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     root_dir = os.path.dirname(os.path.dirname(script_dir))
-    onnx_dir = os.path.join(root_dir, "models", model_name, "onnx")
+    onnx_path = os.path.join(root_dir, "models", model_name, "whisper_encoder.onnx")
 
-    if not os.path.isdir(onnx_dir) or not any(f.endswith(".onnx") for f in os.listdir(onnx_dir)):
-        print("[onnxruntime] exporting Whisper-tiny to ONNX...", file=sys.stderr)
-        os.makedirs(onnx_dir, exist_ok=True)
-        export_whisper_onnx(onnx_dir)
+    if not os.path.isfile(onnx_path):
+        print("[onnxruntime] exporting Whisper-tiny encoder to ONNX...", file=sys.stderr)
+        os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
+        export_whisper_encoder_onnx(onnx_path)
 
     t0 = time.perf_counter()
-    ort_model = ORTModelForSpeechSeq2Seq.from_pretrained(onnx_dir)
+    sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
     compile_s = time.perf_counter() - t0
 
-    mel = torch.sin(torch.arange(80 * 3000, dtype=torch.float32) * 0.001).reshape(1, 80, 3000)
-    dec_ids = torch.tensor([[50258, 50259, 50359, 50363]], dtype=torch.long)
+    mel = np.sin(np.arange(80 * 3000, dtype=np.float32) * 0.001).reshape(1, 80, 3000)
 
-    ort_model(input_features=mel, decoder_input_ids=dec_ids)
+    sess.run(None, {"mel": mel})
     t0 = time.perf_counter()
-    outputs = ort_model(input_features=mel, decoder_input_ids=dec_ids)
+    outputs = sess.run(None, {"mel": mel})
     inference_ms = (time.perf_counter() - t0) * 1000.0
 
-    logits = outputs.logits.detach().numpy()
-    loss = cross_entropy_np(
-        logits.reshape(-1, logits.shape[-1]),
-        dec_ids[:, :logits.shape[1]].numpy().reshape(-1),
-    )
+    hidden_states = outputs[0]  # [1, seq_len, d_model]
+    loss = float(np.mean(hidden_states ** 2))  # MSE vs zero
 
-    emit(model_name, compile_s, inference_ms, 0.0, logits, loss)
+    emit(model_name, compile_s, inference_ms, 0.0, hidden_states, loss)
 
 
 def emit(model_name, compile_s, inference_ms, latency_ms, logits, loss):

@@ -276,10 +276,10 @@ fn bench_resnet() -> Result<(), Box<dyn std::error::Error>> {
     let dtype = DType::F32;
     let batch = 4usize;
 
-    eprintln!("[candle] building ResNet-18...");
+    eprintln!("[candle] building ResNet-50...");
     let compile_start = Instant::now();
     let vb = VarBuilder::zeros(dtype, &device);
-    let model = resnet::resnet18(1000, vb)?;
+    let model = resnet::resnet50(1000, vb)?;
     let compile_s = compile_start.elapsed().as_secs_f64();
     eprintln!("[candle] built in {compile_s:.2}s");
 

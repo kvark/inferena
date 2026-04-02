@@ -45,6 +45,15 @@ fn sha256_f32(data: &[f32]) -> String {
     format!("sha256:{}", hex::encode(hasher.finalize()))
 }
 
+/// Deterministic seed from parameter name — framework-independent init.
+fn name_seed(name: &str) -> f32 {
+    let mut h: u32 = 0;
+    for c in name.bytes() {
+        h = h.wrapping_mul(31).wrapping_add(c as u32);
+    }
+    (h % 10000) as f32
+}
+
 fn bench_smollm2(model_name: &str) {
     use meganeura::models::smollm2::{self, SmolLM2Config};
 
@@ -515,6 +524,7 @@ fn bench_resnet() {
     use meganeura::models::resnet;
 
     let batch: u32 = 4;
+    let scale: f32 = 0.01; // small scale to prevent explosion with identity BN
 
     eprintln!("[meganeura] building ResNet graph...");
     let compile_start = Instant::now();
@@ -529,15 +539,29 @@ fn bench_resnet() {
     eprintln!("[meganeura] ready (compile: {compile_s:.2}s)");
 
     // --- Initialize with deterministic values ---
-    // BN fused_bias params are spatially broadcast — zero-init to avoid exploding
-    // activations. Conv weights get small deterministic values.
-    for (i, (name, buf_ref)) in session.plan().param_buffers.clone().iter().enumerate() {
+    // BN fused_bias → zero (identity BN in eval mode matches PyTorch).
+    // Conv/FC weights → name-seeded sin values (framework-independent).
+    // FC weight: init in PyTorch [out, in] layout then transpose to meganeura [in, out].
+    for (name, buf_ref) in session.plan().param_buffers.clone().iter() {
         let n = session.plan().buffers[buf_ref.0 as usize] / 4;
         let data: Vec<f32> = if name.contains("fused_bias") {
             vec![0.0; n]
+        } else if name == "fc.weight" {
+            // Init in PyTorch layout [out=1000, in=2048] then transpose to [in=2048, out=1000]
+            let in_dim = 2048usize;
+            let out_dim = 1000usize;
+            let seed = name_seed(name);
+            let mut buf = vec![0.0f32; n];
+            for i in 0..out_dim {
+                for j in 0..in_dim {
+                    buf[j * out_dim + i] = ((i * in_dim + j) as f32 * 0.01 + seed).sin() * scale;
+                }
+            }
+            buf
         } else {
+            let seed = name_seed(name);
             (0..n)
-                .map(|j| (j as f32 * 0.01 + i as f32).sin() * 0.1)
+                .map(|j| (j as f32 * 0.01 + seed).sin() * scale)
                 .collect()
         };
         session.set_parameter(name, &data);
@@ -573,13 +597,25 @@ fn bench_resnet() {
     let lat_logits = resnet::build_resnet50(&mut lat_g, 1);
     lat_g.set_outputs(vec![lat_logits]);
     let mut lat_session = build_inference_session(&lat_g);
-    for (i, (name, buf_ref)) in lat_session.plan().param_buffers.clone().iter().enumerate() {
+    for (name, buf_ref) in lat_session.plan().param_buffers.clone().iter() {
         let n = lat_session.plan().buffers[buf_ref.0 as usize] / 4;
         let data: Vec<f32> = if name.contains("fused_bias") {
             vec![0.0; n]
+        } else if name == "fc.weight" {
+            let in_dim = 2048usize;
+            let out_dim = 1000usize;
+            let seed = name_seed(name);
+            let mut buf = vec![0.0f32; n];
+            for i in 0..out_dim {
+                for j in 0..in_dim {
+                    buf[j * out_dim + i] = ((i * in_dim + j) as f32 * 0.01 + seed).sin() * scale;
+                }
+            }
+            buf
         } else {
+            let seed = name_seed(name);
             (0..n)
-                .map(|j| (j as f32 * 0.01 + i as f32).sin() * 0.1)
+                .map(|j| (j as f32 * 0.01 + seed).sin() * scale)
                 .collect()
         };
         lat_session.set_parameter(name, &data);
@@ -621,15 +657,55 @@ fn bench_whisper() {
     eprintln!("[meganeura] compiling...");
     let mut session = build_inference_session(&g);
 
-    // Load weights with deterministic init.
+    // Load weights with deterministic init matching PyTorch encoder.
     let transposed = whisper::transposed_weight_names(&config);
     let transposed_set: std::collections::HashSet<&str> =
         transposed.iter().map(|s| s.as_str()).collect();
-    for (i, (name, buf_ref)) in session.plan().param_buffers.clone().iter().enumerate() {
+    let prefix = "model.encoder.";
+    for (name, buf_ref) in session.plan().param_buffers.clone().iter() {
         let n = session.plan().buffers[buf_ref.0 as usize] / 4;
-        let data: Vec<f32> = (0..n)
-            .map(|j| (j as f32 * 0.01 + i as f32).sin() * 0.1)
-            .collect();
+        // Strip prefix and map fused_bias→bias for seed to match PyTorch encoder names.
+        let seed_name = name.strip_prefix(prefix).unwrap_or(name);
+        let seed_name = seed_name.replace("fused_bias", "bias");
+        let seed = name_seed(&seed_name);
+
+        let data: Vec<f32> = if name.contains("fused_bias") {
+            // Per-channel bias broadcast to [batch * channels * spatial].
+            let channels = d_model;
+            let spatial = n / (batch as usize * channels);
+            let per_ch: Vec<f32> = (0..channels)
+                .map(|c| (c as f32 * 0.01 + seed).sin() * 0.1)
+                .collect();
+            let mut buf = vec![0.0f32; n];
+            for b in 0..batch as usize {
+                for c in 0..channels {
+                    for s in 0..spatial {
+                        buf[(b * channels + c) * spatial + s] = per_ch[c];
+                    }
+                }
+            }
+            buf
+        } else if transposed_set.contains(name.as_str()) {
+            // Linear weight: init in PyTorch [out, in] then transpose to [in, out].
+            let (in_dim, out_dim) = if name.contains("fc1.weight") {
+                (config.d_model, config.ffn_dim)
+            } else if name.contains("fc2.weight") {
+                (config.ffn_dim, config.d_model)
+            } else {
+                (config.d_model, config.d_model)
+            };
+            let mut buf = vec![0.0f32; n];
+            for i in 0..out_dim {
+                for j in 0..in_dim {
+                    buf[j * out_dim + i] = ((i * in_dim + j) as f32 * 0.01 + seed).sin() * 0.1;
+                }
+            }
+            buf
+        } else {
+            (0..n)
+                .map(|j| (j as f32 * 0.01 + seed).sin() * 0.1)
+                .collect()
+        };
         session.set_parameter(name, &data);
     }
 
@@ -652,6 +728,16 @@ fn bench_whisper() {
     // MSE loss (encoder output vs zero).
     let loss: f64 = output.iter().map(|&v| (v as f64).powi(2)).sum::<f64>() / output.len() as f64;
 
+    // --- Latency (re-run forward — same batch/mel_len) ---
+    session.set_input("mel", &mel);
+    session.step();
+    session.wait();
+    session.set_input("mel", &mel);
+    let lat_start = Instant::now();
+    session.step();
+    session.wait();
+    let latency_ms = lat_start.elapsed().as_secs_f64() * 1000.0;
+
     emit_result(
         "Whisper-tiny",
         compile_s,
@@ -659,7 +745,7 @@ fn bench_whisper() {
         0.0,
         &output,
         loss,
-        0.0,
+        latency_ms,
     );
 }
 

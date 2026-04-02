@@ -202,11 +202,24 @@ def bench(model_name):
     # --- Load weights ---
     print(f"[jax] loading {model_name}...", file=sys.stderr)
     t0 = time.perf_counter()
-    if os.path.isfile(os.path.join(model_dir, "model.safetensors")):
+    local_path = os.path.join(model_dir, "model.safetensors")
+    if os.path.isfile(local_path):
         params = load_weights_safetensors(model_dir, config)
     else:
-        print(f"[jax] model weights not found at {model_dir}", file=sys.stderr)
-        sys.exit(1)
+        # Fall back to HF hub cache.
+        HF_IDS = {"SmolLM2-135M": "HuggingFaceTB/SmolLM2-135M"}
+        hf_id = HF_IDS.get(model_name)
+        if hf_id is None:
+            print(f"[jax] model weights not found at {model_dir}", file=sys.stderr)
+            sys.exit(1)
+        try:
+            from huggingface_hub import snapshot_download
+            model_dir = snapshot_download(hf_id, allow_patterns=["*.safetensors", "*.json"])
+            print(f"[jax] using HF cache: {model_dir}", file=sys.stderr)
+            params = load_weights_safetensors(model_dir, config)
+        except Exception as e:
+            print(f"[jax] model weights not found at {model_dir}: {e}", file=sys.stderr)
+            sys.exit(1)
     load_s = time.perf_counter() - t0
     print(f"[jax] loaded in {load_s:.2f}s", file=sys.stderr)
 

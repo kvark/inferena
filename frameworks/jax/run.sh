@@ -7,9 +7,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MODEL="${1:-SmolLM2-135M}"
 
 # --- Check dependencies ---
-python3 -c "import jax" 2>/dev/null || {
-    echo "[jax] installing jax..." >&2
-    pip install jax jaxlib --quiet 2>&1 >&2
-}
+if ! python3 -c "import jax" 2>/dev/null; then
+    echo "[jax] jax not found. Install via: pip install jax jaxlib" >&2
+    exit 1
+fi
 
 exec python3 "$SCRIPT_DIR/bench.py" "$MODEL"

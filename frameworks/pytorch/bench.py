@@ -337,7 +337,7 @@ def load_model(model_name: str, spec: dict, dev: str):
     if model_type == "resnet":
         import torchvision.models as tv_models
         model = tv_models.resnet50(weights=None)
-        return _deterministic_init(model)
+        return _resnet_init(model)
 
     if model_type == "whisper":
         from transformers import WhisperForConditionalGeneration, WhisperConfig
@@ -348,7 +348,9 @@ def load_model(model_name: str, spec: dict, dev: str):
             vocab_size=51865, max_source_positions=1500,
             max_target_positions=448, num_mel_bins=80,
         )
-        return _deterministic_init(WhisperForConditionalGeneration(config))
+        full_model = WhisperForConditionalGeneration(config)
+        encoder = full_model.get_encoder()
+        return _whisper_encoder_init(encoder)
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     root_dir = os.path.dirname(os.path.dirname(script_dir))
@@ -384,6 +386,14 @@ def _load_pretrained(model_type: str, path_or_id: str):
         return AutoModelForCausalLM.from_pretrained(path_or_id, torch_dtype=torch.float32)
 
 
+def _name_seed(name: str) -> float:
+    """Deterministic seed from parameter name — framework-independent init."""
+    h = 0
+    for c in name.encode('ascii'):
+        h = ((h * 31) + c) & 0xFFFFFFFF
+    return float(h % 10000)
+
+
 def _deterministic_init(model):
     """Match meganeura's deterministic init: sin(j * 0.01 + i) * 0.1."""
     with torch.no_grad():
@@ -391,6 +401,76 @@ def _deterministic_init(model):
             n = p.numel()
             p.copy_(torch.sin(torch.arange(n, dtype=torch.float32) * 0.01 + i).view_as(p) * 0.1)
     return model
+
+
+# Linear weight suffixes that meganeura stores as [in, out] (transposed vs PyTorch [out, in]).
+_TRANSPOSED_SUFFIXES = frozenset([
+    'q_proj.weight', 'k_proj.weight', 'v_proj.weight', 'out_proj.weight',
+    'fc1.weight', 'fc2.weight',
+])
+
+
+def _name_seeded_init(p, name):
+    """Fill parameter with sin(j*0.01 + name_seed) * 0.1."""
+    seed = _name_seed(name)
+    n = p.numel()
+    p.copy_(torch.sin(torch.arange(n, dtype=torch.float32) * 0.01 + seed).view_as(p) * 0.1)
+
+
+def _transposed_init(p, name):
+    """Init as [in, out] (meganeura layout), store as [out, in] (PyTorch layout).
+
+    Ensures x @ W_torch.T == x @ W_mega for matching forward passes.
+    """
+    seed = _name_seed(name)
+    out_f, in_f = p.shape
+    w = torch.sin(torch.arange(in_f * out_f, dtype=torch.float32) * 0.01 + seed).view(in_f, out_f) * 0.1
+    p.copy_(w.T)
+
+
+def _resnet_init(model):
+    """Deterministic ResNet init matching meganeura's fused-BN approach.
+
+    BN → identity (weight=1, bias=0); conv/fc → name-seeded sin values.
+    FC weight uses transposed init to match meganeura's [in, out] matmul.
+    Model set to eval mode so BN uses running stats (mean=0, var=1 → identity).
+
+    Scale 0.01 (not 0.1) to prevent activation explosion through 50+ layers
+    with identity BN — residual connections keep activations bounded.
+    """
+    scale = 0.01
+    with torch.no_grad():
+        for name, p in model.named_parameters():
+            if '.bn' in name or '.downsample.1.' in name:
+                if 'weight' in name:
+                    p.fill_(1.0)
+                else:
+                    p.zero_()
+            elif name == 'fc.weight':
+                seed = _name_seed(name)
+                out_f, in_f = p.shape
+                w = torch.sin(torch.arange(in_f * out_f, dtype=torch.float32) * 0.01 + seed).view(in_f, out_f) * scale
+                p.copy_(w.T)
+            else:
+                seed = _name_seed(name)
+                n = p.numel()
+                p.copy_(torch.sin(torch.arange(n, dtype=torch.float32) * 0.01 + seed).view_as(p) * scale)
+    model.eval()
+    return model
+
+
+def _whisper_encoder_init(encoder):
+    """Deterministic Whisper encoder init matching meganeura convention.
+
+    Linear weights that meganeura stores as [in, out] get transposed init.
+    """
+    with torch.no_grad():
+        for name, p in encoder.named_parameters():
+            if any(name.endswith(s) for s in _TRANSPOSED_SUFFIXES):
+                _transposed_init(p, name)
+            else:
+                _name_seeded_init(p, name)
+    return encoder
 
 
 def _random_init(model_type: str, model_name: str):
@@ -474,7 +554,7 @@ def prepare_inputs(model_type: str, model, dev: str, seq_len: int = 128):
         return {"images": images, "labels": labels}
 
     if model_type == "whisper":
-        # 30s mel spectrogram: (1, 80, 3000).
+        # 30s mel spectrogram: (1, 80, 3000).  Encoder-only (matches meganeura).
         mel_len = 3000
         n_mels = 80
         mel_size = n_mels * mel_len
@@ -482,9 +562,7 @@ def prepare_inputs(model_type: str, model, dev: str, seq_len: int = 128):
             [(i * 0.001) for i in range(mel_size)],
             dtype=torch.float32, device=dev,
         ).sin().reshape(1, n_mels, mel_len)
-        # Decoder input: short token sequence.
-        dec_ids = torch.tensor([[50258, 50259, 50359, 50363]], device=dev, dtype=torch.long)
-        return {"input_features": mel, "decoder_input_ids": dec_ids}
+        return {"input_features": mel}
 
     vocab_size = model.config.vocab_size if hasattr(model.config, "vocab_size") else model.config.text_config.vocab_size
     input_ids = torch.arange(seq_len, device=dev, dtype=torch.long).unsqueeze(0)
@@ -508,7 +586,10 @@ def bench(model_name: str, spec: dict):
     t0 = time.perf_counter()
     model = load_model(model_name, spec, dev)
     model.to(dev)
-    model.train()
+    if model_type == "resnet":
+        model.eval()  # keep eval for fused-BN matching with meganeura
+    else:
+        model.train()
     sync()
     load_ms = (time.perf_counter() - t0) * 1000.0
     print(f"[pytorch] loaded in {load_ms:.0f}ms", file=sys.stderr)
@@ -537,9 +618,8 @@ def bench(model_name: str, spec: dict):
             dummy_out = model(dummy_kwargs["images"])
             F.cross_entropy(dummy_out, dummy_kwargs["labels"]).backward()
         elif model_type == "whisper":
-            dummy_out = model(input_features=dummy_kwargs["input_features"],
-                              decoder_input_ids=dummy_kwargs["decoder_input_ids"])
-            dummy_out.logits.sum().backward()
+            dummy_out = model(dummy_kwargs["input_features"])
+            dummy_out.last_hidden_state.sum().backward()
         else:
             dummy_out = model(**dummy_kwargs)
             dummy_out.loss.backward()
@@ -561,8 +641,7 @@ def bench(model_name: str, spec: dict):
     elif model_type == "resnet":
         outputs = model(fwd_kwargs["images"])
     elif model_type == "whisper":
-        outputs = model(input_features=fwd_kwargs["input_features"],
-                        decoder_input_ids=fwd_kwargs["decoder_input_ids"])
+        outputs = model(fwd_kwargs["input_features"])
     else:
         outputs = model(**fwd_kwargs)
     sync()
@@ -580,11 +659,8 @@ def bench(model_name: str, spec: dict):
         logits = outputs
         loss = F.cross_entropy(outputs, fwd_kwargs["labels"])
     elif model_type == "whisper":
-        logits = outputs.logits
-        loss = logits.sum() * 0  + F.cross_entropy(
-            logits.view(-1, logits.size(-1)),
-            fwd_kwargs["decoder_input_ids"][:, :logits.size(1)].reshape(-1),
-        )
+        logits = outputs.last_hidden_state  # encoder hidden states
+        loss = logits.pow(2).mean()  # MSE vs zero (matches meganeura)
     else:
         loss = outputs.loss
         logits = outputs.logits
@@ -616,8 +692,7 @@ def bench(model_name: str, spec: dict):
         lat_kw = {k: v[:, :1] if v.dim() >= 2 else v for k, v in fwd_kwargs.items()}
         lat_fn = lambda: model(**lat_kw)
     elif model_type == "whisper":
-        lat_fn = lambda: model(input_features=fwd_kwargs["input_features"],
-                               decoder_input_ids=fwd_kwargs["decoder_input_ids"][:, :1])
+        lat_fn = lambda: model(fwd_kwargs["input_features"])
     else:
         lat_fn = None
 

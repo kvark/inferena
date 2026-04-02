@@ -101,8 +101,16 @@ def main():
     llm.eval([0])
     latency_ms = (time.perf_counter() - t0) * 1000.0
 
-    # --- GPU info ---
+    # --- GPU / backend info ---
     gpu_name = "cpu"
+    backend = "CPU"
+    try:
+        import llama_cpp as _lc
+        if _lc.llama_supports_gpu_offload():
+            backend = "GPU"
+            gpu_name = "gpu"
+    except (AttributeError, ImportError):
+        pass
 
     # Extract llama.cpp git rev if available.
     rev_file = os.path.join(llama_cpp_dir, ".git", "refs", "heads", "master")
@@ -116,7 +124,7 @@ def main():
         "model": model_name,
         "device": gpu_name,
         "gpu_name": gpu_name,
-        "backend": "CPU",
+        "backend": backend,
         "timings": {
             "compile_s": round(compile_s, 2),
             "inference_ms": round(inference_ms, 3),

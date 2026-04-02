@@ -22,11 +22,14 @@ Benchmark config: seq_len=128, float32, input=[0,1,...,127].
 | | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/Lavapipe) | ~~0.00~~ | ~~2369~~ | ~~320~~ | ~~5700~~ | ~~11.73~~ |
 | | [Meganeura](https://github.com/kvark/meganeura/tree/0b91e08) (Vulkan/Lavapipe) | 7.29 | 3933 | 852 | 3651 | 10.99 |
 | | [llama.cpp](https://github.com/ggml-org/llama.cpp/tree/5a0ed51) (CPU) | 0.10 | 221 | 24 | — | 10.98 |
-| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | **52.71** | **66** | — | **111** | 8.35 |
-|  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~261~~ | — | ~~—~~ | ~~10.80~~ |
-|  | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu) | ~~0.00~~ | ~~189~~ | — | ~~197~~ | ~~11.67~~ |
-|  | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) (CPU) | ~~1.55~~ | ~~7452~~ | — | ~~7323~~ | ~~10.81~~ |
-|  | [Meganeura](https://github.com/kvark/meganeura/tree/77ceb78) (Vulkan) | ~~1.09~~ | ~~77~~ | — | ~~79~~ | ~~8.64~~ |
+| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 52.26 | **69** | 21 | 128 | 8.35 |
+|  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~274~~ | ~~16~~ | ~~—~~ | ~~10.80~~ |
+|  | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/vulkan) | ~~0.00~~ | ~~169~~ | ~~35~~ | ~~206~~ | ~~11.68~~ |
+|  | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) (CPU) | ~~1.49~~ | ~~7461~~ | ~~—~~ | ~~7391~~ | ~~10.81~~ |
+|  | [Meganeura](https://github.com/kvark/meganeura/tree/2ef151e) (Vulkan) | 1.06 | 78 | 24 | **63** | 8.64 |
+|  | [llama.cpp](https://github.com/ggml-org/llama.cpp/tree/7c20367) (CPU) | **0.04** | 851 | **16** | — | 8.69 |
+|  | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CPU) | ✗ | ✗ | ✗ | ✗ | |
+|  | [JAX](https://github.com/jax-ml/jax) (CPU) | ~~4.43~~ | ~~172~~ | ~~33~~ | ~~367~~ | ~~5.79~~ |
 | Apple M3 | [PyTorch 2.11.0](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (MPS) | 0.00 | **216** | — | **354** | 8.35 |
 |  | [MLX](https://github.com/ml-explore/mlx) (MLX) | ~~0.00~~ | ~~82~~ | — | ~~188~~ | ~~8.64~~ |
 |  | [Candle](https://github.com/huggingface/candle) (CPU) | ~~0.05~~ | ~~254~~ | — | ~~—~~ | ~~10.80~~ |

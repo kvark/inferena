@@ -37,12 +37,11 @@ def main():
     head_dim = hidden_size // n_heads
 
     # Load safetensors.
-    from safetensors import safe_open
-    tensors = {}
+    import torch
+    from safetensors.torch import load_file
     st_path = os.path.join(model_dir, "model.safetensors")
-    with safe_open(st_path, framework="numpy") as f:
-        for key in f.keys():
-            tensors[key] = f.get_tensor(key)
+    raw = load_file(st_path)
+    tensors = {k: v.float().numpy() for k, v in raw.items()}
 
     # Map HF tensor names to GGUF names.
     gguf_tensors = {}

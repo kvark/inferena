@@ -13,11 +13,8 @@ BENCH_SCRIPT="$SCRIPT_DIR/bench.py"
 
 # --- Ensure llama-cpp-python is importable ---
 if ! python3 -c "import llama_cpp" 2>/dev/null; then
-    echo "[llama-cpp] installing llama-cpp-python..." >&2
-    pip install llama-cpp-python --quiet 2>&1 >&2 || {
-        echo "[llama-cpp] failed to install llama-cpp-python" >&2
-        exit 1
-    }
+    echo "[llama-cpp] llama-cpp-python not found. Install via: pip install llama-cpp-python" >&2
+    exit 1
 fi
 
 # --- Clone llama.cpp for gguf-py library (needed for GGUF conversion) ---
@@ -32,10 +29,27 @@ GGUF_FILE="$MODEL_DIR/model-f32.gguf"
 
 if [ ! -f "$GGUF_FILE" ]; then
     echo "[llama-cpp] converting safetensors to GGUF..." >&2
-    if [ ! -f "$MODEL_DIR/model.safetensors" ]; then
-        echo "[llama-cpp] model.safetensors not found at $MODEL_DIR" >&2
-        exit 1
+    SAFETENSORS="$MODEL_DIR/model.safetensors"
+    # Try local path, then fall back to HF hub cache.
+    if [ ! -f "$SAFETENSORS" ]; then
+        HF_PATH=$(python3 -c "
+from huggingface_hub import hf_hub_download
+ids = {'SmolLM2-135M': 'HuggingFaceTB/SmolLM2-135M'}
+hf_id = ids.get('$MODEL')
+if hf_id:
+    import os
+    from huggingface_hub import snapshot_download
+    print(snapshot_download(hf_id, allow_patterns=['*.safetensors', '*.json']))
+" 2>/dev/null) || true
+        if [ -n "$HF_PATH" ] && [ -f "$HF_PATH/model.safetensors" ]; then
+            MODEL_DIR="$HF_PATH"
+            echo "[llama-cpp] using HF cache: $MODEL_DIR" >&2
+        else
+            echo "[llama-cpp] model.safetensors not found at $MODEL_DIR" >&2
+            exit 1
+        fi
     fi
+    mkdir -p "$(dirname "$GGUF_FILE")"
     python3 "$SCRIPT_DIR/convert_to_gguf.py" "$MODEL_DIR" "$GGUF_FILE" 2>&1 >&2
 fi
 

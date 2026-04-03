@@ -25,14 +25,14 @@ Two benchmark configurations are used depending on framework capabilities:
 |  | [JAX](https://github.com/jax-ml/jax) (CPU) | ✗ | ✗ | ✗ | ✗ | |
 |  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | ✗ | |
 |  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 12.41 | **3** | **3** | **6** | 0.57 |
-|  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~5339~~ | ~~—~~ | ~~—~~ | ~~0.00~~ |
-|  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | ✗ | |
-|  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-|  | [Meganeura](https://github.com/kvark/meganeura/tree/2ef151e) (Vulkan) | **1.21** | 9 | 11 | 19 | 0.57 |
-|  | [llama.cpp](https://github.com/ggml-org/llama.cpp) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-|  | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-|  | [JAX](https://github.com/jax-ml/jax) (CPU) | ✗ | ✗ | ✗ | ✗ | |
+| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 12.51 | **3** | **2** | **6** | 0.57 |
+|  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~5529~~ | ~~—~~ | ~~—~~ | ~~0.00~~ |
+|  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | — | — | — | — | |
+|  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | — | — | — | — | |
+|  | [Meganeura](https://github.com/kvark/meganeura/tree/2ef151e) (Vulkan) | **1.32** | 9 | 10 | 19 | 0.57 |
+|  | [GGML](https://github.com/ggerganov/ggml) (CPU) | — | — | — | — | |
+|  | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CPU) | — | — | — | — | |
+|  | [JAX](https://github.com/jax-ml/jax) (CPU) | — | — | — | — | |
 | Apple M3 | [PyTorch 2.11.0](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (MPS) | 0.00 | 504 | — | **192** | 0.57 |
 |  | [MLX](https://github.com/ml-explore/mlx) (MLX) | ~~0.00~~ | ~~6~~ | — | ~~8~~ | ~~0.51~~ |
 |  | [Candle](https://github.com/huggingface/candle) (CPU) | ~~0.08~~ | ~~9962~~ | — | ~~—~~ | ~~0.00~~ |

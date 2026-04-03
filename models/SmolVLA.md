@@ -21,14 +21,14 @@ Benchmark config: chunk_size=50, vlm_seq_len=16, float32, random weights, MSE lo
 | | [Candle](https://github.com/huggingface/candle) (CPU) | ✗ | ✗ | ✗ | ✗ | |
 | | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | ✗ | |
 | | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 19.54 | **26** | 15 | 39 | 0.00 |
-|  | [Candle](https://github.com/huggingface/candle) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-|  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | ✗ | |
-|  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-|  | [Meganeura](https://github.com/kvark/meganeura/tree/2ef151e) (Vulkan) | **0.44** | 29 | **13** | **25** | 0.01 |
-|  | [llama.cpp](https://github.com/ggml-org/llama.cpp) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-|  | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-|  | [JAX](https://github.com/jax-ml/jax) (CPU) | ✗ | ✗ | ✗ | ✗ | |
+| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 19.71 | **26** | **14** | 47 | 0.00 |
+|  | [Candle](https://github.com/huggingface/candle) (CPU) | — | — | — | — | |
+|  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | — | — | — | — | |
+|  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | — | — | — | — | |
+|  | [Meganeura](https://github.com/kvark/meganeura/tree/2ef151e) (Vulkan) | **0.46** | 30 | 20 | **25** | 0.01 |
+|  | [GGML](https://github.com/ggerganov/ggml) (CPU) | — | — | — | — | |
+|  | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CPU) | — | — | — | — | |
+|  | [JAX](https://github.com/jax-ml/jax) (CPU) | — | — | — | — | |
 | Apple M3 | [PyTorch 2.11.0](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (MPS) | 0.00 | 199 | — | 136 | 0.00 |
 |  | [MLX](https://github.com/ml-explore/mlx) (MLX) | 0.00 | **14** | — | 105 | 0.00 |
 |  | [Candle](https://github.com/huggingface/candle) (CPU) | ✗ | ✗ | ✗ | ✗ | |

@@ -20,14 +20,14 @@ Benchmark config: batch=4, 3x224x224, float32, random weights, cross-entropy los
 | | [Meganeura](https://github.com/kvark/meganeura/tree/2ef151e) (Vulkan/Lavapipe) | ~~0.98~~ | ~~3906~~ | ~~1192~~ | ~~—~~ | ~~∞~~ |
 | | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | ✗ | |
 | | [JAX](https://github.com/jax-ml/jax) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 35.30 | 47 | 14 | **92** | 6.92 |
-|  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | 0.00 | 495 | 153 | — | 6.91 |
-|  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | ✗ | |
-|  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-|  | [Meganeura](https://github.com/kvark/meganeura/tree/2ef151e) (Vulkan) | 0.21 | 83 | 25 | — | 6.92 |
-|  | [llama.cpp](https://github.com/ggml-org/llama.cpp) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-|  | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CPUExecutionProvider) | 0.11 | **44** | **14** | — | 6.92 |
-|  | [JAX](https://github.com/jax-ml/jax) (CPU) | ✗ | ✗ | ✗ | ✗ | |
+| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 36.24 | 48 | 15 | **89** | 6.92 |
+|  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | 0.00 | 487 | 158 | — | 6.91 |
+|  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | — | — | — | — | |
+|  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | — | — | — | — | |
+|  | [Meganeura](https://github.com/kvark/meganeura/tree/2ef151e) (Vulkan) | 0.22 | 84 | 25 | — | 6.92 |
+|  | [GGML](https://github.com/ggerganov/ggml) (CPU) | — | — | — | — | |
+|  | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CPUExecutionProvider) | 2.30 | **44** | **13** | — | 6.92 |
+|  | [JAX](https://github.com/jax-ml/jax) (CPU) | 1.43 | 103 | 43 | 282 | 6.92 |
 
 **Correctness:** PyTorch vs ONNX Runtime: **CLOSE** (loss diff 0.27, rel error 8.8%).
 

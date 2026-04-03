@@ -22,14 +22,14 @@ Benchmark config: seq_len=128, float32, input=[0,1,...,127].
 | | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/Lavapipe) | ~~0.00~~ | ~~2369~~ | ~~320~~ | ~~5700~~ | ~~11.73~~ |
 | | [Meganeura](https://github.com/kvark/meganeura/tree/0b91e08) (Vulkan/Lavapipe) | 7.29 | 3933 | 852 | 3651 | 10.99 |
 | | [llama.cpp](https://github.com/ggml-org/llama.cpp/tree/5a0ed51) (CPU) | 0.10 | 221 | 24 | — | 10.98 |
-| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 52.26 | **69** | 21 | 128 | 8.35 |
-|  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~274~~ | ~~16~~ | ~~—~~ | ~~10.80~~ |
-|  | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/vulkan) | ~~0.00~~ | ~~169~~ | ~~35~~ | ~~206~~ | ~~11.68~~ |
-|  | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) (CPU) | ~~1.49~~ | ~~7461~~ | ~~—~~ | ~~7391~~ | ~~10.81~~ |
-|  | [Meganeura](https://github.com/kvark/meganeura/tree/2ef151e) (Vulkan) | 1.06 | 78 | 24 | **63** | 8.64 |
-|  | [llama.cpp](https://github.com/ggml-org/llama.cpp/tree/7c20367) (CPU) | **0.04** | 851 | **16** | — | 8.69 |
-|  | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-|  | [JAX](https://github.com/jax-ml/jax) (CPU) | ~~4.43~~ | ~~172~~ | ~~33~~ | ~~367~~ | ~~5.79~~ |
+| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 53.15 | **65** | 21 | 125 | 8.35 |
+|  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~255~~ | ~~9~~ | ~~—~~ | ~~10.80~~ |
+|  | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/vulkan) | ~~0.00~~ | ~~178~~ | ~~37~~ | ~~211~~ | ~~11.51~~ |
+|  | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) (CPU) | ~~1.53~~ | ~~7719~~ | ~~—~~ | ~~7591~~ | ~~10.81~~ |
+|  | [Meganeura](https://github.com/kvark/meganeura/tree/2ef151e) (Vulkan) | 1.06 | 79 | 24 | **67** | 8.64 |
+|  | [GGML](https://github.com/ggerganov/ggml/tree/0.3.16) (CPU) | **0.04** | 862 | **15** | — | 8.69 |
+|  | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CPUExecutionProvider) | ~~8.73~~ | ~~77~~ | ~~14~~ | ~~—~~ | ~~6.01~~ |
+|  | [JAX](https://github.com/jax-ml/jax) (CPU) | ~~4.35~~ | ~~173~~ | ~~31~~ | ~~359~~ | ~~5.79~~ |
 | Apple M3 | [PyTorch 2.11.0](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (MPS) | 0.00 | **216** | — | **354** | 8.35 |
 |  | [MLX](https://github.com/ml-explore/mlx) (MLX) | ~~0.00~~ | ~~82~~ | — | ~~188~~ | ~~8.64~~ |
 |  | [Candle](https://github.com/huggingface/candle) (CPU) | ~~0.05~~ | ~~254~~ | — | ~~—~~ | ~~10.80~~ |

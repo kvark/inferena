@@ -22,14 +22,14 @@ Benchmark config: 30s mel spectrogram (80x3000), 4-token decoder input, float32,
 | | [Meganeura](https://github.com/kvark/meganeura/tree/2ef151e) (Vulkan/Lavapipe) | ~~7.84~~ | ~~53467~~ | ~~—~~ | ~~—~~ | ~~0.01~~ |
 | | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | ✗ | |
 | | [JAX](https://github.com/jax-ml/jax) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 16.19 | 76 | **61** | **206** | 0.01 |
-|  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | **0.01** | 338 | — | — | 0.00 |
-|  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | ✗ | |
-|  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-|  | [Meganeura](https://github.com/kvark/meganeura/tree/2ef151e) (Vulkan) | 0.14 | 130 | 114 | — | 0.01 |
-|  | [llama.cpp](https://github.com/ggml-org/llama.cpp) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-|  | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CPUExecutionProvider) | 0.04 | **75** | — | — | 0.01 |
-|  | [JAX](https://github.com/jax-ml/jax) (CPU) | ✗ | ✗ | ✗ | ✗ | |
+| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 16.57 | 82 | **63** | **207** | 0.01 |
+|  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | 0.00 | 345 | — | — | 0.00 |
+|  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | — | — | — | — | |
+|  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | — | — | — | — | |
+|  | [Meganeura](https://github.com/kvark/meganeura/tree/2ef151e) (Vulkan) | 0.14 | 128 | 115 | — | 0.01 |
+|  | [GGML](https://github.com/ggerganov/ggml) (faster-whisper (CTranslate2)) | 24.36 | 250 | 229 | — | 0.00 |
+|  | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CPUExecutionProvider) | 3.36 | **72** | — | — | 0.01 |
+|  | [JAX](https://github.com/jax-ml/jax) (CPU) | 1.82 | 294 | 236 | 526 | 0.01 |
 
 **Correctness:** PyTorch vs ONNX Runtime: **PASS** (loss diff 0.0).
 

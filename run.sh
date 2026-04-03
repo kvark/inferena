@@ -11,6 +11,7 @@ FRAMEWORKS=""
 JSON_FLAG=""
 DOWNLOAD=false
 CHECK_ONLY=false
+DRY_RUN=false
 HAS_ARGS=false
 
 while [[ $# -gt 0 ]]; do
@@ -39,6 +40,11 @@ while [[ $# -gt 0 ]]; do
             CHECK_ONLY=true
             shift
             ;;
+        --dry-run)
+            DRY_RUN=true
+            HAS_ARGS=true
+            shift
+            ;;
         -h|--help)
             echo "inferena - Inference Arena"
             echo ""
@@ -50,10 +56,11 @@ while [[ $# -gt 0 ]]; do
             echo "  --json                    Output results as JSON"
             echo "  --download                Download model weights before running"
             echo "  --check                   Check framework availability (don't run benchmarks)"
+            echo "  --dry-run                 Validate framework+model support without running benchmarks"
             echo "  -h, --help                Show this help"
             echo ""
             echo "Models: $ALL_MODELS"
-            echo "Frameworks: pytorch, mlx, candle, burn, luminal, meganeura, llama-cpp, onnxruntime, jax"
+            echo "Frameworks: pytorch, candle, burn, luminal, meganeura, ggml, onnxruntime, jax, mlx"
             exit 0
             ;;
         *)
@@ -87,19 +94,28 @@ run_check() {
     check_python "PyTorch" "torch"
     check_python "torchvision" "torchvision" " (needed for ResNet-50)"
     check_python "transformers" "transformers" " (needed for Whisper-tiny)"
-    check_python "optimum" "optimum" " (needed for ONNX Runtime export of SmolLM2/Whisper)"
     check_python "ONNX Runtime" "onnxruntime"
     check_python "JAX" "jax"
     check_python "safetensors" "safetensors" " (needed for JAX, llama.cpp weight loading)"
     check_python "huggingface_hub" "huggingface_hub" " (needed for model downloads)"
-    check_python "MLX" "mlx.core" " (macOS only)"
+    if [ "$(uname -s)" = "Darwin" ]; then
+        check_python "MLX" "mlx.core"
+    fi
 
-    # llama.cpp
+    # GGML backends (llama.cpp, whisper.cpp)
+    echo ""
+    echo "  GGML backends:"
     if python3 -c "import llama_cpp" 2>/dev/null; then
         ver=$(python3 -c "import llama_cpp; print(getattr(llama_cpp, '__version__', 'unknown'))" 2>/dev/null)
-        echo "  ✓ llama.cpp ($ver via llama-cpp-python)"
+        echo "    ✓ llama.cpp ($ver via llama-cpp-python)"
     else
-        echo "  ✗ llama.cpp — pip install llama-cpp-python"
+        echo "    ✗ llama.cpp — pip install llama-cpp-python"
+    fi
+    if python3 -c "import faster_whisper" 2>/dev/null; then
+        ver=$(python3 -c "import faster_whisper; print(faster_whisper.__version__)" 2>/dev/null)
+        echo "    ✓ whisper.cpp ($ver via faster-whisper)"
+    else
+        echo "    ~ whisper.cpp — not installed (pip install faster-whisper)"
     fi
 
     echo ""
@@ -179,6 +195,10 @@ for MODEL in $MODELS; do
 
     if [ -n "$JSON_FLAG" ]; then
         ARGS+=("--json")
+    fi
+
+    if [ "$DRY_RUN" = true ]; then
+        ARGS+=("--dry-run")
     fi
 
     "$HARNESS" "${ARGS[@]}" || true

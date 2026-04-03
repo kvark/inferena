@@ -398,17 +398,32 @@ fn bench_whisper() -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model_name = std::env::args().nth(1).unwrap_or("SmolLM2-135M".into());
+    let all_models = [
+        "SmolLM2-135M",
+        "StableDiffusion",
+        "ResNet-50",
+        "Whisper-tiny",
+    ];
+
+    if !all_models.contains(&model_name.as_str()) {
+        eprintln!(
+            "Unknown model: {model_name}. Available: {}",
+            all_models.join(", ")
+        );
+        std::process::exit(1);
+    }
+
+    if std::env::var("INFERENA_DRY_RUN").as_deref() == Ok("1") {
+        eprintln!("[candle] dry-run OK: {model_name}");
+        return Ok(());
+    }
+
     match model_name.as_str() {
         "SmolLM2-135M" => bench_smollm2(&model_name)?,
         "StableDiffusion" => bench_stable_diffusion()?,
         "ResNet-50" => bench_resnet()?,
         "Whisper-tiny" => bench_whisper()?,
-        other => {
-            eprintln!(
-                "Unknown model: {other}. Available: SmolLM2-135M, StableDiffusion, ResNet-50, Whisper-tiny"
-            );
-            std::process::exit(1);
-        }
+        _ => unreachable!(),
     }
     Ok(())
 }

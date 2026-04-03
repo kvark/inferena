@@ -29,6 +29,14 @@ MODEL_REGISTRY = {
         "hf_id": "HuggingFaceTB/SmolLM2-135M",
         "type": "causal_lm",
     },
+    "SmolVLA": {
+        "hf_id": "lerobot/smolvla_base",
+        "type": "smolvla",
+    },
+    "StableDiffusion": {
+        "hf_id": "stable-diffusion-v1-5/stable-diffusion-v1-5",
+        "type": "sd_unet",
+    },
     "ResNet-50": {
         "hf_id": "torchvision/resnet50",
         "type": "resnet",
@@ -126,50 +134,94 @@ def export_whisper_encoder_onnx(onnx_path):
                       dynamo=False)
 
 
+def _export_causal_lm_onnx(onnx_path, model_dir):
+    """Export causal LM to ONNX via torch.onnx.export (no optimum dependency)."""
+    import torch
+    from transformers import AutoModelForCausalLM
+
+    # Try local dir, then HF cache.
+    src = model_dir
+    if not os.path.isfile(os.path.join(src, "model.safetensors")):
+        try:
+            from huggingface_hub import snapshot_download
+            HF_IDS = {"SmolLM2-135M": "HuggingFaceTB/SmolLM2-135M"}
+            hf_id = HF_IDS.get(os.path.basename(src))
+            if hf_id:
+                src = snapshot_download(hf_id, allow_patterns=["*.safetensors", "*.json"])
+            else:
+                raise FileNotFoundError(f"No weights at {src}")
+        except Exception as e:
+            print(f"[onnxruntime] cannot load model: {e}", file=sys.stderr)
+            sys.exit(1)
+    model = AutoModelForCausalLM.from_pretrained(src, torch_dtype=torch.float32)
+    model.eval()
+
+    # Wrap to return only logits (avoids DynamicCache tracing issues).
+    class LogitsOnly(torch.nn.Module):
+        def __init__(self, m):
+            super().__init__()
+            self.m = m
+        def forward(self, input_ids, attention_mask):
+            return self.m(input_ids=input_ids, attention_mask=attention_mask, use_cache=False).logits
+
+    wrapper = LogitsOnly(model)
+    seq_len = 128
+    dummy_ids = torch.arange(seq_len, dtype=torch.long).unsqueeze(0)
+    dummy_mask = torch.ones(1, seq_len, dtype=torch.long)
+    os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
+    torch.onnx.export(
+        wrapper, (dummy_ids, dummy_mask), onnx_path,
+        input_names=["input_ids", "attention_mask"],
+        output_names=["logits"],
+        opset_version=17,
+        dynamic_axes={
+            "input_ids": {0: "batch", 1: "seq"},
+            "attention_mask": {0: "batch", 1: "seq"},
+            "logits": {0: "batch", 1: "seq"},
+        },
+        dynamo=False,
+    )
+
+
 def bench_causal_lm(model_name):
     import onnxruntime as ort
-    from optimum.onnxruntime import ORTModelForCausalLM
-    import torch
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     root_dir = os.path.dirname(os.path.dirname(script_dir))
     model_dir = os.path.join(root_dir, "models", model_name)
-    onnx_dir = os.path.join(model_dir, "onnx")
-    onnx_path = os.path.join(onnx_dir, "model.onnx")
+    onnx_path = os.path.join(model_dir, "causal_lm.onnx")
 
     seq_len = 128
     vocab_size = 49152
 
-    if not os.path.isfile(onnx_path):
-        print(f"[onnxruntime] exporting to ONNX via optimum...", file=sys.stderr)
-        os.makedirs(onnx_dir, exist_ok=True)
-        ort_model = ORTModelForCausalLM.from_pretrained(model_dir, export=True)
-        ort_model.save_pretrained(onnx_dir)
-    else:
-        print(f"[onnxruntime] loading from {onnx_dir}...", file=sys.stderr)
+    # Always re-export so compile_s includes the full cold-start cost.
+    print(f"[onnxruntime] exporting {model_name} to ONNX...", file=sys.stderr)
+    if os.path.isfile(onnx_path):
+        os.remove(onnx_path)
 
     t0 = time.perf_counter()
-    ort_model = ORTModelForCausalLM.from_pretrained(onnx_dir)
+    _export_causal_lm_onnx(onnx_path, model_dir)
+    sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
     compile_s = time.perf_counter() - t0
 
-    input_ids = torch.arange(seq_len, dtype=torch.long).unsqueeze(0)
-    attention_mask = torch.ones(1, seq_len, dtype=torch.long)
+    input_ids = np.arange(seq_len, dtype=np.int64).reshape(1, seq_len)
+    attention_mask = np.ones((1, seq_len), dtype=np.int64)
     labels = np.array([[(i + 1) % vocab_size for i in range(seq_len)]], dtype=np.int64)
 
-    ort_model(input_ids=input_ids, attention_mask=attention_mask)
+    sess.run(None, {"input_ids": input_ids, "attention_mask": attention_mask})
     t0 = time.perf_counter()
-    outputs = ort_model(input_ids=input_ids, attention_mask=attention_mask)
+    outputs = sess.run(None, {"input_ids": input_ids, "attention_mask": attention_mask})
     inference_ms = (time.perf_counter() - t0) * 1000.0
 
-    logits = outputs.logits.detach().numpy()
+    logits = outputs[0]  # [1, seq_len, vocab]
     loss = cross_entropy_np(logits[0], labels[0])
 
     # Latency (single-token).
-    lat_input = torch.zeros(1, 1, dtype=torch.long)
-    lat_mask = torch.ones(1, 1, dtype=torch.long)
-    ort_model(input_ids=lat_input, attention_mask=lat_mask)
+    lat_ids = np.zeros((1, 1), dtype=np.int64)
+    lat_mask = np.ones((1, 1), dtype=np.int64)
+    sess.run(None, {"input_ids": lat_ids, "attention_mask": lat_mask})
     t0 = time.perf_counter()
-    ort_model(input_ids=lat_input, attention_mask=lat_mask)
+    sess.run(None, {"input_ids": lat_ids, "attention_mask": lat_mask})
     latency_ms = (time.perf_counter() - t0) * 1000.0
 
     emit(model_name, compile_s, inference_ms, latency_ms, logits, loss)
@@ -182,12 +234,14 @@ def bench_resnet(model_name):
     root_dir = os.path.dirname(os.path.dirname(script_dir))
     onnx_path = os.path.join(root_dir, "models", model_name, "resnet50.onnx")
 
-    if not os.path.isfile(onnx_path):
-        print("[onnxruntime] exporting ResNet-50 to ONNX...", file=sys.stderr)
-        os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
-        export_resnet_onnx(onnx_path)
+    # Always re-export so compile_s includes the full cold-start cost.
+    print("[onnxruntime] exporting ResNet-50 to ONNX...", file=sys.stderr)
+    if os.path.isfile(onnx_path):
+        os.remove(onnx_path)
+    os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
 
     t0 = time.perf_counter()
+    export_resnet_onnx(onnx_path)
     sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
     compile_s = time.perf_counter() - t0
 
@@ -220,12 +274,14 @@ def bench_whisper(model_name):
     root_dir = os.path.dirname(os.path.dirname(script_dir))
     onnx_path = os.path.join(root_dir, "models", model_name, "whisper_encoder.onnx")
 
-    if not os.path.isfile(onnx_path):
-        print("[onnxruntime] exporting Whisper-tiny encoder to ONNX...", file=sys.stderr)
-        os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
-        export_whisper_encoder_onnx(onnx_path)
+    # Always re-export so compile_s includes the full cold-start cost.
+    print("[onnxruntime] exporting Whisper-tiny encoder to ONNX...", file=sys.stderr)
+    if os.path.isfile(onnx_path):
+        os.remove(onnx_path)
+    os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
 
     t0 = time.perf_counter()
+    export_whisper_encoder_onnx(onnx_path)
     sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
     compile_s = time.perf_counter() - t0
 
@@ -279,6 +335,10 @@ def main():
         print(f"Unknown model: {model_name}. Available: {list(MODEL_REGISTRY.keys())}", file=sys.stderr)
         sys.exit(1)
 
+    if os.environ.get("INFERENA_DRY_RUN") == "1":
+        print(f"[onnxruntime] dry-run OK: {model_name} ({spec['type']})", file=sys.stderr)
+        sys.exit(0)
+
     model_type = spec["type"]
     if model_type == "causal_lm":
         bench_causal_lm(model_name)
@@ -286,6 +346,18 @@ def main():
         bench_resnet(model_name)
     elif model_type == "whisper":
         bench_whisper(model_name)
+    elif model_type in ("smolvla", "sd_unet"):
+        # These need lerobot/diffusers respectively — check and report.
+        dep = "lerobot" if model_type == "smolvla" else "diffusers"
+        try:
+            __import__(dep)
+        except ImportError:
+            print(f"[onnxruntime] {model_name} requires '{dep}' (pip install {dep})", file=sys.stderr)
+            print(f"unsupported: {model_name} (missing {dep})", file=sys.stderr)
+            sys.exit(1)
+        print(f"[onnxruntime] {model_name}: ONNX export not yet implemented", file=sys.stderr)
+        print(f"unsupported: {model_name}", file=sys.stderr)
+        sys.exit(1)
     else:
         print(f"[onnxruntime] unsupported: {model_type}", file=sys.stderr)
         sys.exit(1)

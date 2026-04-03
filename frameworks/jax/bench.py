@@ -179,6 +179,8 @@ CONFIGS = {
     ),
 }
 
+ALL_MODELS = ["SmolLM2-135M", "ResNet-50", "Whisper-tiny"]
+
 
 # ── Benchmark ────────────────────────────────────────────────────────
 
@@ -186,6 +188,305 @@ def sha256_f32(data):
     flat = np.asarray(data, dtype=np.float32).flatten()
     raw = struct.pack(f"<{flat.size}f", *flat.tolist())
     return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+# ── Name-seeded init (matches PyTorch/meganeura) ─────────────────
+
+def _name_seed(name: str) -> float:
+    h = 0
+    for c in name.encode('ascii'):
+        h = ((h * 31) + c) & 0xFFFFFFFF
+    return float(h % 10000)
+
+
+def _init_param(name, shape, scale=0.1):
+    seed = _name_seed(name)
+    n = 1
+    for s in shape:
+        n *= s
+    return (jnp.sin(jnp.arange(n, dtype=jnp.float32) * 0.01 + seed) * scale).reshape(shape)
+
+
+def _init_transposed(name, out_dim, in_dim, scale=0.1):
+    """Init in PyTorch [out, in] layout, return as [in, out] for JAX matmul."""
+    seed = _name_seed(name)
+    w_flat = jnp.sin(jnp.arange(out_dim * in_dim, dtype=jnp.float32) * 0.01 + seed) * scale
+    return w_flat.reshape(out_dim, in_dim).T
+
+
+# ── ResNet-50 in pure JAX ────────────────────────────────────────
+
+def _conv2d(x, w, stride=1, padding=0):
+    """Conv2d: x=[N,C,H,W], w=[Co,Ci,kH,kW]."""
+    # JAX conv expects [N,H,W,C] — transpose
+    x = jnp.transpose(x, (0, 2, 3, 1))
+    w = jnp.transpose(w, (2, 3, 1, 0))  # [kH,kW,Ci,Co]
+    out = jax.lax.conv_general_dilated(
+        x, w, window_strides=(stride, stride),
+        padding=[(padding, padding), (padding, padding)],
+        dimension_numbers=('NHWC', 'HWIO', 'NHWC'))
+    return jnp.transpose(out, (0, 3, 1, 2))
+
+
+def _max_pool(x, k=3, stride=2, pad=1):
+    x = jnp.transpose(x, (0, 2, 3, 1))
+    x = jnp.pad(x, ((0,0),(pad,pad),(pad,pad),(0,0)), constant_values=-jnp.inf)
+    out = jax.lax.reduce_window(x, -jnp.inf, jax.lax.max,
+                                 (1,k,k,1), (1,stride,stride,1), 'VALID')
+    return jnp.transpose(out, (0, 3, 1, 2))
+
+
+def _bottleneck(x, params, stride, has_ds):
+    h = _conv2d(x, params['conv1'], stride=1, padding=0)
+    h = jax.nn.relu(h)
+    h = _conv2d(h, params['conv2'], stride=stride, padding=1)
+    h = jax.nn.relu(h)
+    h = _conv2d(h, params['conv3'], stride=1, padding=0)
+    shortcut = _conv2d(x, params['ds'], stride=stride, padding=0) if has_ds else x
+    return jax.nn.relu(h + shortcut)
+
+
+# Static block config: (stride, has_downsample) per block — not traced by JIT.
+_RESNET50_BLOCK_CFG = []
+_stages = [(64,64,256,1,3), (256,128,512,2,4), (512,256,1024,2,6), (1024,512,2048,2,3)]
+for _si, (_ic, _mc, _oc, _fs, _n) in enumerate(_stages):
+    for _i in range(_n):
+        _s = _fs if _i == 0 else 1
+        _c = _ic if _i == 0 else _oc
+        _RESNET50_BLOCK_CFG.append((_s, _s > 1 or _c != _oc))
+_RESNET50_BLOCK_CFG = tuple(_RESNET50_BLOCK_CFG)
+
+
+def _resnet50_forward(params, images):
+    x = _conv2d(images, params['conv1'], stride=2, padding=3)
+    x = jax.nn.relu(x)
+    x = _max_pool(x, 3, 2, 1)
+    for bp, (stride, has_ds) in zip(params['blocks'], _RESNET50_BLOCK_CFG):
+        x = _bottleneck(x, bp, stride, has_ds)
+    x = x.mean(axis=(2, 3))  # global avg pool -> [N, C]
+    x = x @ params['fc_w'] + params['fc_b']
+    return x
+
+
+def _build_resnet50_params():
+    scale = 0.01
+    params = {'conv1': _init_param('conv1.weight', (64, 3, 7, 7), scale)}
+    blocks = []
+    stages = [(64,64,256,1,3), (256,128,512,2,4), (512,256,1024,2,6), (1024,512,2048,2,3)]
+    for stage_idx, (in_c, mid_c, out_c, first_stride, n) in enumerate(stages):
+        for i in range(n):
+            stride = first_stride if i == 0 else 1
+            ic = in_c if i == 0 else out_c
+            prefix = f"layer{stage_idx+1}.{i}"
+            bp = {
+                'conv1': _init_param(f'{prefix}.conv1.weight', (mid_c, ic, 1, 1), scale),
+                'conv2': _init_param(f'{prefix}.conv2.weight', (mid_c, mid_c, 3, 3), scale),
+                'conv3': _init_param(f'{prefix}.conv3.weight', (out_c, mid_c, 1, 1), scale),
+            }
+            if stride > 1 or ic != out_c:
+                bp['ds'] = _init_param(f'{prefix}.downsample.0.weight', (out_c, ic, 1, 1), scale)
+            blocks.append(bp)
+    params['blocks'] = blocks
+    params['fc_w'] = _init_transposed('fc.weight', 1000, 2048, scale)
+    params['fc_b'] = _init_param('fc.bias', (1000,), scale)
+    return params
+
+
+# ── Whisper encoder in pure JAX ──────────────────────────────────
+
+def _layer_norm(x, w, b, eps=1e-5):
+    mean = x.mean(axis=-1, keepdims=True)
+    var = ((x - mean) ** 2).mean(axis=-1, keepdims=True)
+    return (x - mean) / jnp.sqrt(var + eps) * w + b
+
+
+def _whisper_attention(x, params, n_heads):
+    seq_len, d = x.shape
+    head_dim = d // n_heads
+    q = (x @ params['wq'] + params['q_b']).reshape(seq_len, n_heads, head_dim)
+    k = (x @ params['wk']).reshape(seq_len, n_heads, head_dim)
+    v = (x @ params['wv'] + params['v_b']).reshape(seq_len, n_heads, head_dim)
+    scores = jnp.einsum('shd,thd->hst', q, k) * (head_dim ** -0.5)
+    weights = jax.nn.softmax(scores, axis=-1)
+    out = jnp.einsum('hst,thd->shd', weights, v).reshape(seq_len, d)
+    return out @ params['wo'] + params['o_b']
+
+
+def _whisper_encoder_forward(params, mel):
+    # Conv stem: mel is [1, 80, 3000]
+    x = _conv2d(mel.reshape(1, 80, 3000, 1),
+                params['conv1_w'].reshape(-1, 80, 3, 1), stride=1, padding=1)
+    x = x + params['conv1_b'].reshape(1, -1, 1, 1)
+    x = jax.nn.gelu(x, approximate=False)
+    x = _conv2d(x, params['conv2_w'].reshape(-1, 384, 3, 1), stride=2, padding=1)
+    x = x + params['conv2_b'].reshape(1, -1, 1, 1)
+    x = jax.nn.gelu(x, approximate=False)
+    # x is [1, d, seq_len, 1] -> [seq_len, d]
+    x = x[0, :, :, 0].T  # [d, seq_len] -> [seq_len, d]
+    x = x + params['pos_embed']
+    for lp in params['layers']:
+        # Self-attention + residual
+        h = _layer_norm(x, lp['ln1_w'], lp['ln1_b'])
+        x = x + _whisper_attention(h, lp, 6)
+        # FFN + residual
+        h = _layer_norm(x, lp['ln2_w'], lp['ln2_b'])
+        h = jax.nn.gelu(h @ lp['fc1_w'] + lp['fc1_b'], approximate=False)
+        x = x + (h @ lp['fc2_w'] + lp['fc2_b'])
+    return _layer_norm(x, params['final_ln_w'], params['final_ln_b'])
+
+
+def _build_whisper_params():
+    d, ffn, n_layers = 384, 1536, 4
+    seq_len = 1500
+    p = {
+        'conv1_w': _init_param('conv1.weight', (d * 80 * 3,)),
+        'conv1_b': _init_param('conv1.bias', (d,)),
+        'conv2_w': _init_param('conv2.weight', (d * d * 3,)),
+        'conv2_b': _init_param('conv2.bias', (d,)),
+        'pos_embed': _init_param('embed_positions.weight', (seq_len, d)),
+        'final_ln_w': _init_param('layer_norm.weight', (d,)),
+        'final_ln_b': _init_param('layer_norm.bias', (d,)),
+    }
+    layers = []
+    for i in range(n_layers):
+        pf = f'layers.{i}'
+        lp = {
+            'ln1_w': _init_param(f'{pf}.self_attn_layer_norm.weight', (d,)),
+            'ln1_b': _init_param(f'{pf}.self_attn_layer_norm.bias', (d,)),
+            'wq': _init_transposed(f'{pf}.self_attn.q_proj.weight', d, d),
+            'q_b': _init_param(f'{pf}.self_attn.q_proj.bias', (d,)),
+            'wk': _init_transposed(f'{pf}.self_attn.k_proj.weight', d, d),
+            'wv': _init_transposed(f'{pf}.self_attn.v_proj.weight', d, d),
+            'v_b': _init_param(f'{pf}.self_attn.v_proj.bias', (d,)),
+            'wo': _init_transposed(f'{pf}.self_attn.out_proj.weight', d, d),
+            'o_b': _init_param(f'{pf}.self_attn.out_proj.bias', (d,)),
+            'ln2_w': _init_param(f'{pf}.final_layer_norm.weight', (d,)),
+            'ln2_b': _init_param(f'{pf}.final_layer_norm.bias', (d,)),
+            'fc1_w': _init_transposed(f'{pf}.fc1.weight', ffn, d),
+            'fc1_b': _init_param(f'{pf}.fc1.bias', (ffn,)),
+            'fc2_w': _init_transposed(f'{pf}.fc2.weight', d, ffn),
+            'fc2_b': _init_param(f'{pf}.fc2.bias', (d,)),
+        }
+        layers.append(lp)
+    p['layers'] = layers
+    return p
+
+
+# ── Emit helper ──────────────────────────────────────────────────
+
+def _emit(model_name, compile_s, inference_ms, latency_ms, training_ms, logits_np, loss):
+    logits_hash = sha256_f32(logits_np)
+    logits_flat = logits_np.flatten()
+    logits_sample = [round(float(v), 6) for v in logits_flat[:16]]
+    backend = str(jax.default_backend()).upper()
+    devices = jax.devices()
+    gpu_name = str(devices[0]) if devices else "cpu"
+    result = {
+        "framework": "jax",
+        "model": model_name,
+        "device": gpu_name,
+        "gpu_name": gpu_name,
+        "jax_version": jax.__version__,
+        "backend": backend,
+        "timings": {
+            "compile_s": round(compile_s, 2),
+            "inference_ms": round(inference_ms, 3),
+            "latency_ms": round(latency_ms, 3),
+            "training_ms": round(training_ms, 3),
+        },
+        "outputs": {
+            "logits_hash": logits_hash,
+            "logits_sample": logits_sample,
+            "loss": round(float(loss), 6),
+        },
+    }
+    print(json.dumps(result))
+
+
+def bench_resnet():
+    batch = 4
+    print("[jax] building ResNet-50...", file=sys.stderr)
+    params = _build_resnet50_params()
+
+    images = jnp.sin(jnp.arange(batch * 3 * 224 * 224, dtype=jnp.float32) * 0.001).reshape(batch, 3, 224, 224)
+    labels = jnp.arange(batch, dtype=jnp.int32) % 1000
+
+    jit_fwd = jax.jit(_resnet50_forward)
+    def loss_fn(params, images, labels):
+        logits = _resnet50_forward(params, images)
+        return -jnp.mean(jax.nn.log_softmax(logits, axis=-1)[jnp.arange(batch), labels])
+    jit_grad = jax.jit(jax.grad(loss_fn))
+
+    # Compile
+    print("[jax] JIT compiling...", file=sys.stderr)
+    t0 = time.perf_counter()
+    logits = jit_fwd(params, images); logits.block_until_ready()
+    grads = jit_grad(params, images, labels); jax.tree.map(lambda x: x.block_until_ready(), grads)
+    compile_s = time.perf_counter() - t0
+
+    # Inference
+    t0 = time.perf_counter()
+    logits = jit_fwd(params, images); logits.block_until_ready()
+    inference_ms = (time.perf_counter() - t0) * 1000.0
+
+    # Loss
+    logits_np = np.asarray(logits, dtype=np.float32)
+    loss_val = float(-np.mean([
+        np.log(np.exp(logits_np[b] - logits_np[b].max()) / np.exp(logits_np[b] - logits_np[b].max()).sum())[labels[b]]
+        for b in range(batch)
+    ]))
+
+    # Training
+    t0 = time.perf_counter()
+    grads = jit_grad(params, images, labels); jax.tree.map(lambda x: x.block_until_ready(), grads)
+    training_ms = (time.perf_counter() - t0) * 1000.0
+
+    # Latency
+    lat_img = jnp.zeros((1, 3, 224, 224), dtype=jnp.float32)
+    jit_fwd(params, lat_img).block_until_ready()
+    t0 = time.perf_counter()
+    jit_fwd(params, lat_img).block_until_ready()
+    latency_ms = (time.perf_counter() - t0) * 1000.0
+
+    _emit("ResNet-50", compile_s, inference_ms, latency_ms, training_ms, logits_np, loss_val)
+
+
+def bench_whisper():
+    print("[jax] building Whisper-tiny encoder...", file=sys.stderr)
+    params = _build_whisper_params()
+
+    mel = jnp.sin(jnp.arange(80 * 3000, dtype=jnp.float32) * 0.001).reshape(1, 80, 3000)
+
+    jit_fwd = jax.jit(_whisper_encoder_forward)
+    def loss_fn(params, mel):
+        out = _whisper_encoder_forward(params, mel)
+        return jnp.mean(out ** 2)
+    jit_grad = jax.jit(jax.grad(loss_fn))
+
+    print("[jax] JIT compiling...", file=sys.stderr)
+    t0 = time.perf_counter()
+    out = jit_fwd(params, mel); out.block_until_ready()
+    grads = jit_grad(params, mel); jax.tree.map(lambda x: x.block_until_ready(), grads)
+    compile_s = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    out = jit_fwd(params, mel); out.block_until_ready()
+    inference_ms = (time.perf_counter() - t0) * 1000.0
+
+    out_np = np.asarray(out, dtype=np.float32)
+    loss_val = float(np.mean(out_np ** 2))
+
+    t0 = time.perf_counter()
+    grads = jit_grad(params, mel); jax.tree.map(lambda x: x.block_until_ready(), grads)
+    training_ms = (time.perf_counter() - t0) * 1000.0
+
+    # Latency (same input — encoder is not autoregressive)
+    jit_fwd(params, mel).block_until_ready()
+    t0 = time.perf_counter()
+    jit_fwd(params, mel).block_until_ready()
+    latency_ms = (time.perf_counter() - t0) * 1000.0
+
+    _emit("Whisper-tiny", compile_s, inference_ms, latency_ms, training_ms, out_np, loss_val)
 
 
 def bench(model_name):
@@ -301,4 +602,15 @@ def bench(model_name):
 
 if __name__ == "__main__":
     model_name = sys.argv[1] if len(sys.argv) > 1 else "SmolLM2-135M"
-    bench(model_name)
+    if model_name not in ALL_MODELS:
+        print(f"Unknown model: {model_name}. Available: {ALL_MODELS}", file=sys.stderr)
+        sys.exit(1)
+    if os.environ.get("INFERENA_DRY_RUN") == "1":
+        print(f"[jax] dry-run OK: {model_name}", file=sys.stderr)
+        sys.exit(0)
+    if model_name == "ResNet-50":
+        bench_resnet()
+    elif model_name == "Whisper-tiny":
+        bench_whisper()
+    else:
+        bench(model_name)

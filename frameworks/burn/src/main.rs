@@ -178,6 +178,11 @@ fn main() {
         std::process::exit(1);
     });
 
+    if std::env::var("INFERENA_DRY_RUN").as_deref() == Ok("1") {
+        eprintln!("[burn] dry-run OK: {model_name}");
+        return;
+    }
+
     type MyBackend = Autodiff<Wgpu>;
     let device = WgpuDevice::default();
     let seq_len = 128;

@@ -142,6 +142,11 @@ fn main() {
         std::process::exit(1);
     });
 
+    if std::env::var("INFERENA_DRY_RUN").as_deref() == Ok("1") {
+        eprintln!("[luminal] dry-run OK: {model_name}");
+        return;
+    }
+
     let seq_len: usize = 128;
 
     // --- Build graph ---

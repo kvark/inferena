@@ -15,24 +15,18 @@ import time
 
 
 def main():
-    if len(sys.argv) < 4:
-        print("Usage: bench.py <model_name> <gguf_path> <llama_cpp_dir>", file=sys.stderr)
+    if len(sys.argv) < 3:
+        print("Usage: bench.py <model_name> <gguf_path>", file=sys.stderr)
         sys.exit(1)
 
     model_name = sys.argv[1]
     gguf_path = sys.argv[2]
-    llama_cpp_dir = sys.argv[3]
 
     try:
         from llama_cpp import Llama
     except ImportError:
-        print("[llama-cpp] llama-cpp-python not installed, trying pip install...", file=sys.stderr)
-        import subprocess
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "llama-cpp-python", "--quiet"],
-            stdout=sys.stderr, stderr=sys.stderr,
-        )
-        from llama_cpp import Llama
+        print("[ggml] llama-cpp-python not installed (pip install llama-cpp-python)", file=sys.stderr)
+        sys.exit(1)
 
     seq_len = 128
 
@@ -112,14 +106,15 @@ def main():
     except (AttributeError, ImportError):
         pass
 
-    # Extract llama.cpp git rev if available.
-    rev_file = os.path.join(llama_cpp_dir, ".git", "refs", "heads", "master")
-    framework_rev = ""
-    if os.path.isfile(rev_file):
-        framework_rev = open(rev_file).read().strip()[:7]
+    # Use llama-cpp-python version as framework rev.
+    try:
+        import llama_cpp as _lc
+        framework_rev = getattr(_lc, "__version__", "")
+    except ImportError:
+        framework_rev = ""
 
     result = {
-        "framework": "llama-cpp",
+        "framework": "ggml",
         "framework_rev": framework_rev,
         "model": model_name,
         "device": gpu_name,

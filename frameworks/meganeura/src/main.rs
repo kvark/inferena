@@ -753,17 +753,33 @@ fn main() {
     env_logger::init();
 
     let model_name = std::env::args().nth(1).unwrap_or("SmolLM2-135M".into());
+    let all_models = [
+        "SmolLM2-135M",
+        "SmolVLA",
+        "StableDiffusion",
+        "ResNet-50",
+        "Whisper-tiny",
+    ];
+
+    if !all_models.contains(&model_name.as_str()) {
+        eprintln!(
+            "Unknown model: {model_name}. Available: {}",
+            all_models.join(", ")
+        );
+        std::process::exit(1);
+    }
+
+    if std::env::var("INFERENA_DRY_RUN").as_deref() == Ok("1") {
+        eprintln!("[meganeura] dry-run OK: {model_name}");
+        return;
+    }
+
     match model_name.as_str() {
         "SmolLM2-135M" => bench_smollm2(&model_name),
         "SmolVLA" => bench_smolvla(),
         "StableDiffusion" => bench_stable_diffusion(),
         "ResNet-50" => bench_resnet(),
         "Whisper-tiny" => bench_whisper(),
-        other => {
-            eprintln!(
-                "Unknown model: {other}. Available: SmolLM2-135M, SmolVLA, StableDiffusion, ResNet-50, Whisper-tiny"
-            );
-            std::process::exit(1);
-        }
+        _ => unreachable!(),
     }
 }

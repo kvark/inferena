@@ -82,19 +82,28 @@ struct Cli {
     /// Output results as JSON array instead of a human-readable table.
     #[arg(long)]
     json: bool,
+
+    /// Dry-run: validate framework+model support without running benchmarks.
+    #[arg(long)]
+    dry_run: bool,
 }
 
-const ALL_FRAMEWORKS: &[&str] = &[
-    "pytorch",
-    "mlx",
-    "candle",
-    "burn",
-    "luminal",
-    "meganeura",
-    "llama-cpp",
-    "onnxruntime",
-    "jax",
-];
+fn all_frameworks() -> Vec<&'static str> {
+    let mut v = vec![
+        "pytorch",
+        "candle",
+        "burn",
+        "luminal",
+        "meganeura",
+        "ggml",
+        "onnxruntime",
+        "jax",
+    ];
+    if cfg!(target_os = "macos") {
+        v.insert(1, "mlx"); // after pytorch
+    }
+    v
+}
 
 /// Framework metadata: (display_name, repo_url).
 fn framework_meta(name: &str) -> (&'static str, &'static str) {
@@ -105,7 +114,7 @@ fn framework_meta(name: &str) -> (&'static str, &'static str) {
         "burn" => ("Burn", "https://github.com/tracel-ai/burn"),
         "luminal" => ("Luminal", "https://github.com/luminal-ai/luminal"),
         "meganeura" => ("Meganeura", "https://github.com/kvark/meganeura"),
-        "llama-cpp" => ("llama.cpp", "https://github.com/ggml-org/llama.cpp"),
+        "ggml" => ("GGML", "https://github.com/ggerganov/ggml"),
         "onnxruntime" => ("ONNX Runtime", "https://github.com/microsoft/onnxruntime"),
         "jax" => ("JAX", "https://github.com/jax-ml/jax"),
         _ => ("unknown", ""),
@@ -161,7 +170,7 @@ fn framework_md_link(name: &str, extra: &serde_json::Map<String, serde_json::Val
                 }
             }
             "mlx" => "MLX",
-            "llama-cpp" => "CPU",
+            "ggml" => "CPU",
             "onnxruntime" => "CPU",
             "jax" => "CPU",
             _ => "",
@@ -191,7 +200,7 @@ fn project_root(cli_root: Option<&Path>) -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
-fn run_framework(root: &Path, framework: &str, model: &str) -> FrameworkOutcome {
+fn run_framework(root: &Path, framework: &str, model: &str, dry_run: bool) -> FrameworkOutcome {
     let fw_dir = root.join("frameworks").join(framework);
     let run_script = fw_dir.join("run.sh");
 
@@ -203,15 +212,20 @@ fn run_framework(root: &Path, framework: &str, model: &str) -> FrameworkOutcome 
         };
     }
 
-    eprintln!("[{framework}] running benchmark for {model} ...");
+    if dry_run {
+        eprintln!("[{framework}] dry-run for {model} ...");
+    } else {
+        eprintln!("[{framework}] running benchmark for {model} ...");
+    }
 
     // Always use bash (Git Bash on Windows).
     // Inherits environment so WGPU_BACKEND, HSA_OVERRIDE_GFX_VERSION, etc. propagate.
-    let output = Command::new("bash")
-        .arg(&run_script)
-        .arg(model)
-        .current_dir(&fw_dir)
-        .output();
+    let mut cmd = Command::new("bash");
+    cmd.arg(&run_script).arg(model).current_dir(&fw_dir);
+    if dry_run {
+        cmd.env("INFERENA_DRY_RUN", "1");
+    }
+    let output = cmd.output();
 
     let output = match output {
         Ok(o) => o,
@@ -226,8 +240,21 @@ fn run_framework(root: &Path, framework: &str, model: &str) -> FrameworkOutcome 
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let combined = format!("{stderr}\n{stdout}");
         // Truncate long error output for readability.
         let stderr_short: String = stderr.lines().take(20).collect::<Vec<_>>().join("\n");
+
+        // "Unknown model" / "unsupported" → skip, not error.
+        let lower = combined.to_lowercase();
+        if lower.contains("unknown model") || lower.contains("unsupported") {
+            return FrameworkOutcome::Skipped {
+                framework: framework.to_string(),
+                model: model.to_string(),
+                reason: format!("model not supported by {framework}"),
+            };
+        }
+
         return FrameworkOutcome::Error {
             framework: framework.to_string(),
             model: model.to_string(),
@@ -243,6 +270,14 @@ fn run_framework(root: &Path, framework: &str, model: &str) -> FrameworkOutcome 
     {
         Some(s) => s,
         None => {
+            // In dry-run, no JSON output is fine — the framework validated OK.
+            if dry_run {
+                return FrameworkOutcome::Skipped {
+                    framework: framework.to_string(),
+                    model: model.to_string(),
+                    reason: "dry-run OK (no benchmark data)".to_string(),
+                };
+            }
             return FrameworkOutcome::Error {
                 framework: framework.to_string(),
                 model: model.to_string(),
@@ -521,12 +556,12 @@ fn main() {
 
     let frameworks: Vec<&str> = match &cli.frameworks {
         Some(list) => list.iter().map(String::as_str).collect(),
-        None => ALL_FRAMEWORKS.to_vec(),
+        None => all_frameworks(),
     };
 
     let mut outcomes = Vec::new();
     for fw in &frameworks {
-        outcomes.push(run_framework(&root, fw, &cli.model));
+        outcomes.push(run_framework(&root, fw, &cli.model, cli.dry_run));
     }
 
     // Collect successful results for comparison.
@@ -537,6 +572,38 @@ fn main() {
             _ => None,
         })
         .collect();
+
+    if cli.dry_run {
+        // Dry-run: just show support matrix, no table/comparison/save.
+        let model = &cli.model;
+        eprintln!();
+        eprintln!("=== Dry-run: {model} ===");
+        for outcome in &outcomes {
+            match outcome {
+                FrameworkOutcome::Ok(r) => {
+                    eprintln!("  ✓ {}", r.framework);
+                }
+                FrameworkOutcome::Error {
+                    framework, error, ..
+                } => {
+                    let short = error
+                        .lines()
+                        .next()
+                        .unwrap_or(error)
+                        .chars()
+                        .take(70)
+                        .collect::<String>();
+                    eprintln!("  ✗ {framework}: {short}");
+                }
+                FrameworkOutcome::Skipped {
+                    framework, reason, ..
+                } => {
+                    eprintln!("  — {framework}: {reason}");
+                }
+            }
+        }
+        return;
+    }
 
     if cli.json {
         println!("{}", serde_json::to_string_pretty(&outcomes).unwrap());

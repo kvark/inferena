@@ -1,8 +1,21 @@
+# Core
 torch>=2.0
-transformers>=4.30
 numpy
-llama-cpp-python
+
+# Models
+transformers>=4.30
+torchvision
+safetensors
+huggingface_hub
+
+# ONNX Runtime
 onnxruntime
 onnx
+
+# JAX
 jax
 jaxlib
+
+# GGML backends
+llama-cpp-python
+faster-whisper

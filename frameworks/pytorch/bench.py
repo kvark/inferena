@@ -741,4 +741,7 @@ if __name__ == "__main__":
     if spec is None:
         print(f"Unknown model: {model_name}. Available: {list(MODEL_REGISTRY.keys())}", file=sys.stderr)
         sys.exit(1)
+    if os.environ.get("INFERENA_DRY_RUN") == "1":
+        print(f"[pytorch] dry-run OK: {model_name} ({spec['type']})", file=sys.stderr)
+        sys.exit(0)
     bench(model_name, spec)

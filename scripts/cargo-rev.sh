@@ -8,7 +8,7 @@ cargo_rev() {
     local crate="$1"
     local root="${2:-.}"
     grep -A5 "name = \"$crate\"" "$root/Cargo.lock" \
-        | grep -oP 'source.*#\K[a-f0-9]+' \
+        | sed -n 's/.*#\([a-f0-9]*\)".*/\1/p' \
         | head -1
 }
 

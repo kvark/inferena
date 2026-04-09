@@ -31,13 +31,23 @@ def main():
     seq_len = 128
 
     # --- Load model ---
-    print(f"[llama-cpp] loading {gguf_path}...", file=sys.stderr)
+    # Offload all layers to GPU when available (-1 = all layers).
+    n_gpu = -1
+    try:
+        from llama_cpp import llama_supports_gpu_offload
+        if not llama_supports_gpu_offload():
+            n_gpu = 0
+    except (ImportError, AttributeError):
+        n_gpu = 0
+
+    print(f"[llama-cpp] loading {gguf_path} (n_gpu_layers={n_gpu})...", file=sys.stderr)
     t0 = time.perf_counter()
     llm = Llama(
         model_path=gguf_path,
         n_ctx=seq_len + 1,
         logits_all=True,
         verbose=False,
+        n_gpu_layers=n_gpu,
     )
     compile_s = time.perf_counter() - t0
     print(f"[llama-cpp] loaded in {compile_s:.2f}s", file=sys.stderr)

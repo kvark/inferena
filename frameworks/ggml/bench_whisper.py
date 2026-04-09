@@ -25,12 +25,23 @@ def sha256_f32(data):
 def main():
     from faster_whisper import WhisperModel
 
+    # Auto-detect GPU: try CUDA first, fall back to CPU.
+    device = "cpu"
+    compute_type = "float32"
+    try:
+        import torch
+        if torch.cuda.is_available():
+            device = "cuda"
+            compute_type = "float16"
+    except ImportError:
+        pass
+
     # Use a temp directory for CT2 conversion so compile_s always measures
     # the full cost (conversion + load), never a cached load.
     ct2_dir = tempfile.mkdtemp(prefix="inferena_whisper_")
-    print("[ggml] loading whisper-tiny via faster-whisper...", file=sys.stderr)
+    print(f"[ggml] loading whisper-tiny via faster-whisper (device={device})...", file=sys.stderr)
     t0 = time.perf_counter()
-    model = WhisperModel("tiny", device="cpu", compute_type="float32",
+    model = WhisperModel("tiny", device=device, compute_type=compute_type,
                          download_root=ct2_dir)
     compile_s = time.perf_counter() - t0
     print(f"[ggml] loaded in {compile_s:.2f}s", file=sys.stderr)
@@ -72,13 +83,13 @@ def main():
     # Loss: not meaningful for GGML whisper (different pipeline than encoder-only).
     loss = 0.0
 
-    backend = "CTranslate2"
+    ct2_backend = "CTranslate2"
     result = {
         "framework": "ggml",
         "model": "Whisper-tiny",
-        "device": "cpu",
-        "gpu_name": "cpu",
-        "backend": f"faster-whisper ({backend})",
+        "device": device,
+        "gpu_name": device,
+        "backend": f"faster-whisper ({ct2_backend}, {device.upper()})",
         "timings": {
             "compile_s": round(compile_s, 2),
             "inference_ms": round(inference_ms, 3),

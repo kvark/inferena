@@ -54,6 +54,36 @@ def sha256_f32(data: np.ndarray) -> str:
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
+def _get_providers():
+    """Return the best available ONNX Runtime execution providers."""
+    import onnxruntime as ort
+    available = ort.get_available_providers()
+    # Prefer GPU providers, fall back to CPU.
+    preferred = [
+        "CUDAExecutionProvider",
+        "TensorrtExecutionProvider",
+        "ROCMExecutionProvider",
+        "DmlExecutionProvider",
+        "CoreMLExecutionProvider",
+        "CPUExecutionProvider",
+    ]
+    providers = [p for p in preferred if p in available]
+    if not providers:
+        providers = ["CPUExecutionProvider"]
+    return providers
+
+
+def _provider_label(sess):
+    """Return (device, gpu_name, backend) from a live session's active provider."""
+    active = sess.get_providers()
+    first = active[0] if active else "CPUExecutionProvider"
+    if "CUDA" in first or "Tensorrt" in first or "ROCM" in first:
+        return ("gpu", "gpu", first)
+    elif "CoreML" in first or "Dml" in first:
+        return ("gpu", "gpu", first)
+    return ("cpu", "cpu", first)
+
+
 def cross_entropy_np(logits_2d, labels_1d):
     """Cross-entropy loss over (N, vocab) logits and (N,) labels."""
     total = 0.0
@@ -199,10 +229,13 @@ def bench_causal_lm(model_name):
     if os.path.isfile(onnx_path):
         os.remove(onnx_path)
 
+    providers = _get_providers()
+    print(f"[onnxruntime] providers: {providers}", file=sys.stderr)
     t0 = time.perf_counter()
     _export_causal_lm_onnx(onnx_path, model_dir)
-    sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+    sess = ort.InferenceSession(onnx_path, providers=providers)
     compile_s = time.perf_counter() - t0
+    print(f"[onnxruntime] active: {sess.get_providers()}", file=sys.stderr)
 
     input_ids = np.arange(seq_len, dtype=np.int64).reshape(1, seq_len)
     attention_mask = np.ones((1, seq_len), dtype=np.int64)
@@ -224,7 +257,7 @@ def bench_causal_lm(model_name):
     sess.run(None, {"input_ids": lat_ids, "attention_mask": lat_mask})
     latency_ms = (time.perf_counter() - t0) * 1000.0
 
-    emit(model_name, compile_s, inference_ms, latency_ms, logits, loss)
+    emit(model_name, compile_s, inference_ms, latency_ms, logits, loss, sess)
 
 
 def bench_resnet(model_name):
@@ -242,7 +275,7 @@ def bench_resnet(model_name):
 
     t0 = time.perf_counter()
     export_resnet_onnx(onnx_path)
-    sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+    sess = ort.InferenceSession(onnx_path, providers=_get_providers())
     compile_s = time.perf_counter() - t0
 
     batch = 4
@@ -264,7 +297,7 @@ def bench_resnet(model_name):
     sess.run(None, {"images": lat_img})
     latency_ms = (time.perf_counter() - t0) * 1000.0
 
-    emit(model_name, compile_s, inference_ms, latency_ms, logits, loss)
+    emit(model_name, compile_s, inference_ms, latency_ms, logits, loss, sess)
 
 
 def bench_whisper(model_name):
@@ -282,7 +315,7 @@ def bench_whisper(model_name):
 
     t0 = time.perf_counter()
     export_whisper_encoder_onnx(onnx_path)
-    sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+    sess = ort.InferenceSession(onnx_path, providers=_get_providers())
     compile_s = time.perf_counter() - t0
 
     mel = np.sin(np.arange(80 * 3000, dtype=np.float32) * 0.001).reshape(1, 80, 3000)
@@ -295,10 +328,10 @@ def bench_whisper(model_name):
     hidden_states = outputs[0]  # [1, seq_len, d_model]
     loss = float(np.mean(hidden_states ** 2))  # MSE vs zero
 
-    emit(model_name, compile_s, inference_ms, 0.0, hidden_states, loss)
+    emit(model_name, compile_s, inference_ms, 0.0, hidden_states, loss, sess)
 
 
-def emit(model_name, compile_s, inference_ms, latency_ms, logits, loss):
+def emit(model_name, compile_s, inference_ms, latency_ms, logits, loss, sess=None):
     import onnxruntime as ort
 
     logits_np = np.asarray(logits, dtype=np.float32)
@@ -306,13 +339,18 @@ def emit(model_name, compile_s, inference_ms, latency_ms, logits, loss):
     logits_flat = logits_np.flatten()
     logits_sample = [round(float(v), 6) for v in logits_flat[:16]]
 
+    if sess is not None:
+        device, gpu_name, backend = _provider_label(sess)
+    else:
+        device, gpu_name, backend = "cpu", "cpu", "CPUExecutionProvider"
+
     result = {
         "framework": "onnxruntime",
         "model": model_name,
-        "device": "cpu",
-        "gpu_name": "cpu",
+        "device": device,
+        "gpu_name": gpu_name,
         "onnxruntime_version": ort.__version__,
-        "backend": "CPUExecutionProvider",
+        "backend": backend,
         "timings": {
             "compile_s": round(compile_s, 2),
             "inference_ms": round(inference_ms, 3),

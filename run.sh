@@ -12,6 +12,8 @@ JSON_FLAG=""
 DOWNLOAD=false
 CHECK_ONLY=false
 DRY_RUN=false
+UPDATE=false
+PLATFORM_OVERRIDE=""
 HAS_ARGS=false
 
 while [[ $# -gt 0 ]]; do
@@ -45,6 +47,15 @@ while [[ $# -gt 0 ]]; do
             HAS_ARGS=true
             shift
             ;;
+        --update)
+            UPDATE=true
+            HAS_ARGS=true
+            shift
+            ;;
+        --platform)
+            PLATFORM_OVERRIDE="$2"
+            shift 2
+            ;;
         -h|--help)
             echo "inferena - Inference Arena"
             echo ""
@@ -57,6 +68,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --download                Download model weights before running"
             echo "  --check                   Check framework availability (don't run benchmarks)"
             echo "  --dry-run                 Validate framework+model support without running benchmarks"
+            echo "  --update                  Update models/*.md with results after benchmarking"
+            echo "  --platform <name>         Override auto-detected platform name (with --update)"
             echo "  -h, --help                Show this help"
             echo ""
             echo "Models: $ALL_MODELS"
@@ -74,6 +87,57 @@ done
 if [ -z "$MODELS" ]; then
     MODELS="$ALL_MODELS"
 fi
+
+# --- Platform detection ---
+detect_platform() {
+    # GPU name is the most distinctive — try that first.
+    if python3 -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+        python3 -c "import torch; print(torch.cuda.get_device_name(0))" 2>/dev/null
+        return
+    fi
+    if python3 -c "import torch; assert hasattr(torch.backends,'mps') and torch.backends.mps.is_available()" 2>/dev/null; then
+        # macOS with MPS — use chip name
+        sysctl -n machdep.cpu.brand_string 2>/dev/null | sed 's/.*\(Apple M[0-9]*[^ ]*\).*/\1/' || echo "Apple Silicon"
+        return
+    fi
+    if command -v vulkaninfo &>/dev/null; then
+        local vk_dev
+        vk_dev=$(vulkaninfo --summary 2>/dev/null | grep "deviceName" | head -1 | sed 's/.*= //' | xargs)
+        if [ -n "$vk_dev" ] && ! echo "$vk_dev" | grep -qi "llvmpipe\|lavapipe\|swrast"; then
+            echo "$vk_dev"
+            return
+        fi
+    fi
+    # Fall back to CPU model name.
+    if [ "$(uname -s)" = "Darwin" ]; then
+        sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Apple $(uname -m)"
+    else
+        grep "model name" /proc/cpuinfo 2>/dev/null | head -1 | sed 's/.*: //' | sed 's/  */ /g' | sed 's/(R)//g; s/(TM)//g; s/CPU //g' | xargs
+    fi
+}
+
+# Check if a platform name exists in any model markdown file.
+platform_exists_in_md() {
+    local platform="$1"
+    python3 -c "
+import sys, os
+sys.path.insert(0, os.path.join('$ROOT_DIR', 'scripts'))
+from update_results import find_results_table, group_by_platform, _platforms_match
+import glob
+for md in glob.glob(os.path.join('$ROOT_DIR', 'models', '*.md')):
+    with open(md) as f:
+        content = f.read()
+    parsed = find_results_table(content)
+    if parsed is None:
+        continue
+    _, _, _, rows, _ = parsed
+    for name, _ in group_by_platform(rows):
+        if _platforms_match(name, '$platform'):
+            print(md)
+            sys.exit(0)
+sys.exit(1)
+" 2>/dev/null
+}
 
 # --- Check framework availability ---
 run_check() {
@@ -165,6 +229,43 @@ if [ "$CHECK_ONLY" = true ] || [ "$HAS_ARGS" = false ]; then
     fi
 fi
 
+# --- Resolve platform name for --update ---
+PLATFORM=""
+if [ "$UPDATE" = true ]; then
+    if [ -n "$PLATFORM_OVERRIDE" ]; then
+        PLATFORM="$PLATFORM_OVERRIDE"
+    else
+        PLATFORM=$(detect_platform)
+    fi
+
+    echo "" >&2
+    echo "Platform: $PLATFORM" >&2
+
+    if platform_exists_in_md "$PLATFORM" >/dev/null 2>&1; then
+        echo "  (found in existing results — rows will be replaced)" >&2
+    else
+        echo "  (not found in existing results — will be added as new)" >&2
+        # Interactive prompt: let user confirm or edit the name.
+        if [ -t 0 ]; then
+            echo "" >&2
+            read -r -p "Use '$PLATFORM' as platform name? [Y/n/edit]: " reply </dev/tty
+            case "$reply" in
+                [nN]*)
+                    echo "Aborted." >&2
+                    exit 0
+                    ;;
+                [eE]*)
+                    read -r -p "Enter platform name: " PLATFORM </dev/tty
+                    ;;
+                *)
+                    # Accept default
+                    ;;
+            esac
+        fi
+    fi
+    echo "" >&2
+fi
+
 # --- Create results directory ---
 mkdir -p "$ROOT_DIR/results"
 
@@ -201,5 +302,14 @@ for MODEL in $MODELS; do
         ARGS+=("--dry-run")
     fi
 
-    "$HARNESS" "${ARGS[@]}" || true
+    if [ "$UPDATE" = true ]; then
+        # Capture table output for markdown update.
+        TABLE_FILE=$(mktemp)
+        "$HARNESS" "${ARGS[@]}" | tee "$TABLE_FILE" || true
+        python3 "$ROOT_DIR/scripts/update_results.py" \
+            --model "$MODEL" --platform "$PLATFORM" --table "$TABLE_FILE" --root "$ROOT_DIR"
+        rm -f "$TABLE_FILE"
+    else
+        "$HARNESS" "${ARGS[@]}" || true
+    fi
 done

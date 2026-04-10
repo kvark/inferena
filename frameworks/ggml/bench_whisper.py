@@ -26,6 +26,7 @@ def main():
     from faster_whisper import WhisperModel
 
     # Auto-detect GPU: try CUDA first, fall back to CPU.
+    # Note: faster-whisper (CTranslate2) supports CUDA but not MPS/Metal.
     device = "cpu"
     compute_type = "float32"
     try:
@@ -35,6 +36,15 @@ def main():
             compute_type = "float16"
     except ImportError:
         pass
+    if device == "cpu":
+        # CTranslate2 can also use "auto" which selects the best available.
+        try:
+            import ctranslate2
+            if "cuda" in ctranslate2.get_supported_compute_types("cuda"):
+                device = "cuda"
+                compute_type = "float16"
+        except (ImportError, RuntimeError):
+            pass
 
     # Use a temp directory for CT2 conversion so compile_s always measures
     # the full cost (conversion + load), never a cached load.

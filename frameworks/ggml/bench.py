@@ -111,8 +111,23 @@ def main():
     try:
         import llama_cpp as _lc
         if _lc.llama_supports_gpu_offload():
-            backend = "GPU"
-            gpu_name = "gpu"
+            import platform
+            if platform.system() == "Darwin":
+                backend = "Metal"
+                gpu_name = "metal"
+            else:
+                # Distinguish CUDA vs Vulkan by checking for CUDA availability.
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        backend = "CUDA"
+                        gpu_name = "cuda"
+                    else:
+                        backend = "Vulkan"
+                        gpu_name = "vulkan"
+                except ImportError:
+                    backend = "GPU"
+                    gpu_name = "gpu"
     except (AttributeError, ImportError):
         pass
 

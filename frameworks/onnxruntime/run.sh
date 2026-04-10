@@ -33,10 +33,16 @@ else:
     except ImportError:
         import subprocess
         has_gpu = subprocess.run(['nvidia-smi'], capture_output=True).returncode == 0 if __import__('shutil').which('nvidia-smi') else False
+    if not has_gpu and sys.platform == 'darwin':
+        has_gpu = True
     if has_gpu:
         print('[onnxruntime] WARNING: GPU detected but no GPU execution provider installed.', file=sys.stderr)
-        print('  Install: pip install onnxruntime-gpu  (NVIDIA)', file=sys.stderr)
-        print('       or: pip install onnxruntime-rocm (AMD)', file=sys.stderr)
+        if sys.platform == 'darwin':
+            print('  CoreMLExecutionProvider should be included in onnxruntime >= 1.14 on macOS.', file=sys.stderr)
+            print('  Try: pip install --upgrade onnxruntime', file=sys.stderr)
+        else:
+            print('  Install: pip install onnxruntime-gpu  (NVIDIA)', file=sys.stderr)
+            print('       or: pip install onnxruntime-rocm (AMD)', file=sys.stderr)
 " 2>/dev/null || true
 
 exec python3 "$SCRIPT_DIR/bench.py" "$MODEL"

@@ -178,7 +178,11 @@ print(', '.join(providers) if providers else 'CPU only')
 " 2>/dev/null)
         echo "    ✓ ONNX Runtime ($ver) — $gpu"
         if [ "$gpu" = "CPU only" ]; then
-            echo "      ↳ pip install onnxruntime-gpu (NVIDIA) or onnxruntime-rocm (AMD)"
+            if [ "$(uname -s)" = "Darwin" ]; then
+                echo "      ↳ CoreML should be included in onnxruntime >= 1.14; try: pip install --upgrade onnxruntime"
+            else
+                echo "      ↳ pip install onnxruntime-gpu (NVIDIA) or onnxruntime-rocm (AMD)"
+            fi
         fi
     else
         echo "    ✗ ONNX Runtime — pip install onnxruntime"

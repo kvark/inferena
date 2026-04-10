@@ -22,12 +22,55 @@ case "$MODEL" in
         ;;
 esac
 
+# --- GPU rebuild hint ---
+_gpu_rebuild_hint() {
+    local has_nvidia=false has_vulkan=false has_metal=false
+    command -v nvidia-smi &>/dev/null && has_nvidia=true
+    command -v vulkaninfo &>/dev/null && has_vulkan=true
+    [ "$(uname -s)" = "Darwin" ] && has_metal=true
+
+    if $has_nvidia; then
+        echo '  Rebuild with CUDA:   CMAKE_ARGS="-DGGML_CUDA=ON" pip install llama-cpp-python --force-reinstall --no-cache-dir' >&2
+    fi
+    if $has_vulkan; then
+        echo '  Rebuild with Vulkan: CMAKE_ARGS="-DGGML_VULKAN=ON" pip install llama-cpp-python --force-reinstall --no-cache-dir' >&2
+    fi
+    if $has_metal; then
+        echo '  Rebuild with Metal:  CMAKE_ARGS="-DGGML_METAL=ON" pip install llama-cpp-python --force-reinstall --no-cache-dir' >&2
+    fi
+}
+
 # --- Check dependencies per backend ---
 if [ "$BACKEND" = "llama.cpp" ]; then
     if ! python3 -c "import llama_cpp" 2>/dev/null; then
         echo "[ggml] llama-cpp-python not found. Install via: pip install llama-cpp-python" >&2
+        _gpu_rebuild_hint
         exit 1
     fi
+    # Warn if GPU is available but llama.cpp can't use it.
+    python3 -c "
+import sys
+try:
+    from llama_cpp import llama_supports_gpu_offload
+    if llama_supports_gpu_offload():
+        print('[ggml] GPU offload: supported', file=sys.stderr)
+    else:
+        # Check if GPU hardware exists.
+        import subprocess, shutil
+        has_gpu = False
+        if shutil.which('nvidia-smi'):
+            has_gpu = subprocess.run(['nvidia-smi'], capture_output=True).returncode == 0
+        if not has_gpu and shutil.which('vulkaninfo'):
+            r = subprocess.run(['vulkaninfo', '--summary'], capture_output=True, text=True)
+            has_gpu = 'deviceName' in r.stdout and 'llvmpipe' not in r.stdout.lower()
+        if not has_gpu:
+            import platform
+            has_gpu = platform.system() == 'Darwin'
+        if has_gpu:
+            print('[ggml] WARNING: GPU detected but llama-cpp-python was built without GPU support.', file=sys.stderr)
+except (ImportError, AttributeError):
+    pass
+" 2>/dev/null || true
 elif [ "$BACKEND" = "whisper.cpp" ]; then
     if ! python3 -c "import faster_whisper" 2>/dev/null; then
         echo "[ggml] faster-whisper not found. Install via: pip install faster-whisper" >&2

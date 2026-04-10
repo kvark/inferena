@@ -14,7 +14,7 @@ export FRAMEWORK_REV=$(cargo_rev_short candle-core "$ROOT_DIR")
 FEATURES=""
 case "$(uname -s)" in
     Linux*)
-        if [ -d /usr/local/cuda ] || command -v nvcc &>/dev/null; then
+        if command -v nvidia-smi &>/dev/null || [ -d /usr/local/cuda ] || command -v nvcc &>/dev/null; then
             FEATURES="--features cuda"
         fi
         ;;

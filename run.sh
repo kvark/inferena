@@ -158,12 +158,42 @@ run_check() {
     check_python "PyTorch" "torch"
     check_python "torchvision" "torchvision" " (needed for ResNet-50)"
     check_python "transformers" "transformers" " (needed for Whisper-tiny)"
-    check_python "ONNX Runtime" "onnxruntime"
-    check_python "JAX" "jax"
     check_python "safetensors" "safetensors" " (needed for JAX, llama.cpp weight loading)"
     check_python "huggingface_hub" "huggingface_hub" " (needed for model downloads)"
     if [ "$(uname -s)" = "Darwin" ]; then
         check_python "MLX" "mlx.core"
+    fi
+
+    # GPU-aware Python framework checks.
+    echo ""
+    echo "  GPU-aware frameworks:"
+
+    # ONNX Runtime
+    if python3 -c "import onnxruntime" 2>/dev/null; then
+        ver=$(python3 -c "import onnxruntime; print(onnxruntime.__version__)" 2>/dev/null)
+        gpu=$(python3 -c "
+import onnxruntime as ort
+providers = [p for p in ort.get_available_providers() if p != 'CPUExecutionProvider']
+print(', '.join(providers) if providers else 'CPU only')
+" 2>/dev/null)
+        echo "    ✓ ONNX Runtime ($ver) — $gpu"
+        if [ "$gpu" = "CPU only" ]; then
+            echo "      ↳ pip install onnxruntime-gpu (NVIDIA) or onnxruntime-rocm (AMD)"
+        fi
+    else
+        echo "    ✗ ONNX Runtime — pip install onnxruntime"
+    fi
+
+    # JAX
+    if python3 -c "import jax" 2>/dev/null; then
+        ver=$(python3 -c "import jax; print(jax.__version__)" 2>/dev/null)
+        backend=$(python3 -c "import jax; print(jax.default_backend())" 2>/dev/null)
+        echo "    ✓ JAX ($ver) — backend: $backend"
+        if [ "$backend" = "cpu" ]; then
+            echo "      ↳ pip install jax[cuda12] (NVIDIA) or jax-metal (Apple)"
+        fi
+    else
+        echo "    ✗ JAX — pip install jax"
     fi
 
     # GGML backends (llama.cpp, whisper.cpp)
@@ -171,7 +201,18 @@ run_check() {
     echo "  GGML backends:"
     if python3 -c "import llama_cpp" 2>/dev/null; then
         ver=$(python3 -c "import llama_cpp; print(getattr(llama_cpp, '__version__', 'unknown'))" 2>/dev/null)
-        echo "    ✓ llama.cpp ($ver via llama-cpp-python)"
+        gpu=$(python3 -c "
+from llama_cpp import llama_supports_gpu_offload
+print('GPU offload' if llama_supports_gpu_offload() else 'CPU only')
+" 2>/dev/null)
+        echo "    ✓ llama.cpp ($ver via llama-cpp-python) — $gpu"
+        if [ "$gpu" = "CPU only" ]; then
+            echo "      ↳ CMAKE_ARGS=\"-DGGML_CUDA=ON\" pip install llama-cpp-python --force-reinstall --no-cache-dir  (NVIDIA)"
+            echo "      ↳ CMAKE_ARGS=\"-DGGML_VULKAN=ON\" pip install llama-cpp-python --force-reinstall --no-cache-dir (Vulkan)"
+            if [ "$(uname -s)" = "Darwin" ]; then
+                echo "      ↳ CMAKE_ARGS=\"-DGGML_METAL=ON\" pip install llama-cpp-python --force-reinstall --no-cache-dir  (Metal)"
+            fi
+        fi
     else
         echo "    ✗ llama.cpp — pip install llama-cpp-python"
     fi

@@ -17,6 +17,7 @@ onnx
 # JAX — pick ONE based on your GPU:
 jax                          # CPU only
 # jax[cuda12]                # NVIDIA CUDA 12
+# jax[rocm]                  # AMD ROCm
 # jax-metal                  # Apple Metal
 jaxlib
 

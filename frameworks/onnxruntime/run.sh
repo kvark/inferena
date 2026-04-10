@@ -27,12 +27,19 @@ if gpu_providers:
 else:
     # Check if a GPU exists but we don't have GPU providers.
     has_gpu = False
+    is_amd = False
     try:
         import torch
         has_gpu = torch.cuda.is_available() or (hasattr(torch.backends, 'mps') and torch.backends.mps.is_available())
+        if hasattr(torch.version, 'hip') and torch.version.hip:
+            is_amd = True
     except ImportError:
-        import subprocess
-        has_gpu = subprocess.run(['nvidia-smi'], capture_output=True).returncode == 0 if __import__('shutil').which('nvidia-smi') else False
+        import subprocess, shutil
+        if shutil.which('nvidia-smi'):
+            has_gpu = subprocess.run(['nvidia-smi'], capture_output=True).returncode == 0
+        elif shutil.which('rocm-smi'):
+            has_gpu = True
+            is_amd = True
     if not has_gpu and sys.platform == 'darwin':
         has_gpu = True
     if has_gpu:
@@ -40,9 +47,10 @@ else:
         if sys.platform == 'darwin':
             print('  CoreMLExecutionProvider should be included in onnxruntime >= 1.14 on macOS.', file=sys.stderr)
             print('  Try: pip install --upgrade onnxruntime', file=sys.stderr)
+        elif is_amd:
+            print('  Install: pip install onnxruntime-rocm (AMD ROCm)', file=sys.stderr)
         else:
-            print('  Install: pip install onnxruntime-gpu  (NVIDIA)', file=sys.stderr)
-            print('       or: pip install onnxruntime-rocm (AMD)', file=sys.stderr)
+            print('  Install: pip install onnxruntime-gpu  (NVIDIA CUDA)', file=sys.stderr)
 " 2>/dev/null || true
 
 exec python3 "$SCRIPT_DIR/bench.py" "$MODEL"

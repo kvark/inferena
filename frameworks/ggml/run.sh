@@ -67,7 +67,12 @@ try:
             import platform
             has_gpu = platform.system() == 'Darwin'
         if has_gpu:
-            print('[ggml] WARNING: GPU detected but llama-cpp-python was built without GPU support.', file=sys.stderr)
+            import platform as _plat
+            hint = 'DGGML_CUDA=ON (NVIDIA)' if shutil.which('nvidia-smi') else \
+                   'DGGML_METAL=ON (Apple)' if _plat.system() == 'Darwin' else \
+                   'DGGML_VULKAN=ON (Vulkan/AMD)'
+            print(f'[ggml] WARNING: GPU detected but llama-cpp-python was built without GPU support.', file=sys.stderr)
+            print(f'  Rebuild: CMAKE_ARGS=\"-D{hint.split()[0]}\" pip install llama-cpp-python --force-reinstall --no-cache-dir', file=sys.stderr)
 except (ImportError, AttributeError):
     pass
 " 2>/dev/null || true

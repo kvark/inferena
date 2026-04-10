@@ -164,8 +164,26 @@ run_check() {
         check_python "MLX" "mlx.core"
     fi
 
+    # Detect GPU type for targeted install hints.
+    GPU_TYPE="none"
+    if [ "$(uname -s)" = "Darwin" ]; then
+        GPU_TYPE="apple"
+    elif command -v nvidia-smi &>/dev/null; then
+        GPU_TYPE="nvidia"
+    elif command -v rocm-smi &>/dev/null || [ -d /opt/rocm ]; then
+        GPU_TYPE="amd"
+    elif command -v vulkaninfo &>/dev/null; then
+        vk_dev=$(vulkaninfo --summary 2>/dev/null | grep "deviceName" | head -1 | sed 's/.*= //' | xargs)
+        if [ -n "$vk_dev" ] && ! echo "$vk_dev" | grep -qi "llvmpipe\|lavapipe\|swrast"; then
+            GPU_TYPE="vulkan"
+        fi
+    fi
+    if [ "$GPU_TYPE" != "none" ]; then
+        echo "  Detected GPU type: $GPU_TYPE"
+        echo ""
+    fi
+
     # GPU-aware Python framework checks.
-    echo ""
     echo "  GPU-aware frameworks:"
 
     # ONNX Runtime
@@ -178,11 +196,12 @@ print(', '.join(providers) if providers else 'CPU only')
 " 2>/dev/null)
         echo "    ✓ ONNX Runtime ($ver) — $gpu"
         if [ "$gpu" = "CPU only" ]; then
-            if [ "$(uname -s)" = "Darwin" ]; then
-                echo "      ↳ CoreML should be included in onnxruntime >= 1.14; try: pip install --upgrade onnxruntime"
-            else
-                echo "      ↳ pip install onnxruntime-gpu (NVIDIA) or onnxruntime-rocm (AMD)"
-            fi
+            case "$GPU_TYPE" in
+                apple)  echo "      ↳ CoreML should be included in onnxruntime >= 1.14; try: pip install --upgrade onnxruntime" ;;
+                nvidia) echo "      ↳ pip install onnxruntime-gpu" ;;
+                amd)    echo "      ↳ pip install onnxruntime-rocm" ;;
+                *)      echo "      ↳ pip install onnxruntime-gpu (NVIDIA) or onnxruntime-rocm (AMD)" ;;
+            esac
         fi
     else
         echo "    ✗ ONNX Runtime — pip install onnxruntime"
@@ -194,7 +213,12 @@ print(', '.join(providers) if providers else 'CPU only')
         backend=$(python3 -c "import jax; print(jax.default_backend())" 2>/dev/null)
         echo "    ✓ JAX ($ver) — backend: $backend"
         if [ "$backend" = "cpu" ]; then
-            echo "      ↳ pip install jax[cuda12] (NVIDIA) or jax-metal (Apple)"
+            case "$GPU_TYPE" in
+                apple)  echo "      ↳ pip install jax-metal" ;;
+                nvidia) echo "      ↳ pip install jax[cuda12]" ;;
+                amd)    echo "      ↳ pip install jax[rocm]" ;;
+                *)      echo "      ↳ pip install jax[cuda12] (NVIDIA) or jax-metal (Apple)" ;;
+            esac
         fi
     else
         echo "    ✗ JAX — pip install jax"
@@ -211,11 +235,15 @@ print('GPU offload' if llama_supports_gpu_offload() else 'CPU only')
 " 2>/dev/null)
         echo "    ✓ llama.cpp ($ver via llama-cpp-python) — $gpu"
         if [ "$gpu" = "CPU only" ]; then
-            echo "      ↳ CMAKE_ARGS=\"-DGGML_CUDA=ON\" pip install llama-cpp-python --force-reinstall --no-cache-dir  (NVIDIA)"
-            echo "      ↳ CMAKE_ARGS=\"-DGGML_VULKAN=ON\" pip install llama-cpp-python --force-reinstall --no-cache-dir (Vulkan)"
-            if [ "$(uname -s)" = "Darwin" ]; then
-                echo "      ↳ CMAKE_ARGS=\"-DGGML_METAL=ON\" pip install llama-cpp-python --force-reinstall --no-cache-dir  (Metal)"
-            fi
+            case "$GPU_TYPE" in
+                apple)  echo "      ↳ CMAKE_ARGS=\"-DGGML_METAL=ON\" pip install llama-cpp-python --force-reinstall --no-cache-dir" ;;
+                nvidia) echo "      ↳ CMAKE_ARGS=\"-DGGML_CUDA=ON\" pip install llama-cpp-python --force-reinstall --no-cache-dir" ;;
+                amd|vulkan) echo "      ↳ CMAKE_ARGS=\"-DGGML_VULKAN=ON\" pip install llama-cpp-python --force-reinstall --no-cache-dir" ;;
+                *)
+                    echo "      ↳ CMAKE_ARGS=\"-DGGML_CUDA=ON\" pip install llama-cpp-python --force-reinstall --no-cache-dir  (NVIDIA)"
+                    echo "      ↳ CMAKE_ARGS=\"-DGGML_VULKAN=ON\" pip install llama-cpp-python --force-reinstall --no-cache-dir (Vulkan/AMD)"
+                    ;;
+            esac
         fi
     else
         echo "    ✗ llama.cpp — pip install llama-cpp-python"
@@ -226,6 +254,15 @@ print('GPU offload' if llama_supports_gpu_offload() else 'CPU only')
     else
         echo "    ~ whisper.cpp — not installed (pip install faster-whisper)"
     fi
+
+    echo ""
+
+    # Rust framework GPU support notes.
+    echo "  Rust framework GPU support:"
+    echo "    candle:    CUDA, Metal          (no Vulkan/ROCm)"
+    echo "    burn:      wgpu (Vulkan, Metal, DX12)"
+    echo "    luminal:   CUDA, Metal          (no Vulkan/ROCm)"
+    echo "    meganeura: Vulkan, Metal"
 
     echo ""
 

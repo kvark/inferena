@@ -16,6 +16,8 @@ case "$(uname -s)" in
     Linux*)
         if command -v nvidia-smi &>/dev/null || [ -d /usr/local/cuda ] || command -v nvcc &>/dev/null; then
             FEATURES="--features cuda"
+        elif command -v rocm-smi &>/dev/null || [ -d /opt/rocm ]; then
+            echo "[candle] AMD ROCm detected but Candle only supports CUDA and Metal — running on CPU" >&2
         fi
         ;;
     Darwin*)

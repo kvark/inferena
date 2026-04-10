@@ -22,18 +22,29 @@ backend = jax.default_backend()
 print(f'[jax] backend: {backend}, devices: {jax.devices()}', file=sys.stderr)
 if backend == 'cpu':
     has_gpu = False
+    is_amd = False
     try:
         import torch
         has_gpu = torch.cuda.is_available() or (hasattr(torch.backends, 'mps') and torch.backends.mps.is_available())
+        if hasattr(torch.version, 'hip') and torch.version.hip:
+            is_amd = True
     except ImportError:
         import subprocess, shutil
-        has_gpu = subprocess.run(['nvidia-smi'], capture_output=True).returncode == 0 if shutil.which('nvidia-smi') else False
+        if shutil.which('nvidia-smi'):
+            has_gpu = subprocess.run(['nvidia-smi'], capture_output=True).returncode == 0
+        elif shutil.which('rocm-smi'):
+            has_gpu = True
+            is_amd = True
     if not has_gpu and sys.platform == 'darwin':
-        has_gpu = True  # macOS always has Metal
+        has_gpu = True
     if has_gpu:
         print('[jax] WARNING: GPU detected but JAX is using CPU backend.', file=sys.stderr)
-        print('  Install: pip install jax[cuda12]      (NVIDIA)', file=sys.stderr)
-        print('       or: pip install jax-metal         (Apple)', file=sys.stderr)
+        if sys.platform == 'darwin':
+            print('  Install: pip install jax-metal         (Apple Metal)', file=sys.stderr)
+        elif is_amd:
+            print('  Install: pip install jax[rocm]         (AMD ROCm)', file=sys.stderr)
+        else:
+            print('  Install: pip install jax[cuda12]       (NVIDIA CUDA)', file=sys.stderr)
 " 2>/dev/null || true
 
 exec python3 "$SCRIPT_DIR/bench.py" "$MODEL"

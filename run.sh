@@ -3,6 +3,29 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# --- Expose CUDA libraries bundled by pip packages (e.g. nvidia-cublas-cu12) ---
+NVIDIA_LIBS=$(python3 -c "
+import os, site
+for d in site.getsitepackages():
+    nv = os.path.join(d, 'nvidia')
+    if os.path.isdir(nv):
+        for sub in os.listdir(nv):
+            lib = os.path.join(nv, sub, 'lib')
+            if os.path.isdir(lib):
+                print(lib)
+" 2>/dev/null | paste -sd: -)
+if [ -n "$NVIDIA_LIBS" ]; then
+    export LD_LIBRARY_PATH="${NVIDIA_LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
+# --- Prefer discrete NVIDIA GPU over integrated GPU for Vulkan ---
+if [ -z "${VK_ICD_FILENAMES:-}" ]; then
+    NVIDIA_ICD=$(find /usr/share/vulkan/icd.d /etc/vulkan/icd.d -name '*nvidia*' 2>/dev/null | head -1)
+    if [ -n "$NVIDIA_ICD" ]; then
+        export VK_ICD_FILENAMES="$NVIDIA_ICD"
+    fi
+fi
+
 ALL_MODELS="SmolLM2-135M SmolVLA StableDiffusion ResNet-50 Whisper-tiny"
 
 # --- Parse arguments ---
@@ -235,18 +258,23 @@ print('GPU offload' if llama_supports_gpu_offload() else 'CPU only')
 " 2>/dev/null)
         echo "    ✓ llama.cpp ($ver via llama-cpp-python) — $gpu"
         if [ "$gpu" = "CPU only" ]; then
-            case "$GPU_TYPE" in
-                apple)  echo "      ↳ CMAKE_ARGS=\"-DGGML_METAL=ON\" pip install llama-cpp-python --force-reinstall --no-cache-dir" ;;
-                nvidia) echo "      ↳ CMAKE_ARGS=\"-DGGML_CUDA=ON\" pip install llama-cpp-python --force-reinstall --no-cache-dir" ;;
-                amd|vulkan) echo "      ↳ CMAKE_ARGS=\"-DGGML_VULKAN=ON\" pip install llama-cpp-python --force-reinstall --no-cache-dir" ;;
-                *)
-                    echo "      ↳ CMAKE_ARGS=\"-DGGML_CUDA=ON\" pip install llama-cpp-python --force-reinstall --no-cache-dir  (NVIDIA)"
-                    echo "      ↳ CMAKE_ARGS=\"-DGGML_VULKAN=ON\" pip install llama-cpp-python --force-reinstall --no-cache-dir (Vulkan/AMD)"
-                    ;;
-            esac
+            echo "      ↳ The ggml runner will auto-rebuild with GPU support on first run."
+            echo "      ↳ Requires: apt install libvulkan-dev glslc  (Vulkan, preferred)"
+            echo "      ↳      or:  apt install nvidia-cuda-toolkit  (CUDA, needs ≥12.8 for Blackwell)"
         fi
     else
-        echo "    ✗ llama.cpp — pip install llama-cpp-python"
+        # Diagnose import failure — could be missing CUDA runtime.
+        llama_err=$(python3 -c "import llama_cpp" 2>&1 || true)
+        if echo "$llama_err" | grep -q "libcudart"; then
+            echo "    ✗ llama.cpp — installed with CUDA but libcudart not found"
+            echo "      ↳ apt install libcudart12  (or install the full CUDA Toolkit)"
+            echo "      ↳ or: pip install llama-cpp-python --force-reinstall  (to get CPU-only build)"
+        elif echo "$llama_err" | grep -q "libcuda\|libnvidia\|libcuBLAS"; then
+            echo "    ✗ llama.cpp — installed with CUDA but missing runtime library"
+            echo "      ↳ $llama_err"
+        else
+            echo "    ✗ llama.cpp — pip install llama-cpp-python"
+        fi
     fi
     if python3 -c "import faster_whisper" 2>/dev/null; then
         ver=$(python3 -c "import faster_whisper; print(faster_whisper.__version__)" 2>/dev/null)
@@ -287,20 +315,34 @@ print('GPU offload' if llama_supports_gpu_offload() else 'CPU only')
 
     # GPU backends
     echo "GPU backends:"
+    if python3 -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+        dev=$(python3 -c "import torch; print(torch.cuda.get_device_name(0))" 2>/dev/null)
+        echo "  ✓ CUDA ($dev)"
+    else
+        echo "  ✗ CUDA — torch.cuda.is_available() is False"
+    fi
     if command -v vulkaninfo &>/dev/null; then
-        dev=$(vulkaninfo --summary 2>/dev/null | grep "deviceName" | head -1 | sed 's/.*= //')
-        echo "  ✓ Vulkan ($dev)"
+        if [ -n "${VK_ICD_FILENAMES:-}" ]; then
+            dev=$(vulkaninfo --summary 2>/dev/null | grep "deviceName" | head -1 | sed 's/.*= //')
+            echo "  ✓ Vulkan ($dev) — forced via VK_ICD_FILENAMES"
+        else
+            # List all Vulkan devices
+            vulkaninfo --summary 2>/dev/null | grep "deviceName" | sed 's/.*= //' | while read -r dev; do
+                echo "  ✓ Vulkan ($dev)"
+            done
+        fi
     else
         echo "  ✗ Vulkan — vulkaninfo not found"
     fi
     if [ "$(uname -s)" = "Darwin" ]; then
         echo "  ✓ Metal (macOS detected)"
     fi
-    if python3 -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
-        dev=$(python3 -c "import torch; print(torch.cuda.get_device_name(0))" 2>/dev/null)
-        echo "  ✓ CUDA ($dev)"
-    else
-        echo "  ✗ CUDA — torch.cuda.is_available() is False"
+    if command -v nvcc &>/dev/null || [ -d /usr/local/cuda ]; then
+        nvcc_ver=$(nvcc --version 2>/dev/null | grep "release" | sed 's/.*release //' | sed 's/,.*//')
+        echo "  ✓ CUDA Toolkit (nvcc ${nvcc_ver:-found}) — needed for candle, luminal"
+    elif python3 -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
+        echo "  ✗ CUDA Toolkit (nvcc) — needed to build candle/luminal with CUDA"
+        echo "    ↳ apt install nvidia-cuda-toolkit"
     fi
 
     echo ""

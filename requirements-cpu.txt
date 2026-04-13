@@ -1,0 +1,5 @@
+-r requirements-common.txt
+
+# CPU-only runtimes
+onnxruntime
+jax

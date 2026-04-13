@@ -69,17 +69,17 @@ def main():
             if hf_name in tensors:
                 gguf_tensors[gguf_name] = tensors[hf_name]
 
-    # Write GGUF using the gguf-py library if available, otherwise raw.
+    # Write GGUF using the gguf-py library.
     try:
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "llama.cpp", "gguf-py"))
         from gguf import GGUFWriter, GGMLQuantizationType
-        _write_with_gguf_py(out_path, config, gguf_tensors, vocab_size,
-                            hidden_size, n_layers, n_heads, n_kv_heads,
-                            intermediate_size, max_pos, rms_eps, rope_theta,
-                            head_dim)
     except ImportError:
-        print("[llama-cpp] gguf-py not available, cannot convert", file=sys.stderr)
+        print("[llama-cpp] gguf package not available — pip install gguf", file=sys.stderr)
         sys.exit(1)
+
+    _write_with_gguf_py(out_path, config, gguf_tensors, vocab_size,
+                        hidden_size, n_layers, n_heads, n_kv_heads,
+                        intermediate_size, max_pos, rms_eps, rope_theta,
+                        head_dim)
 
 
 def _write_with_gguf_py(out_path, config, gguf_tensors, vocab_size,

@@ -180,6 +180,11 @@ fn bench_smollm2(model_name: &str) {
         .map(|i| (i + 1) % vocab as u32)
         .collect();
 
+    // Warm-up forward pass (first step compiles Vulkan pipelines).
+    session.set_input_u32("token_ids", &input_ids);
+    session.step();
+    session.wait();
+
     session.set_input_u32("token_ids", &input_ids);
     let fwd_start = Instant::now();
     session.step();
@@ -212,6 +217,12 @@ fn bench_smollm2(model_name: &str) {
         let target = labels[pos + 1] as usize;
         one_hot_labels[pos * vocab + target] = label_scale;
     }
+    // Warm-up training step (first step compiles Vulkan pipelines).
+    train_session.set_input_u32("token_ids", &input_ids);
+    train_session.set_input("labels", &one_hot_labels);
+    train_session.step();
+    train_session.wait();
+
     train_session.set_input_u32("token_ids", &input_ids);
     train_session.set_input("labels", &one_hot_labels);
     let bwd_start = Instant::now();
@@ -330,8 +341,12 @@ fn bench_smolvla() {
     };
 
     // --- Forward (inference session) ---
+    // Warm-up (first step compiles Vulkan pipelines).
     set_inputs(&mut infer_session);
+    infer_session.step();
+    infer_session.wait();
 
+    set_inputs(&mut infer_session);
     let fwd_start = Instant::now();
     infer_session.step();
     infer_session.wait();
@@ -366,9 +381,15 @@ fn bench_smolvla() {
 
     // --- Training step (forward + backward + SGD) ---
     let target_actions = vec![0.0f32; action_seq_len * action_dim];
+
+    // Warm-up training step.
     set_inputs(&mut train_session);
     train_session.set_input("target_actions", &target_actions);
+    train_session.step();
+    train_session.wait();
 
+    set_inputs(&mut train_session);
+    train_session.set_input("target_actions", &target_actions);
     let bwd_start = Instant::now();
     train_session.step();
     train_session.wait();
@@ -524,9 +545,14 @@ fn bench_stable_diffusion() {
     let noise_target: Vec<f32> = (0..in_size).map(|i| (i as f32 * 0.007).cos()).collect();
 
     // --- Forward (inference session) ---
+    // Warm-up (first step compiles Vulkan pipelines).
     infer_session.set_input("noisy_latent", &noisy_latent);
     infer_session.set_input("noise_target", &noise_target);
+    infer_session.step();
+    infer_session.wait();
 
+    infer_session.set_input("noisy_latent", &noisy_latent);
+    infer_session.set_input("noise_target", &noise_target);
     let fwd_start = Instant::now();
     infer_session.step();
     infer_session.wait();
@@ -541,9 +567,14 @@ fn bench_stable_diffusion() {
     let logits_data = vec![output[0]];
 
     // --- Training step (forward + backward + SGD) ---
+    // Warm-up training step.
     train_session.set_input("noisy_latent", &noisy_latent);
     train_session.set_input("noise_target", &noise_target);
+    train_session.step();
+    train_session.wait();
 
+    train_session.set_input("noisy_latent", &noisy_latent);
+    train_session.set_input("noise_target", &noise_target);
     let bwd_start = Instant::now();
     train_session.step();
     train_session.wait();
@@ -582,73 +613,96 @@ fn bench_resnet() {
     let batch: u32 = 4;
     let scale: f32 = 0.01; // small scale to prevent explosion with identity BN
 
-    eprintln!("[meganeura] building ResNet graph...");
+    eprintln!("[meganeura] building ResNet training graph...");
     let compile_start = Instant::now();
-    let mut g = Graph::new();
-    let logits = resnet::build_resnet50(&mut g, batch);
-    g.set_outputs(vec![logits]);
+    let training_g = resnet::build_resnet50_training(batch);
 
-    eprintln!("[meganeura] compiling...");
-    let mut session = build_inference_session(&g);
+    eprintln!("[meganeura] compiling inference session...");
+    let mut infer_session = build_inference_session(&training_g);
+
+    eprintln!("[meganeura] compiling training session...");
+    let mut train_session = build_session(&training_g);
 
     let compile_s = compile_start.elapsed().as_secs_f64();
     eprintln!("[meganeura] ready (compile: {compile_s:.2}s)");
 
-    // --- Initialize with deterministic values ---
-    // BN fused_bias → zero (identity BN in eval mode matches PyTorch).
-    // Conv/FC weights → name-seeded sin values (framework-independent).
-    // FC weight: init in PyTorch [out, in] layout then transpose to meganeura [in, out].
-    for (name, buf_ref) in session.plan().param_buffers.clone().iter() {
-        let n = session.plan().buffers[buf_ref.0 as usize] / 4;
-        let data: Vec<f32> = if name.contains("fused_bias") {
-            vec![0.0; n]
-        } else if name == "fc.weight" {
-            // Init in PyTorch layout [out=1000, in=2048] then transpose to [in=2048, out=1000]
-            let in_dim = 2048usize;
-            let out_dim = 1000usize;
-            let seed = name_seed(name);
-            let mut buf = vec![0.0f32; n];
-            for i in 0..out_dim {
-                for j in 0..in_dim {
-                    buf[j * out_dim + i] = ((i * in_dim + j) as f32 * 0.01 + seed).sin() * scale;
+    // Helper to init parameters (shared between sessions).
+    let init_params = |session: &mut meganeura::Session| {
+        for (name, buf_ref) in session.plan().param_buffers.clone().iter() {
+            let n = session.plan().buffers[buf_ref.0 as usize] / 4;
+            let data: Vec<f32> = if name.contains("fused_bias") {
+                vec![0.0; n]
+            } else if name == "fc.weight" {
+                let in_dim = 2048usize;
+                let out_dim = 1000usize;
+                let seed = name_seed(name);
+                let mut buf = vec![0.0f32; n];
+                for i in 0..out_dim {
+                    for j in 0..in_dim {
+                        buf[j * out_dim + i] =
+                            ((i * in_dim + j) as f32 * 0.01 + seed).sin() * scale;
+                    }
                 }
-            }
-            buf
-        } else {
-            let seed = name_seed(name);
-            (0..n)
-                .map(|j| (j as f32 * 0.01 + seed).sin() * scale)
-                .collect()
-        };
-        session.set_parameter(name, &data);
-    }
+                buf
+            } else {
+                let seed = name_seed(name);
+                (0..n)
+                    .map(|j| (j as f32 * 0.01 + seed).sin() * scale)
+                    .collect()
+            };
+            session.set_parameter(name, &data);
+        }
+    };
+    init_params(&mut infer_session);
+    init_params(&mut train_session);
 
     // --- Forward ---
     let in_size = (batch * 3 * 224 * 224) as usize;
     let images: Vec<f32> = (0..in_size).map(|i| (i as f32 * 0.001).sin()).collect();
-    session.set_input("image", &images);
+    // One-hot labels for training.
+    let labels_idx: Vec<usize> = (0..batch as usize).map(|i| i % 1000).collect();
+    let mut one_hot_labels = vec![0.0f32; (batch * 1000) as usize];
+    for (b, &l) in labels_idx.iter().enumerate() {
+        one_hot_labels[b * 1000 + l] = 1.0;
+    }
 
+    // Warm-up (first step compiles Vulkan pipelines).
+    infer_session.set_input("image", &images);
+    infer_session.set_input("labels", &one_hot_labels);
+    infer_session.step();
+    infer_session.wait();
+
+    infer_session.set_input("image", &images);
+    infer_session.set_input("labels", &one_hot_labels);
     let fwd_start = Instant::now();
-    session.step();
-    session.wait();
+    infer_session.step();
+    infer_session.wait();
     let forward_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
 
-    let output = session.read_output((batch * 1000) as usize);
+    // Training graph outputs loss, not logits — read single scalar.
+    let loss_output = infer_session.read_output(1);
+    let loss = loss_output[0] as f64;
+    eprintln!("[meganeura] forward: {forward_ms:.2}ms, loss={loss:.6}");
 
-    // Cross-entropy loss.
-    let labels: Vec<usize> = (0..batch as usize).map(|i| i % 1000).collect();
-    let mut total_loss = 0.0f64;
-    for b in 0..batch as usize {
-        let sl = &output[b * 1000..(b + 1) * 1000];
-        let max_l = sl.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        let sum_exp: f64 = sl.iter().map(|&l| ((l - max_l) as f64).exp()).sum();
-        total_loss -= (sl[labels[b]] - max_l) as f64 - sum_exp.ln();
-    }
-    let loss = total_loss / batch as f64;
+    // --- Training step ---
+    train_session.set_input("image", &images);
+    train_session.set_input("labels", &one_hot_labels);
+    train_session.step();
+    train_session.wait();
+
+    train_session.set_input("image", &images);
+    train_session.set_input("labels", &one_hot_labels);
+    let bwd_start = Instant::now();
+    train_session.step();
+    train_session.wait();
+    let train_ms = bwd_start.elapsed().as_secs_f64() * 1000.0;
+    let backward_ms = (train_ms - forward_ms).max(0.0);
+
+    let grad_norm = compute_grad_norm(&train_session);
 
     // --- Latency (single-image) ---
     let lat_images: Vec<f32> = vec![0.0; (3 * 224 * 224) as usize];
-    // Build single-batch graph.
+    let _lat_labels = vec![0.0f32; 1000]; // dummy one-hot
     let mut lat_g = Graph::new();
     let lat_logits = resnet::build_resnet50(&mut lat_g, 1);
     lat_g.set_outputs(vec![lat_logits]);
@@ -664,7 +718,8 @@ fn bench_resnet() {
             let mut buf = vec![0.0f32; n];
             for i in 0..out_dim {
                 for j in 0..in_dim {
-                    buf[j * out_dim + i] = ((i * in_dim + j) as f32 * 0.01 + seed).sin() * scale;
+                    buf[j * out_dim + i] =
+                        ((i * in_dim + j) as f32 * 0.01 + seed).sin() * scale;
                 }
             }
             buf
@@ -689,11 +744,11 @@ fn bench_resnet() {
         "ResNet-50",
         compile_s,
         forward_ms,
-        0.0,
-        &output,
+        backward_ms,
+        &loss_output,
         loss,
         latency_ms,
-        0.0,
+        grad_norm,
     );
 }
 
@@ -772,8 +827,13 @@ fn bench_whisper() {
     // --- Forward ---
     let mel_size = (batch * config.n_mels as u32 * mel_len) as usize;
     let mel: Vec<f32> = (0..mel_size).map(|i| (i as f32 * 0.001).sin()).collect();
-    session.set_input("mel", &mel);
 
+    // Warm-up (first step compiles Vulkan pipelines).
+    session.set_input("mel", &mel);
+    session.step();
+    session.wait();
+
+    session.set_input("mel", &mel);
     let fwd_start = Instant::now();
     session.step();
     session.wait();
@@ -795,6 +855,7 @@ fn bench_whisper() {
     session.wait();
     let latency_ms = lat_start.elapsed().as_secs_f64() * 1000.0;
 
+    // Training not yet supported — shape mismatch in meganeura's whisper training graph.
     emit_result(
         "Whisper-tiny",
         compile_s,

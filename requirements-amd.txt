@@ -1,0 +1,8 @@
+-r requirements-common.txt
+
+# AMD ROCm
+onnxruntime
+jax[rocm]
+
+# Rebuild llama-cpp-python with Vulkan for AMD:
+#   CMAKE_ARGS="-DGGML_VULKAN=ON" pip install llama-cpp-python --force-reinstall --no-cache-dir

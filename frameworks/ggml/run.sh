@@ -47,35 +47,31 @@ if [ "$BACKEND" = "llama.cpp" ]; then
         _gpu_rebuild_hint
         exit 1
     fi
-    # Warn if GPU is available but llama.cpp can't use it.
-    python3 -c "
-import sys
-try:
-    from llama_cpp import llama_supports_gpu_offload
-    if llama_supports_gpu_offload():
-        print('[ggml] GPU offload: supported', file=sys.stderr)
-    else:
-        # Check if GPU hardware exists.
-        import subprocess, shutil
-        has_gpu = False
-        if shutil.which('nvidia-smi'):
-            has_gpu = subprocess.run(['nvidia-smi'], capture_output=True).returncode == 0
-        if not has_gpu and shutil.which('vulkaninfo'):
-            r = subprocess.run(['vulkaninfo', '--summary'], capture_output=True, text=True)
-            has_gpu = 'deviceName' in r.stdout and 'llvmpipe' not in r.stdout.lower()
-        if not has_gpu:
-            import platform
-            has_gpu = platform.system() == 'Darwin'
-        if has_gpu:
-            import platform as _plat
-            hint = 'DGGML_CUDA=ON (NVIDIA)' if shutil.which('nvidia-smi') else \
-                   'DGGML_METAL=ON (Apple)' if _plat.system() == 'Darwin' else \
-                   'DGGML_VULKAN=ON (Vulkan/AMD)'
-            print(f'[ggml] WARNING: GPU detected but llama-cpp-python was built without GPU support.', file=sys.stderr)
-            print(f'  Rebuild: CMAKE_ARGS=\"-D{hint.split()[0]}\" pip install llama-cpp-python --force-reinstall --no-cache-dir', file=sys.stderr)
-except (ImportError, AttributeError):
-    pass
-" 2>/dev/null || true
+    # Auto-rebuild llama-cpp-python with GPU support if needed.
+    _GGML_GPU_OK=$(python3 -c "
+from llama_cpp import llama_supports_gpu_offload
+print('yes' if llama_supports_gpu_offload() else 'no')
+" 2>/dev/null) || _GGML_GPU_OK="no"
+
+    if [ "$_GGML_GPU_OK" = "no" ]; then
+        # Detect which GPU backend to compile for.
+        # Prefer Vulkan on Linux (works with any GPU vendor, no nvcc version issues).
+        # CUDA requires nvcc matching the GPU arch, which distro packages often lag.
+        _CMAKE_BACKEND=""
+        if [ "$(uname -s)" = "Darwin" ]; then
+            _CMAKE_BACKEND="-DGGML_METAL=ON"
+        elif command -v vulkaninfo &>/dev/null && dpkg -l libvulkan-dev &>/dev/null 2>&1; then
+            _CMAKE_BACKEND="-DGGML_VULKAN=ON"
+        elif command -v nvcc &>/dev/null || [ -d /usr/local/cuda ]; then
+            _CMAKE_BACKEND="-DGGML_CUDA=ON"
+        fi
+
+        if [ -n "$_CMAKE_BACKEND" ]; then
+            echo "[ggml] llama-cpp-python lacks GPU support — rebuilding with ${_CMAKE_BACKEND}..." >&2
+            CMAKE_ARGS="$_CMAKE_BACKEND" pip install llama-cpp-python --force-reinstall --no-cache-dir 2>&1 >&2
+            echo "[ggml] rebuild complete." >&2
+        fi
+    fi
 elif [ "$BACKEND" = "whisper.cpp" ]; then
     if ! python3 -c "import faster_whisper" 2>/dev/null; then
         echo "[ggml] faster-whisper not found. Install via: pip install faster-whisper" >&2

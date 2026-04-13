@@ -1,0 +1,8 @@
+-r requirements-common.txt
+
+# Apple Metal
+onnxruntime
+jax-metal
+
+# Rebuild llama-cpp-python with Metal:
+#   CMAKE_ARGS="-DGGML_METAL=ON" pip install llama-cpp-python --force-reinstall --no-cache-dir

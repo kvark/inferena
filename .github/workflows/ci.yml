@@ -76,7 +76,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install Python deps
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-cpu.txt
 
       - name: Build Rust frameworks
         run: cargo build --release --workspace --exclude inferena-inferi
@@ -109,7 +109,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install Python deps
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-cpu.txt
 
       - name: Build Rust frameworks
         run: cargo build --release --workspace --exclude inferena-inferi

@@ -47,4 +47,20 @@ if backend == 'cpu':
             print('  Install: pip install jax[cuda12]       (NVIDIA CUDA)', file=sys.stderr)
 " 2>/dev/null || true
 
+# Pre-flight: detect if CUDA backend will crash (e.g. Blackwell GPU + old jaxlib PTX).
+# JAX's XLA compiler calls abort() on LLVM errors, so we must test in a subprocess.
+if python3 -c "import jax; exit(0 if jax.default_backend() == 'gpu' else 1)" 2>/dev/null; then
+    _JAX_CUDA_OK=$(timeout 15 python3 -c "
+import jax
+x = jax.numpy.ones(1)
+_ = (x + x).block_until_ready()
+print('ok')
+" 2>&1) || _JAX_CUDA_OK="fail"
+
+    if ! echo "$_JAX_CUDA_OK" | grep -q "^ok$"; then
+        echo "[jax] CUDA backend crashed (likely GPU too new for installed jaxlib PTX) — falling back to CPU" >&2
+        export JAX_PLATFORMS="cpu"
+    fi
+fi
+
 exec python3 "$SCRIPT_DIR/bench.py" "$MODEL"

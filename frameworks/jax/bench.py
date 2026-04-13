@@ -513,9 +513,10 @@ def _sd_unet_forward(params, x):
         if ds is not None:
             x = _conv2d(x, ds, stride=2, padding=1)
     x = _sd_resblock(x, params['mid'], num_groups, eps)
-    for i, (bp, up) in enumerate(zip(params['dec'], params['up'])):
-        level = len(params['enc']) - 1 - i
-        if up is not None:
+    n_levels = len(params['enc'])
+    for i, bp in enumerate(params['dec']):
+        level = n_levels - 1 - i
+        if level < n_levels - 1:
             x = jax.image.resize(x, (x.shape[0], x.shape[1], x.shape[2]*2, x.shape[3]*2), method='nearest')
         x = jnp.concatenate([x, skips[level]], axis=1)
         x = _sd_resblock(x, bp, num_groups, eps)
@@ -556,15 +557,13 @@ def _build_sd_unet_params():
     p['enc'] = enc
     p['down'] = down
     p['mid'] = _build_sd_resblock_params('middle', prev_c, prev_c, ng)
-    dec, up = [], []
+    dec = []
     for i, level in enumerate(reversed(range(levels))):
         out_c = base * ch_mults[level]
         skip_c = out_c
-        up.append(True if level < levels - 1 else None)
         dec.append(_build_sd_resblock_params(f'decoder_blocks.{i}', prev_c + skip_c, out_c, ng))
         prev_c = out_c
     p['dec'] = dec
-    p['up'] = up
     return p
 
 

@@ -18,7 +18,7 @@ macro_rules! compile_and_run {
     ($cx:expr, |$rt:ident, $backend:ident| $body:block) => {{
         #[cfg(feature = "cuda")]
         {
-            use luminal_cuda_lite::CudaRuntime;
+            use luminal_cuda_lite::runtime::CudaRuntime;
             eprintln!("[luminal] compiling (graph search, CUDA)...");
             $cx.build_search_space::<CudaRuntime>();
             let cuda_rt = CudaRuntime::new().expect("Failed to create CUDA runtime");

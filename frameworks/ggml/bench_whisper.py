@@ -94,11 +94,18 @@ def main():
     loss = 0.0
 
     ct2_backend = "CTranslate2"
+    gpu_name = device
+    if device == "cuda":
+        try:
+            import torch
+            gpu_name = torch.cuda.get_device_name(0)
+        except Exception:
+            pass
     result = {
         "framework": "ggml",
         "model": "Whisper-tiny",
         "device": device,
-        "gpu_name": device,
+        "gpu_name": gpu_name,
         "backend": f"faster-whisper ({ct2_backend}, {device.upper()})",
         "timings": {
             "compile_s": round(compile_s, 2),

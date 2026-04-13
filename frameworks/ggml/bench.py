@@ -121,7 +121,7 @@ def main():
                     import torch
                     if torch.cuda.is_available():
                         backend = "CUDA"
-                        gpu_name = "cuda"
+                        gpu_name = torch.cuda.get_device_name(0)
                     else:
                         backend = "Vulkan"
                         gpu_name = "vulkan"

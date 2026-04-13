@@ -64,14 +64,42 @@ Each framework runs a fake training step on the selected model:
 Outputs (logits, loss) are compared across frameworks to verify they run
 the same model — flagged as **PASS**, **CLOSE**, or **DIFFERENT MODEL**.
 
+## Prerequisites
+
+- **Rust** toolchain (for Candle, Burn, Luminal, Meganeura)
+- **Python 3** (3.12 recommended — best pre-built GPU wheel coverage)
+- **GPU drivers** for your hardware
+
+### Ubuntu/Debian system packages
+
+```bash
+# Common (Vulkan for Burn, Meganeura)
+sudo apt install vulkan-tools libvulkan-dev glslc
+
+# NVIDIA GPU:
+sudo apt install nvidia-driver-595          # driver (version may vary)
+sudo apt install nvidia-cuda-toolkit        # nvcc — needed for Candle, Luminal
+# CUDA runtime libraries are provided by pip packages (nvidia-cublas-cu12, etc.)
+
+# AMD GPU:
+# sudo apt install rocm-libs                # ROCm runtime
+```
+
+Run `./run.sh --check` after setup to verify what's working and get
+install hints for anything missing.
+
 ## Quick start
 
 ```bash
-# Prerequisites: Rust toolchain, Python 3, GPU drivers
-./run.sh                                 # all models, all frameworks
-./run.sh -m SmolLM2-135M                 # single model
-./run.sh -m SmolLM2-135M -f pytorch      # single model + framework
-./run.sh --json                          # machine-readable output
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-nvidia.txt       # NVIDIA CUDA
+# pip install -r requirements-amd.txt        # AMD ROCm
+# pip install -r requirements-apple.txt      # Apple Metal
+# pip install -r requirements-cpu.txt        # CPU only
+./run.sh                                     # all models, all frameworks
+./run.sh -m SmolLM2-135M                     # single model
+./run.sh -m SmolLM2-135M -f pytorch          # single model + framework
+./run.sh --json                              # machine-readable output
 ```
 
 ### Download pre-trained weights

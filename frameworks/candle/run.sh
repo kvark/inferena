@@ -14,8 +14,18 @@ export FRAMEWORK_REV=$(cargo_rev_short candle-core "$ROOT_DIR")
 FEATURES=""
 case "$(uname -s)" in
     Linux*)
-        if command -v nvidia-smi &>/dev/null || [ -d /usr/local/cuda ] || command -v nvcc &>/dev/null; then
+        if command -v nvcc &>/dev/null || [ -d /usr/local/cuda ]; then
             FEATURES="--features cuda"
+            # Auto-detect max supported compute capability for nvcc.
+            # Distro nvcc may be older than the installed GPU (e.g. nvcc 12.4 vs Blackwell).
+            if [ -z "${CUDA_COMPUTE_CAP:-}" ]; then
+                _max_cc=$(nvcc --list-gpu-code 2>/dev/null | grep -oP 'sm_\K[0-9]+' | sort -n | tail -1)
+                _gpu_cc=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
+                if [ -n "$_gpu_cc" ] && [ -n "$_max_cc" ] && [ "$_gpu_cc" -gt "$_max_cc" ]; then
+                    export CUDA_COMPUTE_CAP="$_max_cc"
+                    echo "[candle] nvcc max sm_${_max_cc}, GPU needs sm_${_gpu_cc} — using forward compat (CUDA_COMPUTE_CAP=${_max_cc})" >&2
+                fi
+            fi
         elif command -v rocm-smi &>/dev/null || [ -d /opt/rocm ]; then
             echo "[candle] AMD ROCm detected but Candle only supports CUDA and Metal — running on CPU" >&2
         fi

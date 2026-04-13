@@ -1,0 +1,14 @@
+-r requirements-common.txt
+
+# NVIDIA CUDA
+onnxruntime-gpu
+jax[cuda12]
+
+# Note: do NOT install onnxruntime (CPU) alongside onnxruntime-gpu — they conflict.
+# If you previously installed the CPU version, run:
+#   pip install onnxruntime-gpu --force-reinstall
+
+# Note: llama-cpp-python ships as a CPU-only wheel. The ggml runner auto-rebuilds
+# it with Vulkan (preferred) or CUDA on first run.
+# Vulkan: apt install libvulkan-dev glslc
+# CUDA:   apt install nvidia-cuda-toolkit  (must be ≥12.8 for Blackwell GPUs)

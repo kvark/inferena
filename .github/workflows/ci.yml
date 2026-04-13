@@ -35,7 +35,7 @@ jobs:
         with:
           shared-key: check-${{ matrix.os }}
 
-      - name: Install cargo-gpu and Rust GPU toolchain
+      - name: Install cargo-gpu and Rust GPU toolchain (for inferi)
         shell: bash
         run: |
           cargo install cargo-gpu --git https://github.com/Rust-GPU/cargo-gpu
@@ -71,13 +71,6 @@ jobs:
       - name: Verify Vulkan (Lavapipe)
         run: vulkaninfo --summary || true
 
-      - name: Install cargo-gpu and Rust GPU toolchain
-        run: |
-          cargo install cargo-gpu --git https://github.com/Rust-GPU/cargo-gpu
-          cargo gpu install --auto-install-rust-toolchain \
-            --spirv-builder-source https://github.com/Rust-GPU/rust-gpu \
-            --spirv-builder-version 6a67e7b5954f37989ad540a555b5d6969073592e
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -85,8 +78,8 @@ jobs:
       - name: Install Python deps
         run: pip install -r requirements.txt
 
-      - name: Build all Rust frameworks
-        run: cargo build --release --workspace
+      - name: Build Rust frameworks
+        run: cargo build --release --workspace --exclude inferena-inferi
 
       - name: Run SmolLM2-135M (CPU frameworks)
         run: ./target/release/inferena --model SmolLM2-135M --frameworks pytorch,candle,luminal,burn --root .
@@ -111,13 +104,6 @@ jobs:
         with:
           shared-key: smoke-macos
 
-      - name: Install cargo-gpu and Rust GPU toolchain
-        run: |
-          cargo install cargo-gpu --git https://github.com/Rust-GPU/cargo-gpu
-          cargo gpu install --auto-install-rust-toolchain \
-            --spirv-builder-source https://github.com/Rust-GPU/rust-gpu \
-            --spirv-builder-version 6a67e7b5954f37989ad540a555b5d6969073592e
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -126,7 +112,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Build Rust frameworks
-        run: cargo build --release --workspace
+        run: cargo build --release --workspace --exclude inferena-inferi
 
       - name: Run SmolLM2-135M
         run: ./target/release/inferena --model SmolLM2-135M --frameworks pytorch,candle,burn --root .

@@ -36,7 +36,14 @@ jobs:
           shared-key: check-${{ matrix.os }}
 
       - name: Install cargo-gpu (for inferi shader compilation)
-        run: cargo install cargo-gpu --git https://github.com/Rust-GPU/cargo-gpu
+        shell: bash
+        run: |
+          cargo install cargo-gpu --git https://github.com/Rust-GPU/cargo-gpu
+          # Wrap cargo-gpu to auto-install Rust GPU toolchain (CI has no TTY for consent prompt)
+          REAL=$(which cargo-gpu)
+          mv "$REAL" "${REAL}-real"
+          printf '#!/bin/sh\nexec "%s-real" "$@" --auto-install-rust-toolchain\n' "$REAL" > "$REAL"
+          chmod +x "$REAL"
 
       - name: Check packages
         shell: bash
@@ -67,7 +74,12 @@ jobs:
         run: vulkaninfo --summary || true
 
       - name: Install cargo-gpu (for inferi shader compilation)
-        run: cargo install cargo-gpu --git https://github.com/Rust-GPU/cargo-gpu
+        run: |
+          cargo install cargo-gpu --git https://github.com/Rust-GPU/cargo-gpu
+          REAL=$(which cargo-gpu)
+          mv "$REAL" "${REAL}-real"
+          printf '#!/bin/sh\nexec "%s-real" "$@" --auto-install-rust-toolchain\n' "$REAL" > "$REAL"
+          chmod +x "$REAL"
 
       - uses: actions/setup-python@v5
         with:
@@ -103,7 +115,12 @@ jobs:
           shared-key: smoke-macos
 
       - name: Install cargo-gpu (for inferi shader compilation)
-        run: cargo install cargo-gpu --git https://github.com/Rust-GPU/cargo-gpu
+        run: |
+          cargo install cargo-gpu --git https://github.com/Rust-GPU/cargo-gpu
+          REAL=$(which cargo-gpu)
+          mv "$REAL" "${REAL}-real"
+          printf '#!/bin/sh\nexec "%s-real" "$@" --auto-install-rust-toolchain\n' "$REAL" > "$REAL"
+          chmod +x "$REAL"
 
       - uses: actions/setup-python@v5
         with:

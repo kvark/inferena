@@ -10,6 +10,7 @@ huggingface_hub
 
 # ONNX model format
 onnx
+onnxscript  # required by torch.onnx.export(dynamo=True)
 
 # GGML backends
 llama-cpp-python

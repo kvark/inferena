@@ -42,15 +42,15 @@ Two benchmark configurations are used depending on framework capabilities:
 | | [GGML](https://github.com/ggerganov/ggml) (CPU) | — | — | — | — | |
 | | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CoreMLExecutionProvider) | ~~2.48~~ | ~~9~~ | ~~—~~ | ~~—~~ | ~~0.05~~ |
 | | [JAX](https://github.com/jax-ml/jax) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-| NVIDIA GeForce RTX 5080 | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 13.0) | 6.21 | **1** | **1** | **1** | 0.57 |
-| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CUDA) | ~~0.01~~ | ~~92~~ | ~~—~~ | ~~—~~ | ~~0.00~~ |
+| NVIDIA GeForce RTX 5080 | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 13.0) | 6.35 | **1** | **1** | **2** | 0.57 |
+| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CUDA) | ~~0.01~~ | ~~110~~ | ~~—~~ | ~~—~~ | ~~0.00~~ |
 | | [Burn](https://github.com/tracel-ai/burn) (wgpu) | — | — | — | — | |
 | | [Inferi](https://github.com/dimforge/inferi) (Vulkan) | ✗ | ✗ | ✗ | ✗ | |
 | | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | — | — | — | — | |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/6b76b5e) (Vulkan) | **1.39** | 3 | 3 | 6 | 0.57 |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/6b76b5e) (Vulkan) | **1.42** | 3 | 3 | 5 | 0.57 |
 | | [GGML](https://github.com/ggerganov/ggml) (CPU) | — | — | — | — | |
-| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CPUExecutionProvider) | ~~0.60~~ | ~~4~~ | ~~—~~ | ~~—~~ | ~~0.05~~ |
-| | [JAX](https://github.com/jax-ml/jax) (CPU) | ~~1.02~~ | ~~13~~ | ~~—~~ | ~~28~~ | ~~0.05~~ |
+| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | ~~0.84~~ | ~~1~~ | ~~—~~ | ~~—~~ | ~~0.05~~ |
+| | [JAX](https://github.com/jax-ml/jax) (CPU) | ~~1.06~~ | ~~14~~ | ~~—~~ | ~~31~~ | ~~0.05~~ |
 | Intel Graphics (RPL-U) | [PyTorch](https://github.com/pytorch/pytorch) | ✗ | ✗ | ✗ | ✗ | |
 |  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | 0.00 | **16876** | — | — | 0.00 |
 |  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | ✗ | |

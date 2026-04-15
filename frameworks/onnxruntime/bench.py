@@ -209,7 +209,7 @@ def _export_causal_lm_onnx(onnx_path, model_dir):
             "attention_mask": {0: "batch", 1: "seq"},
             "logits": {0: "batch", 1: "seq"},
         },
-        dynamo=False,
+        dynamo=True,
     )
 
 

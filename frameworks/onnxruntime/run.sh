@@ -17,6 +17,18 @@ if ! python3 -c "import onnxruntime" 2>/dev/null; then
     exit 1
 fi
 
+# Detect and fix the onnxruntime / onnxruntime-gpu conflict.
+# When both wheels are installed, the CPU one shadows the GPU one and only
+# CPUExecutionProvider is exposed. The GPU wheel already handles CPU fallback,
+# so resolving the conflict by removing the CPU wheel is safe.
+if python3 -c "import importlib.metadata as m; m.version('onnxruntime'); m.version('onnxruntime-gpu')" 2>/dev/null; then
+    echo "[onnxruntime] both onnxruntime (CPU) and onnxruntime-gpu installed — removing CPU wheel to expose CUDA provider" >&2
+    pip uninstall -y onnxruntime 2>&1 >&2
+    # The two wheels share the onnxruntime/ namespace, so uninstalling one
+    # removes files owned by the other. Reinstall the GPU wheel to restore them.
+    pip install --force-reinstall --no-deps onnxruntime-gpu 2>&1 >&2
+fi
+
 # Warn if GPU is available but only CPU provider is installed.
 python3 -c "
 import onnxruntime as ort, sys

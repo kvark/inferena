@@ -21,8 +21,10 @@ case "$(uname -s)" in
                 _max_cc=$(nvcc --list-gpu-code 2>/dev/null | grep -oP 'sm_\K[0-9]+' | sort -n | tail -1)
                 _gpu_cc=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
                 if [ -n "$_gpu_cc" ] && [ -n "$_max_cc" ] && [ "$_gpu_cc" -gt "$_max_cc" ]; then
-                    export CUDA_COMPUTE_CAP="$_max_cc"
-                    echo "[luminal] nvcc max sm_${_max_cc}, GPU needs sm_${_gpu_cc} — using forward compat (CUDA_COMPUTE_CAP=${_max_cc})" >&2
+                    # Luminal's CUDA graph backend doesn't tolerate forward-compat PTX
+                    # (CUDA_ERROR_INVALID_VALUE at execute time). Skip CUDA → CPU build.
+                    echo "[luminal] nvcc max sm_${_max_cc} < GPU sm_${_gpu_cc} — Luminal CUDA graphs need exact match; falling back to CPU" >&2
+                    FEATURES=""
                 fi
             fi
         elif command -v rocm-smi &>/dev/null || [ -d /opt/rocm ]; then

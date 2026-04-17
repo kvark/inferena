@@ -553,6 +553,11 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
                 let fmt_val = |val: f64, best: f64, is_time: bool| -> String {
                     let s = if is_time && val == 0.0 {
                         "—".to_string()
+                    } else if is_time && val < 10.0 {
+                        // Sub-10ms values need a decimal to distinguish e.g.
+                        // 2.5ms inference from 3.4ms training — otherwise both
+                        // round to "3" and the visual extension vanishes.
+                        format!("{:.1}", val)
                     } else if is_time {
                         format!("{:.0}", val)
                     } else {

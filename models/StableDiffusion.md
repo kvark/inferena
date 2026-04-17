@@ -42,15 +42,14 @@ Two benchmark configurations are used depending on framework capabilities:
 | | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
 | | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CoreMLExecutionProvider) | ~~2.52~~ | ~~9~~ | ~~—~~ | ~~—~~ | ~~0.05~~ |
 | | [JAX](https://github.com/jax-ml/jax) (METAL) | ~~5.49~~ | ~~12~~ | ~~—~~ | ~~20~~ | ~~0.05~~ |
-| NVIDIA GeForce RTX 5080 | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 13.0) | 6.42 | **1** | **1** | **2** | 0.57 |
+| NVIDIA GeForce RTX 5080 | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 13.0) | 7.05 | **1.1** | **1.0** | **1.7** | 0.57 |
 | | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CUDA) | ~~0.01~~ | ~~93~~ | ~~—~~ | ~~—~~ | ~~0.00~~ |
 | | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
 | | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |
 | | [Luminal](https://github.com/luminal-ai/luminal) | — | — | — | — | |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/33dcf42) (Vulkan) | **2.05** | 1 | 1 | 8 | 0.54 |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/33dcf42) (Vulkan) | **2.02** | 1.2 | 1.2 | 9.4 | 0.54 |
 | | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
-| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | ~~0.74~~ | ~~1~~ | ~~—~~ | ~~—~~ | ~~0.05~~ |
-| | [JAX](https://github.com/jax-ml/jax) (CPU) | ~~1.12~~ | ~~12~~ | ~~—~~ | ~~30~~ | ~~0.05~~ |
+| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | ~~0.88~~ | ~~7.4~~ | ~~—~~ | ~~—~~ | ~~0.05~~ |
 | NVIDIA GeForce RTX 3050 (Windows) | [PyTorch 2.11.0+cu128](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 12.8) | 0.00 | **252** | **4** | **153** | 0.57 |
 | | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
 | | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |

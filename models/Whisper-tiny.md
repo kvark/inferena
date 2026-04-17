@@ -48,14 +48,13 @@ Benchmark config: 30s mel spectrogram (80x3000), 4-token decoder input, float32,
 | | [GGML](https://github.com/ggerganov/ggml) (faster-whisper (CTranslate2, CUDA)) | 5.30 | 32 | 50 | — | 0.00 |
 | | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | 1.93 | 4 | — | — | 0.01 |
 | | [JAX](https://github.com/jax-ml/jax) (CPU) | 1.21 | 135 | 120 | 388 | 0.01 |
-| NVIDIA GeForce RTX 3050 | [PyTorch 2.11.0+cu128](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 12.8) | 0.00 | 145 | **13** | **70** | 0.01 |
-| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | 0.01 | 308 | — | — | 0.00 |
+| NVIDIA GeForce RTX 3050 (Windows) | [PyTorch 2.11.0+cu128](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 12.8) | 0.00 | 154 | **13** | **74** | 0.01 |
 | | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
 | | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |
 | | [Luminal](https://github.com/luminal-ai/luminal) | — | — | — | — | |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/3e0b489) (Vulkan/DX12) | 1.38 | 90 | 82 | 508 | 0.01 |
-| | [GGML](https://github.com/ggerganov/ggml) (faster-whisper (CTranslate2, CUDA)) | 8.37 | 58 | 43 | — | 0.00 |
-| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | 5.13 | **20** | — | — | 0.01 |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/33dcf42) (Vulkan/DX12) | 1.87 | 199 | 211 | 779 | 0.01 |
+| | [GGML](https://github.com/ggerganov/ggml) (faster-whisper (CTranslate2, CUDA)) | 8.95 | 45 | 38 | — | 0.00 |
+| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | 5.18 | **20** | — | — | 0.01 |
 | | [JAX](https://github.com/jax-ml/jax) | ✗ | ✗ | ✗ | ✗ | |
 
 **Correctness:** PyTorch vs ONNX Runtime: **PASS** (loss diff 0.0).

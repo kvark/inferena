@@ -2,7 +2,11 @@
 
 # Apple Metal
 onnxruntime
+# jax-metal 0.1.1 requires jax/jaxlib ~0.4.x; newer jax (0.9+) has
+# incompatible StableHLO bytecode.
 jax-metal
+jax<0.5
+jaxlib<0.5
 
 # Rebuild llama-cpp-python with Metal:
 #   CMAKE_ARGS="-DGGML_METAL=ON" pip install llama-cpp-python --force-reinstall --no-cache-dir

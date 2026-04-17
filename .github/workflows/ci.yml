@@ -1,31 +1,62 @@
 name: CI
 
-# Skip on markdown/site-only changes — the heavy Rust jobs can't fail from
-# those, and the light `check-md` workflow covers publish-time correctness.
+# The workflow always runs so the `CI` summary check always posts a status
+# — branch protection needs that. Heavy jobs are gated at the job level
+# on whether any non-markdown file changed; md-only PRs skip them and
+# the summary still reports success.
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "**.md"
-      - "_layouts/**"
-      - "_config.yml"
-      - "scripts/*.py"
-      - ".github/workflows/check-md.yml"
-      - ".github/workflows/pages.yml"
   pull_request:
-    paths-ignore:
-      - "**.md"
-      - "_layouts/**"
-      - "_config.yml"
-      - "scripts/*.py"
-      - ".github/workflows/check-md.yml"
-      - ".github/workflows/pages.yml"
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  filter:
+    name: Detect code changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: diff
+        shell: bash
+        run: |
+          # Determine which files changed on this ref.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+            changed=$(git diff --name-only "$base" "$head")
+          elif [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            changed=$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}")
+          else
+            # New branch / first push / shallow — be conservative and run.
+            changed="FORCE_RUN"
+          fi
+
+          echo "Changed files:"
+          echo "$changed" | sed 's/^/  /'
+
+          # "code" = anything not covered by the md/site-only bypass list.
+          code=false
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in
+              FORCE_RUN) code=true; break ;;
+              *.md|_layouts/*|_config.yml|scripts/*.py|.github/workflows/check-md.yml|.github/workflows/pages.yml) ;;
+              *) code=true; break ;;
+            esac
+          done <<< "$changed"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "code-affecting change: $code"
+
   check:
+    needs: filter
+    if: needs.filter.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -70,6 +101,8 @@ jobs:
 
   # Smoke test on Linux: Lavapipe (Vulkan SW renderer) + CPU frameworks.
   smoke-test-linux:
+    needs: filter
+    if: needs.filter.outputs.code == 'true'
     runs-on: ubuntu-latest
     name: Smoke test (Linux)
     steps:
@@ -111,6 +144,8 @@ jobs:
 
   # Smoke test on macOS: Metal (if available) + CPU frameworks.
   smoke-test-macos:
+    needs: filter
+    if: needs.filter.outputs.code == 'true'
     runs-on: macos-latest
     name: Smoke test (macOS)
     steps:
@@ -141,3 +176,30 @@ jobs:
           name: benchmark-results-macos
           path: results/
           if-no-files-found: ignore
+
+  # Single gate that always runs — mark THIS as the required status check in
+  # branch protection. It reports success when every upstream job either
+  # succeeded or was cleanly skipped because no code changed.
+  ci:
+    name: CI
+    needs: [filter, check, smoke-test-linux, smoke-test-macos]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Aggregate results
+        shell: bash
+        run: |
+          fail=0
+          for r in \
+              "filter=${{ needs.filter.result }}" \
+              "check=${{ needs.check.result }}" \
+              "smoke-test-linux=${{ needs.smoke-test-linux.result }}" \
+              "smoke-test-macos=${{ needs.smoke-test-macos.result }}"; do
+            name="${r%%=*}"
+            result="${r#*=}"
+            case "$result" in
+              success|skipped) echo "✓ $name: $result" ;;
+              *) echo "✗ $name: $result"; fail=1 ;;
+            esac
+          done
+          exit $fail

@@ -1,9 +1,25 @@
 name: CI
 
+# Skip on markdown/site-only changes — the heavy Rust jobs can't fail from
+# those, and the light `check-md` workflow covers publish-time correctness.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "_layouts/**"
+      - "_config.yml"
+      - "scripts/*.py"
+      - ".github/workflows/check-md.yml"
+      - ".github/workflows/pages.yml"
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - "_layouts/**"
+      - "_config.yml"
+      - "scripts/*.py"
+      - ".github/workflows/check-md.yml"
+      - ".github/workflows/pages.yml"
 
 env:
   CARGO_TERM_COLOR: always

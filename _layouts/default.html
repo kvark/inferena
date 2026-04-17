@@ -253,19 +253,13 @@
                 font-weight: 600;
             }
             .charts-grid {
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-                gap: 12px;
+                display: block;
             }
             .metric-chart {
                 width: 100%;
                 height: auto;
-                font-size: 10px;
+                font-size: 11px;
                 font-family: inherit;
-            }
-            .metric-chart .chart-title {
-                font-weight: 600;
-                fill: #555;
             }
             .metric-chart .fw-label {
                 fill: #333;
@@ -274,14 +268,17 @@
                 fill: #555;
                 font-variant-numeric: tabular-nums;
             }
-            .metric-chart .bar {
-                fill: #5b9bd5;
+            .metric-chart .bar.inference {
+                fill: #4a7ea8;
             }
-            .metric-chart .bar.divergent {
-                fill: #d4d4d4;
+            .metric-chart .bar.training {
+                fill: #f0b849;
             }
-            .metric-chart .bar.best {
-                fill: #2e7d32;
+            .metric-chart .bar.inference.divergent {
+                fill: #c8d4e0;
+            }
+            .metric-chart .bar.training.divergent {
+                fill: #ecdcb8;
             }
             .metric-chart .axis-line {
                 stroke: #ccc;
@@ -289,8 +286,29 @@
             }
             .metric-chart .tick-label {
                 fill: #999;
-                font-size: 8px;
+                font-size: 9px;
             }
+            .chart-legend {
+                display: flex;
+                gap: 16px;
+                align-items: center;
+                flex-wrap: wrap;
+                padding: 6px 14px;
+                font-size: 0.8em;
+                color: #666;
+                background: #fafafa;
+                border-bottom: 1px solid #eee;
+            }
+            .chart-legend .swatch {
+                display: inline-block;
+                width: 12px;
+                height: 10px;
+                border-radius: 2px;
+                margin-right: 4px;
+                vertical-align: middle;
+            }
+            .chart-legend .swatch.inference { background: #4a7ea8; }
+            .chart-legend .swatch.training { background: #f0b849; }
 
             /* Pareto scatter */
             .pareto-chart {
@@ -516,15 +534,13 @@
                 }
 
                 // Table columns: 0=Platform, 1=Framework, 2=Compile, 3=Inference,
-                // 4=Latency, 5=Training, 6=Loss. The first 4 timings chart cleanly
-                // on a log axis; Loss has different semantics — show it in the
-                // Pareto view, not here.
-                var METRICS = [
-                    { idx: 2, label: "Compile (s)" },
-                    { idx: 3, label: "Inference (ms)" },
-                    { idx: 4, label: "Latency (ms)" },
-                    { idx: 5, label: "Training (ms)" },
-                ];
+                // 4=Latency, 5=Training, 6=Loss. The visual comparison focuses
+                // on runtime cost — inference as the base bar, with training
+                // extending it — so compile and latency are deliberately
+                // omitted here. Loss is for the Pareto view.
+                var COL_INFERENCE = 3;
+                var COL_TRAINING = 5;
+                var COL_LOSS = 6;
 
                 function parseCell(td) {
                     // Returns { value, divergent, missing }. Missing means no
@@ -541,7 +557,7 @@
                 }
 
                 function collectPlatformData(panel, selected) {
-                    // Returns [{ platform, rows: [{fw, label, metrics: [{value, divergent, missing}, ...]}] }]
+                    // Returns [{ platform, rows: [{fw, label, inference, training, divergent}], sortKey }]
                     var platforms = [];
                     var byPlat = {};
                     panel.querySelectorAll("table tbody tr").forEach(function (tr) {
@@ -553,23 +569,35 @@
                             platforms.push(byPlat[plat]);
                         }
                         var cells = tr.querySelectorAll("td");
-                        var metrics = METRICS.map(function (m) { return parseCell(cells[m.idx]); });
+                        var inf = parseCell(cells[COL_INFERENCE]);
+                        var trn = parseCell(cells[COL_TRAINING]);
+                        // A row is "divergent" when its inference cell is struck
+                        // through; training may legitimately be missing.
                         byPlat[plat].rows.push({
                             fw: fw,
                             label: frameworkLabel[fw],
-                            metrics: metrics,
+                            inference: inf,
+                            training: trn,
+                            divergent: inf.divergent,
                         });
                     });
+                    // Sort platforms by best non-divergent inference time —
+                    // fastest platform first. Platforms with no numeric
+                    // inference data go to the end.
+                    platforms.forEach(function (p) {
+                        var best = Infinity;
+                        p.rows.forEach(function (r) {
+                            if (r.divergent) return;
+                            if (r.inference.missing || r.inference.value == null) return;
+                            if (r.inference.value > 0 && r.inference.value < best) best = r.inference.value;
+                        });
+                        p.sortKey = best;
+                    });
+                    platforms.sort(function (a, b) {
+                        if (a.sortKey === b.sortKey) return a.platform.localeCompare(b.platform);
+                        return a.sortKey - b.sortKey;
+                    });
                     return platforms;
-                }
-
-                function logScale(v, lo, hi) {
-                    // Values of 0 pinned to the floor of the axis. Log spans
-                    // map to [0, 1]. Guard against degenerate ranges.
-                    if (v <= 0) return 0;
-                    if (hi <= lo) return 0.5;
-                    var lg = Math.log10(Math.max(v, lo));
-                    return (lg - Math.log10(lo)) / (Math.log10(hi) - Math.log10(lo));
                 }
 
                 function formatValue(v) {
@@ -581,77 +609,99 @@
                     return v.toFixed(3);
                 }
 
-                function svgBarChart(metric, rows) {
-                    // Compute scale bounds from non-missing values. Ignore
-                    // divergent rows when picking "best" but include them in
-                    // the axis so the bar lengths are comparable.
-                    var values = rows
-                        .map(function (r) { return r.metrics[metric._mi]; })
-                        .filter(function (v) { return !v.missing && v.value != null && v.value > 0; });
-                    if (values.length === 0) return "";
-                    var vmax = 0, vminPos = Infinity;
-                    values.forEach(function (v) {
-                        if (v.value > vmax) vmax = v.value;
-                        if (v.value > 0 && v.value < vminPos) vminPos = v.value;
-                    });
-                    var lo = Math.max(vminPos * 0.5, vmax / 1e6); // 1 decade below min
-                    var hi = vmax * 1.1;
+                function svgStackedBar(p) {
+                    // One row per framework, bar = [0..inf] blue + [inf..train] yellow.
+                    // Linear scale so the yellow extension is proportional to
+                    // (training - inference) as asked for.
+                    var rows = p.rows;
+                    if (rows.length === 0) return "";
 
-                    var bestVal = Infinity;
+                    // Scale from matching frameworks only — divergent runs (a
+                    // slow CPU fallback, a simplified model) can be orders of
+                    // magnitude larger and would squash everything else. Their
+                    // bars are clipped to the right edge but the numeric label
+                    // still shows the real value. Fall back to all rows if
+                    // every framework on this platform is divergent.
+                    var vmax = 0;
+                    var sawMatching = false;
                     rows.forEach(function (r) {
-                        var m = r.metrics[metric._mi];
-                        if (!m.missing && !m.divergent && m.value != null && m.value > 0 && m.value < bestVal) {
-                            bestVal = m.value;
+                        if (r.divergent) return;
+                        if (!r.inference.missing && r.inference.value != null && r.inference.value > vmax) {
+                            vmax = r.inference.value; sawMatching = true;
+                        }
+                        if (!r.training.missing && r.training.value != null && r.training.value > vmax) {
+                            vmax = r.training.value; sawMatching = true;
                         }
                     });
+                    if (!sawMatching) {
+                        rows.forEach(function (r) {
+                            if (!r.inference.missing && r.inference.value != null && r.inference.value > vmax) vmax = r.inference.value;
+                            if (!r.training.missing && r.training.value != null && r.training.value > vmax) vmax = r.training.value;
+                        });
+                    }
+                    if (vmax === 0) return "";
+                    vmax *= 1.04;
 
-                    var rowH = 16;
-                    var labelW = 68;
-                    var valueW = 38;
-                    var chartW = 260;
-                    var barAreaX = labelW;
-                    var barAreaW = chartW - labelW - valueW;
-                    var titleH = 16;
-                    var axisH = 14;
-                    var chartH = titleH + rows.length * rowH + axisH;
+                    var rowH = 18;
+                    var labelW = 90;
+                    var valueW = 84;
+                    var chartW = 620;
+                    var barX = labelW;
+                    var barW = chartW - labelW - valueW;
+                    var topPad = 4;
+                    var axisH = 16;
+                    var chartH = topPad + rows.length * rowH + axisH;
 
                     var parts = [];
-                    parts.push(
-                        '<svg class="metric-chart" viewBox="0 0 ' + chartW + ' ' + chartH +
+                    parts.push('<svg class="metric-chart" viewBox="0 0 ' + chartW + ' ' + chartH +
                         '" preserveAspectRatio="xMinYMin meet" role="img" aria-label="' +
-                        metric.label + ' chart">'
-                    );
-                    parts.push('<text class="chart-title" x="4" y="12">' + metric.label + '</text>');
+                        p.platform + ' inference and training times">');
                     rows.forEach(function (r, i) {
-                        var y = titleH + i * rowH;
-                        var m = r.metrics[metric._mi];
-                        parts.push('<text class="fw-label" x="' + (labelW - 4) + '" y="' +
-                            (y + 11) + '" text-anchor="end">' + r.label + '</text>');
-                        if (!m.missing && m.value != null) {
-                            // Zero plots as a thin sliver at the axis floor so
-                            // "effectively instant" still shows up visually.
-                            var frac = m.value > 0 ? logScale(m.value, lo, hi) : 0;
-                            var w = Math.max(2, frac * barAreaW);
-                            var cls = "bar";
-                            if (m.divergent) cls += " divergent";
-                            else if (m.value === bestVal) cls += " best";
-                            parts.push('<rect class="' + cls + '" x="' + barAreaX + '" y="' +
-                                (y + 3) + '" width="' + w.toFixed(1) + '" height="10" rx="1"/>');
-                            parts.push('<text class="value" x="' + (chartW - 2) + '" y="' +
-                                (y + 11) + '" text-anchor="end">' + formatValue(m.value) + '</text>');
-                        } else {
-                            parts.push('<text class="value" x="' + (chartW - 2) + '" y="' +
-                                (y + 11) + '" text-anchor="end" opacity="0.4">—</text>');
+                        var y = topPad + i * rowH;
+                        parts.push('<text class="fw-label" x="' + (labelW - 6) + '" y="' +
+                            (y + 13) + '" text-anchor="end">' + r.label + '</text>');
+                        var hasInf = !r.inference.missing && r.inference.value != null;
+                        var hasTrn = !r.training.missing && r.training.value != null && r.training.value > 0;
+                        if (!hasInf) {
+                            parts.push('<text class="value" x="' + (chartW - 4) + '" y="' +
+                                (y + 13) + '" text-anchor="end" opacity="0.4">—</text>');
+                            return;
                         }
+                        // Inference bar, clipped to the chart edge so off-scale
+                        // divergent runs don't balloon the layout.
+                        var infV = r.inference.value;
+                        var infWraw = Math.max(1.5, (infV / vmax) * barW);
+                        var infW = Math.min(infWraw, barW);
+                        var infCls = "bar inference" + (r.divergent ? " divergent" : "");
+                        parts.push('<rect class="' + infCls + '" x="' + barX + '" y="' +
+                            (y + 4) + '" width="' + infW.toFixed(1) + '" height="11" rx="1.5"/>');
+                        // Training extension, only if strictly longer than inference.
+                        if (hasTrn && r.training.value > infV) {
+                            var trnStart = barX + infW;
+                            var trnEndRaw = barX + (r.training.value / vmax) * barW;
+                            var trnEnd = Math.min(trnEndRaw, barX + barW);
+                            var trnW = Math.max(0, trnEnd - trnStart);
+                            if (trnW > 0.5) {
+                                var trnCls = "bar training" + (r.divergent ? " divergent" : "");
+                                parts.push('<rect class="' + trnCls + '" x="' + trnStart.toFixed(1) +
+                                    '" y="' + (y + 4) + '" width="' + trnW.toFixed(1) +
+                                    '" height="11" rx="1.5"/>');
+                            }
+                        }
+                        // Numeric labels to the right of the bar.
+                        var txt = formatValue(infV) + (hasTrn ? " / " + formatValue(r.training.value) : "");
+                        parts.push('<text class="value" x="' + (chartW - 4) + '" y="' +
+                            (y + 13) + '" text-anchor="end">' + txt + " ms</text>");
                     });
-                    // Axis baseline with min/max ticks.
-                    var ay = titleH + rows.length * rowH + 2;
-                    parts.push('<line class="axis-line" x1="' + barAreaX + '" y1="' + ay +
-                        '" x2="' + (barAreaX + barAreaW) + '" y2="' + ay + '"/>');
-                    parts.push('<text class="tick-label" x="' + barAreaX + '" y="' + (ay + 10) + '">' +
-                        formatValue(lo) + '</text>');
-                    parts.push('<text class="tick-label" x="' + (barAreaX + barAreaW) + '" y="' +
-                        (ay + 10) + '" text-anchor="end">' + formatValue(hi) + '</text>');
+                    // Axis baseline with 0 / half / max ticks.
+                    var ay = topPad + rows.length * rowH + 2;
+                    parts.push('<line class="axis-line" x1="' + barX + '" y1="' + ay +
+                        '" x2="' + (barX + barW) + '" y2="' + ay + '"/>');
+                    parts.push('<text class="tick-label" x="' + barX + '" y="' + (ay + 11) + '">0</text>');
+                    parts.push('<text class="tick-label" x="' + (barX + barW / 2) + '" y="' +
+                        (ay + 11) + '" text-anchor="middle">' + formatValue(vmax / 2) + '</text>');
+                    parts.push('<text class="tick-label" x="' + (barX + barW) + '" y="' +
+                        (ay + 11) + '" text-anchor="end">' + formatValue(vmax) + ' ms</text>');
                     parts.push("</svg>");
                     return parts.join("");
                 }
@@ -666,20 +716,23 @@
                             "No frameworks selected.</div>";
                         return;
                     }
-                    // METRICS is reused — cache indices once.
-                    METRICS.forEach(function (m, i) { m._mi = i; });
-                    var html = platforms.map(function (p) {
-                        var charts = METRICS.map(function (m) { return svgBarChart(m, p.rows); })
-                            .filter(Boolean).join("");
-                        return '<div class="platform-section"><h4>' + p.platform +
-                            '</h4><div class="charts-grid">' + charts + "</div></div>";
-                    }).join("");
+                    var legend = '<div class="chart-legend">' +
+                        '<span><span class="swatch inference"></span>Inference</span>' +
+                        '<span><span class="swatch training"></span>Training (extension)</span>' +
+                        '<span style="margin-left:auto">Sorted by fastest inference on platform</span>' +
+                        '</div>';
+                    var html = legend + platforms.map(function (p) {
+                        var chart = svgStackedBar(p);
+                        if (!chart) return "";
+                        return '<div class="platform-section"><h4>' + p.platform + '</h4>' + chart + "</div>";
+                    }).filter(Boolean).join("");
                     body.innerHTML = html;
                 }
 
                 function buildChartsBlock(panel) {
                     var block = document.createElement("details");
                     block.className = "charts-block";
+                    block.open = true;
                     var summary = document.createElement("summary");
                     summary.textContent = "Visual comparison";
                     block.appendChild(summary);

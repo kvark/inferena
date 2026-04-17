@@ -448,9 +448,30 @@ fn matching_frameworks(successes: &[&BenchResult]) -> std::collections::HashSet<
     matching
 }
 
+/// Heuristic: does this backend string look like a CPU backend?
+/// Matches "CPU", "CPUExecutionProvider", "faster-whisper (CTranslate2, CPU)".
+fn is_cpu_backend(backend: &str) -> bool {
+    backend.to_uppercase().contains("CPU")
+}
+
+fn result_backend<'a>(r: &'a BenchResult) -> &'a str {
+    r.extra
+        .get("backend")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+}
+
 fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
     // Check if PyTorch (ground truth) ran successfully.
     let has_pytorch = successes.iter().any(|r| r.framework == "pytorch");
+
+    // If PyTorch ran on a non-CPU backend, skip CPU-only rows from other
+    // frameworks — a CPU-vs-GPU comparison isn't meaningful. The reverse
+    // (PyTorch on CPU, others on GPU) is fine and stays as-is.
+    let pytorch_on_gpu = successes
+        .iter()
+        .find(|r| r.framework == "pytorch")
+        .is_some_and(|r| !is_cpu_backend(result_backend(r)));
     if !has_pytorch && !successes.is_empty() {
         eprintln!();
         eprintln!("⚠ WARNING: PyTorch (ground truth) did not run successfully.");
@@ -500,11 +521,23 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
 
     let mut platform_shown = false;
     for outcome in outcomes {
+        // Skip CPU-only rows when PyTorch is on GPU.
+        if pytorch_on_gpu
+            && let FrameworkOutcome::Ok(r) = outcome
+            && is_cpu_backend(result_backend(r))
+        {
+            continue;
+        }
+
         // Show platform (device name) only on the first row.
         let platform = if !platform_shown {
             if let FrameworkOutcome::Ok(r) = outcome {
                 platform_shown = true;
-                r.gpu_name.clone()
+                if cfg!(target_os = "windows") {
+                    format!("{} (Windows)", r.gpu_name)
+                } else {
+                    r.gpu_name.clone()
+                }
             } else {
                 String::new()
             }

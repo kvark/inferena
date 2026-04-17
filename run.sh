@@ -150,7 +150,7 @@ if [ -z "$MODELS" ]; then
 fi
 
 # --- Platform detection ---
-detect_platform() {
+_detect_platform_raw() {
     # GPU name is the most distinctive — try that first.
     if "$PYTHON" -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
         "$PYTHON" -c "import torch; print(torch.cuda.get_device_name(0))" 2>/dev/null
@@ -182,6 +182,16 @@ detect_platform() {
         echo "$name" | sed 's/  */ /g; s/(R)//g; s/(TM)//g; s/CPU //g' | xargs
     else
         grep "model name" /proc/cpuinfo 2>/dev/null | head -1 | sed 's/.*: //' | sed 's/  */ /g' | sed 's/(R)//g; s/(TM)//g; s/CPU //g' | xargs
+    fi
+}
+
+detect_platform() {
+    local name
+    name=$(_detect_platform_raw)
+    if $IS_WINDOWS; then
+        echo "$name (Windows)"
+    else
+        echo "$name"
     fi
 }
 

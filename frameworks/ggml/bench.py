@@ -116,12 +116,12 @@ def main():
                 backend = "Metal"
                 gpu_name = "metal"
             else:
-                # Distinguish CUDA vs Vulkan by checking for CUDA availability.
+                # Distinguish CUDA/ROCm vs Vulkan.
                 try:
                     import torch
                     if torch.cuda.is_available():
-                        backend = "CUDA"
                         gpu_name = torch.cuda.get_device_name(0)
+                        backend = "ROCm" if torch.version.hip else "CUDA"
                     else:
                         backend = "Vulkan"
                         gpu_name = "vulkan"

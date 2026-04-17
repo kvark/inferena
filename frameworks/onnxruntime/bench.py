@@ -63,6 +63,7 @@ def _get_providers():
         "CUDAExecutionProvider",
         "TensorrtExecutionProvider",
         "ROCMExecutionProvider",
+        "MIGraphXExecutionProvider",
         "DmlExecutionProvider",
         "CoreMLExecutionProvider",
         "CPUExecutionProvider",

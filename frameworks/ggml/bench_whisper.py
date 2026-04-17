@@ -95,10 +95,13 @@ def main():
 
     ct2_backend = "CTranslate2"
     gpu_name = device
+    backend_label = device.upper()
     if device == "cuda":
         try:
             import torch
             gpu_name = torch.cuda.get_device_name(0)
+            if torch.version.hip:
+                backend_label = "ROCm"
         except Exception:
             pass
     result = {
@@ -106,7 +109,7 @@ def main():
         "model": "Whisper-tiny",
         "device": device,
         "gpu_name": gpu_name,
-        "backend": f"faster-whisper ({ct2_backend}, {device.upper()})",
+        "backend": f"faster-whisper ({ct2_backend}, {backend_label})",
         "timings": {
             "compile_s": round(compile_s, 2),
             "inference_ms": round(inference_ms, 3),

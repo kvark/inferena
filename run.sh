@@ -57,9 +57,8 @@ for d in site.getsitepackages():
 fi
 
 # --- Prefer discrete NVIDIA GPU over integrated GPU for Vulkan ---
-# Linux-only: Windows picks the Vulkan ICD via the registry, not filesystem paths.
-if ! $IS_WINDOWS && [ -z "${VK_ICD_FILENAMES:-}" ]; then
-    NVIDIA_ICD=$(find /usr/share/vulkan/icd.d /etc/vulkan/icd.d -name '*nvidia*' 2>/dev/null | head -1)
+if [ -z "${VK_ICD_FILENAMES:-}" ]; then
+    NVIDIA_ICD=$(find /usr/share/vulkan/icd.d /etc/vulkan/icd.d -name '*nvidia*' 2>/dev/null | head -1 || true)
     if [ -n "$NVIDIA_ICD" ]; then
         export VK_ICD_FILENAMES="$NVIDIA_ICD"
     fi
@@ -240,7 +239,8 @@ run_check() {
         GPU_TYPE="apple"
     elif command -v nvidia-smi &>/dev/null; then
         GPU_TYPE="nvidia"
-    elif command -v rocm-smi &>/dev/null || [ -d /opt/rocm ]; then
+    elif command -v rocm-smi &>/dev/null || [ -d /opt/rocm ] || \
+         python3 -c "import torch; assert torch.version.hip" 2>/dev/null; then
         GPU_TYPE="amd"
     elif command -v vulkaninfo &>/dev/null; then
         vk_dev=$(vulkaninfo --summary 2>/dev/null | grep "deviceName" | head -1 | sed 's/.*= //' | xargs)
@@ -372,9 +372,14 @@ print('GPU offload' if llama_supports_gpu_offload() else 'CPU only')
     echo "GPU backends:"
     if "$PYTHON" -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
         dev=$("$PYTHON" -c "import torch; print(torch.cuda.get_device_name(0))" 2>/dev/null)
-        echo "  ✓ CUDA ($dev)"
+        is_rocm=$("$PYTHON" -c "import torch; print('yes' if torch.version.hip else 'no')" 2>/dev/null)
+        if [ "$is_rocm" = "yes" ]; then
+            echo "  ✓ ROCm/HIP ($dev)"
+        else
+            echo "  ✓ CUDA ($dev)"
+        fi
     else
-        echo "  ✗ CUDA — torch.cuda.is_available() is False"
+        echo "  ✗ CUDA/ROCm — torch.cuda.is_available() is False"
     fi
     if command -v vulkaninfo &>/dev/null; then
         if [ -n "${VK_ICD_FILENAMES:-}" ]; then

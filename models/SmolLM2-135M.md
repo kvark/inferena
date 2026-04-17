@@ -31,15 +31,15 @@ Benchmark config: seq_len=128, float32, input=[0,1,...,127].
 | | [GGML](https://github.com/ggerganov/ggml/tree/0.3.16) (CPU) | **0.18** | 1406 | **18** | — | 8.69 |
 | | [ONNX Runtime](https://github.com/microsoft/onnxruntime) | ✗ | ✗ | ✗ | ✗ | |
 | | [JAX](https://github.com/jax-ml/jax) (CPU) | ~~4.49~~ | ~~162~~ | ~~33~~ | ~~376~~ | ~~5.79~~ |
-| Apple M3 | [PyTorch 2.11.0](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (MPS) | 0.00 | 193 | **18** | 398 | 8.35 |
-| | [MLX](https://github.com/ml-explore/mlx) (MLX) | 0.00 | **35** | — | **66** | 8.64 |
-| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (Metal) | ~~6.45~~ | ~~7519~~ | ~~2~~ | ~~—~~ | ~~10.80~~ |
-| | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/metal) | ~~0.00~~ | ~~421~~ | ~~40~~ | ~~859~~ | ~~11.78~~ |
-| | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/5ddf5e5) (Metal) | 2.83 | 79 | 32 | 1955 | 8.64 |
-| | [GGML](https://github.com/ggerganov/ggml) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-| | [JAX](https://github.com/jax-ml/jax) (CPU) | ~~4.91~~ | ~~362~~ | ~~136~~ | ~~934~~ | ~~5.79~~ |
+| Apple M3 | [PyTorch 2.11.0](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (MPS) | 0.00 | 247 | 34 | 432 | 8.35 |
+| | [MLX](https://github.com/ml-explore/mlx) (MLX) | 0.00 | 77 | — | **250** | 8.64 |
+| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (Metal) | ~~0.02~~ | ~~19~~ | ~~2~~ | ~~—~~ | ~~10.80~~ |
+| | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/metal) | ~~0.00~~ | ~~544~~ | ~~42~~ | ~~552~~ | ~~11.77~~ |
+| | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |
+| | [Luminal](https://github.com/luminal-ai/luminal) | ✗ | ✗ | ✗ | ✗ | |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/33dcf42) (Metal) | 3.01 | 62 | 10 | 601 | 8.64 |
+| | [GGML](https://github.com/ggerganov/ggml/tree/0.3.20) (Metal) | 0.37 | **52** | **8** | — | 8.69 |
+| | [JAX](https://github.com/jax-ml/jax) (METAL) | ~~2.88~~ | ~~59~~ | ~~20~~ | ~~191~~ | ~~5.79~~ |
 | NVIDIA GeForce RTX 5080 | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 13.0) | 17.66 | **4** | 3 | **7** | 8.35 |
 | | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CUDA) | ~~0.04~~ | ~~28~~ | ~~3~~ | ~~—~~ | ~~10.80~~ |
 | | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/vulkan) | ~~0.00~~ | ~~107~~ | ~~26~~ | ~~87~~ | ~~11.57~~ |

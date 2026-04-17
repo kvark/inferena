@@ -40,15 +40,15 @@ Benchmark config: seq_len=128, float32, input=[0,1,...,127].
 | | [GGML](https://github.com/ggerganov/ggml) (CPU) | ✗ | ✗ | ✗ | ✗ | |
 | | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CPU) | ✗ | ✗ | ✗ | ✗ | |
 | | [JAX](https://github.com/jax-ml/jax) (CPU) | ~~4.91~~ | ~~362~~ | ~~136~~ | ~~934~~ | ~~5.79~~ |
-| NVIDIA GeForce RTX 5080 | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 13.0) | 17.29 | **4** | 3 | **7** | 8.35 |
-| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CUDA) | ~~0.05~~ | ~~39~~ | ~~2~~ | ~~—~~ | ~~10.80~~ |
-| | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/vulkan) | ~~0.00~~ | ~~81~~ | ~~25~~ | ~~87~~ | ~~11.74~~ |
+| NVIDIA GeForce RTX 5080 | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 13.0) | 17.66 | **4** | 3 | **7** | 8.35 |
+| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CUDA) | ~~0.04~~ | ~~28~~ | ~~3~~ | ~~—~~ | ~~10.80~~ |
+| | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/vulkan) | ~~0.00~~ | ~~107~~ | ~~26~~ | ~~87~~ | ~~11.57~~ |
 | | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |
-| | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) (CPU) | ~~1.30~~ | ~~5966~~ | ~~—~~ | ~~5770~~ | ~~10.81~~ |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/3e0b489) (Vulkan) | ~~1.80~~ | ~~7~~ | ~~3~~ | ~~22~~ | ~~58.21~~ |
-| | [GGML](https://github.com/ggerganov/ggml/tree/0.3.20) (CUDA) | **0.19** | 27 | **2** | — | 8.69 |
-| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | ~~19.67~~ | ~~6~~ | ~~3~~ | ~~—~~ | ~~6.01~~ |
-| | [JAX](https://github.com/jax-ml/jax) (CPU) | ~~2.70~~ | ~~94~~ | ~~18~~ | ~~242~~ | ~~5.79~~ |
+| | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) (CPU) | ~~1.30~~ | ~~5793~~ | ~~—~~ | ~~5801~~ | ~~10.81~~ |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/33dcf42) (Vulkan) | 1.89 | 7 | 3 | 23 | 8.64 |
+| | [GGML](https://github.com/ggerganov/ggml/tree/0.3.20) (CUDA) | **0.19** | 26 | **2** | — | 8.69 |
+| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | ~~19.47~~ | ~~6~~ | ~~3~~ | ~~—~~ | ~~6.01~~ |
+| | [JAX](https://github.com/jax-ml/jax) (CPU) | ~~2.73~~ | ~~97~~ | ~~19~~ | ~~230~~ | ~~5.79~~ |
 | NVIDIA GeForce RTX 3050 | [PyTorch 2.11.0+cu128](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 12.8) | 0.00 | 244 | 45 | **112** | 8.35 |
 | | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.01~~ | ~~265~~ | ~~25~~ | ~~—~~ | ~~10.80~~ |
 | | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/vulkan) | ~~0.00~~ | ~~1030~~ | ~~28~~ | ~~2061~~ | ~~11.84~~ |

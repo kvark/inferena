@@ -42,15 +42,15 @@ Two benchmark configurations are used depending on framework capabilities:
 | | [GGML](https://github.com/ggerganov/ggml) (CPU) | — | — | — | — | |
 | | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CoreMLExecutionProvider) | ~~2.48~~ | ~~9~~ | ~~—~~ | ~~—~~ | ~~0.05~~ |
 | | [JAX](https://github.com/jax-ml/jax) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-| NVIDIA GeForce RTX 5080 | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 13.0) | 6.45 | **1** | **1** | **1** | 0.57 |
-| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CUDA) | ~~0.01~~ | ~~102~~ | ~~—~~ | ~~—~~ | ~~0.00~~ |
+| NVIDIA GeForce RTX 5080 | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 13.0) | 6.42 | **1** | **1** | **2** | 0.57 |
+| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CUDA) | ~~0.01~~ | ~~93~~ | ~~—~~ | ~~—~~ | ~~0.00~~ |
 | | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
 | | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |
 | | [Luminal](https://github.com/luminal-ai/luminal) | — | — | — | — | |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/3e0b489) (Vulkan) | **2.11** | 1 | 1 | 8 | 0.52 |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/33dcf42) (Vulkan) | **2.05** | 1 | 1 | 8 | 0.54 |
 | | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
 | | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | ~~0.74~~ | ~~1~~ | ~~—~~ | ~~—~~ | ~~0.05~~ |
-| | [JAX](https://github.com/jax-ml/jax) (CPU) | ~~1.15~~ | ~~14~~ | ~~—~~ | ~~31~~ | ~~0.05~~ |
+| | [JAX](https://github.com/jax-ml/jax) (CPU) | ~~1.12~~ | ~~12~~ | ~~—~~ | ~~30~~ | ~~0.05~~ |
 | NVIDIA GeForce RTX 3050 | [PyTorch 2.11.0+cu128](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 12.8) | 0.00 | 163 | **3** | **81** | 0.57 |
 | | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.01~~ | ~~7433~~ | ~~—~~ | ~~—~~ | ~~0.00~~ |
 | | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |

@@ -39,15 +39,15 @@ Benchmark config: 30s mel spectrogram (80x3000), 4-token decoder input, float32,
 | | [GGML](https://github.com/ggerganov/ggml) (faster-whisper (CTranslate2, CPU)) | 86.62 | 303 | 289 | — | 0.00 |
 | | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CoreMLExecutionProvider) | 8.85 | 504 | — | — | 0.01 |
 | | [JAX](https://github.com/jax-ml/jax) (CPU) | 4.62 | 791 | 576 | 2024 | 0.01 |
-| NVIDIA GeForce RTX 5080 | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 13.0) | 4.11 | **2** | **2** | **13** | 0.01 |
-| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CUDA) | **0.01** | 46 | — | — | 0.00 |
+| NVIDIA GeForce RTX 5080 | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 13.0) | 4.07 | **2** | **2** | **9** | 0.01 |
+| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CUDA) | **0.01** | 47 | — | — | 0.00 |
 | | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
 | | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |
 | | [Luminal](https://github.com/luminal-ai/luminal) | — | — | — | — | |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/3e0b489) (Vulkan) | 0.61 | 16 | 16 | 91 | 0.01 |
-| | [GGML](https://github.com/ggerganov/ggml) (faster-whisper (CTranslate2, CUDA)) | 7.75 | 24 | 34 | — | 0.00 |
-| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | 1.87 | 4 | — | — | 0.01 |
-| | [JAX](https://github.com/jax-ml/jax) (CPU) | 1.20 | 141 | 121 | 401 | 0.01 |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/33dcf42) (Vulkan) | 1.06 | 16 | 16 | 91 | 0.01 |
+| | [GGML](https://github.com/ggerganov/ggml) (faster-whisper (CTranslate2, CUDA)) | 5.30 | 32 | 50 | — | 0.00 |
+| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | 1.93 | 4 | — | — | 0.01 |
+| | [JAX](https://github.com/jax-ml/jax) (CPU) | 1.21 | 135 | 120 | 388 | 0.01 |
 | NVIDIA GeForce RTX 3050 | [PyTorch 2.11.0+cu128](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 12.8) | 0.00 | 145 | **13** | **70** | 0.01 |
 | | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | 0.01 | 308 | — | — | 0.00 |
 | | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |

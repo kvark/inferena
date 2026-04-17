@@ -507,67 +507,67 @@ fn bench_stable_diffusion() {
     let res = config.resolution;
     let in_size = (batch * in_c * res * res) as usize;
 
-    // --- Build training graph ---
-    eprintln!("[meganeura] building SD U-Net training graph (small config)...");
+    // Two graphs: inference (returns noise prediction tensor) for output
+    // validation, and a training graph (prediction + MSE loss) for backward.
+    eprintln!("[meganeura] building SD U-Net inference graph (small config)...");
     let compile_start = Instant::now();
-    let mut g = Graph::new();
-    let loss = sd_unet::build_training_graph(&mut g, &config);
-    g.set_outputs(vec![loss]);
+    let mut infer_g = Graph::new();
+    let pred = sd_unet::build_unet(&mut infer_g, &config);
+    infer_g.set_outputs(vec![pred]);
+    let mut infer_session = build_inference_session(&infer_g);
 
-    eprintln!("[meganeura] compiling inference session...");
-    let mut infer_session = build_inference_session(&g);
-
-    eprintln!("[meganeura] compiling training session...");
-    let mut train_session = build_session(&g);
+    eprintln!("[meganeura] building SD U-Net training graph...");
+    let mut train_g = Graph::new();
+    let loss = sd_unet::build_training_graph(&mut train_g, &config);
+    train_g.set_outputs(vec![loss]);
+    let mut train_session = build_session(&train_g);
 
     let compile_s = compile_start.elapsed().as_secs_f64();
     eprintln!("[meganeura] ready (compile: {compile_s:.2}s)");
 
     // --- Initialize with deterministic values ---
+    // Use name-seeded init so PyTorch's _name_seeded_init can match exactly
+    // (parameter ordering between frameworks is unstable; name seeding isn't).
     eprintln!("[meganeura] initializing parameters...");
-    for (i, (name, buf_ref)) in train_session
-        .plan()
-        .param_buffers
-        .clone()
-        .iter()
-        .enumerate()
-    {
-        let n = train_session.plan().buffers[buf_ref.0 as usize] / 4;
-        let data: Vec<f32> = (0..n)
-            .map(|j| (j as f32 * 0.01 + i as f32).sin() * 0.1)
-            .collect();
-        infer_session.set_parameter(name, &data);
-        train_session.set_parameter(name, &data);
-    }
+    let init_params = |session: &mut meganeura::Session| {
+        for (name, buf_ref) in session.plan().param_buffers.clone().iter() {
+            let n = session.plan().buffers[buf_ref.0 as usize] / 4;
+            let seed = name_seed(name);
+            let data: Vec<f32> = (0..n)
+                .map(|j| (j as f32 * 0.01 + seed).sin() * 0.1)
+                .collect();
+            session.set_parameter(name, &data);
+        }
+    };
+    init_params(&mut infer_session);
+    init_params(&mut train_session);
 
     // --- Prepare inputs ---
     let noisy_latent: Vec<f32> = (0..in_size).map(|i| (i as f32 * 0.01).sin()).collect();
     let noise_target: Vec<f32> = (0..in_size).map(|i| (i as f32 * 0.007).cos()).collect();
 
-    // --- Forward (inference session) ---
-    // Warm-up (first step compiles Vulkan pipelines).
+    // --- Forward (inference graph: returns noise prediction) ---
     infer_session.set_input("noisy_latent", &noisy_latent);
-    infer_session.set_input("noise_target", &noise_target);
     infer_session.step();
     infer_session.wait();
 
     infer_session.set_input("noisy_latent", &noisy_latent);
-    infer_session.set_input("noise_target", &noise_target);
     let fwd_start = Instant::now();
     infer_session.step();
     infer_session.wait();
     let forward_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
 
-    // The output is the MSE loss scalar.
-    let output = infer_session.read_output(1);
-    let loss_val = output[0] as f64;
+    let output = infer_session.read_output(in_size);
+    // MSE loss on CPU: mean((pred - target)^2) — matches PyTorch's F.mse_loss.
+    let loss_val: f64 = output
+        .iter()
+        .zip(noise_target.iter())
+        .map(|(&p, &t)| ((p - t) as f64).powi(2))
+        .sum::<f64>()
+        / output.len() as f64;
     eprintln!("[meganeura] forward: {forward_ms:.2}ms, loss={loss_val:.6}");
 
-    // For logits hash, use the loss value encoded as f32.
-    let logits_data = vec![output[0]];
-
-    // --- Training step (forward + backward + SGD) ---
-    // Warm-up training step.
+    // --- Training step (separate graph for backward timing) ---
     train_session.set_input("noisy_latent", &noisy_latent);
     train_session.set_input("noise_target", &noise_target);
     train_session.step();
@@ -583,11 +583,9 @@ fn bench_stable_diffusion() {
 
     // --- Latency (re-run forward, batch=2 is already minimal) ---
     infer_session.set_input("noisy_latent", &noisy_latent);
-    infer_session.set_input("noise_target", &noise_target);
     infer_session.step();
     infer_session.wait();
     infer_session.set_input("noisy_latent", &noisy_latent);
-    infer_session.set_input("noise_target", &noise_target);
     let lat_start = Instant::now();
     infer_session.step();
     infer_session.wait();
@@ -600,7 +598,7 @@ fn bench_stable_diffusion() {
         compile_s,
         forward_ms,
         backward_ms,
-        &logits_data,
+        &output,
         loss_val,
         latency_ms,
         grad_norm,
@@ -613,20 +611,25 @@ fn bench_resnet() {
     let batch: u32 = 4;
     let scale: f32 = 0.01; // small scale to prevent explosion with identity BN
 
-    eprintln!("[meganeura] building ResNet training graph...");
+    // Two graphs: inference (returns logits) for output validation, and a
+    // separate training graph (logits + CE loss) for backward timing.
+    eprintln!("[meganeura] building ResNet inference graph...");
     let compile_start = Instant::now();
+    let mut infer_g = Graph::new();
+    let logits_node = resnet::build_resnet50(&mut infer_g, batch);
+    infer_g.set_outputs(vec![logits_node]);
+    let mut infer_session = build_inference_session(&infer_g);
+
+    eprintln!("[meganeura] building ResNet training graph...");
     let training_g = resnet::build_resnet50_training(batch);
-
-    eprintln!("[meganeura] compiling inference session...");
-    let mut infer_session = build_inference_session(&training_g);
-
-    eprintln!("[meganeura] compiling training session...");
     let mut train_session = build_session(&training_g);
 
     let compile_s = compile_start.elapsed().as_secs_f64();
     eprintln!("[meganeura] ready (compile: {compile_s:.2}s)");
 
     // Helper to init parameters (shared between sessions).
+    // Note: matches PyTorch's _resnet_init — fused_bias=0 (BN identity),
+    // fc.weight transposed, others name-seeded sin*scale.
     let init_params = |session: &mut meganeura::Session| {
         for (name, buf_ref) in session.plan().param_buffers.clone().iter() {
             let n = session.plan().buffers[buf_ref.0 as usize] / 4;
@@ -656,35 +659,41 @@ fn bench_resnet() {
     init_params(&mut infer_session);
     init_params(&mut train_session);
 
-    // --- Forward ---
+    // --- Inputs ---
     let in_size = (batch * 3 * 224 * 224) as usize;
     let images: Vec<f32> = (0..in_size).map(|i| (i as f32 * 0.001).sin()).collect();
-    // One-hot labels for training.
     let labels_idx: Vec<usize> = (0..batch as usize).map(|i| i % 1000).collect();
     let mut one_hot_labels = vec![0.0f32; (batch * 1000) as usize];
     for (b, &l) in labels_idx.iter().enumerate() {
         one_hot_labels[b * 1000 + l] = 1.0;
     }
 
-    // Warm-up (first step compiles Vulkan pipelines).
+    // --- Forward (inference graph: returns logits) ---
     infer_session.set_input("image", &images);
-    infer_session.set_input("labels", &one_hot_labels);
     infer_session.step();
     infer_session.wait();
 
     infer_session.set_input("image", &images);
-    infer_session.set_input("labels", &one_hot_labels);
     let fwd_start = Instant::now();
     infer_session.step();
     infer_session.wait();
     let forward_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
 
-    // Training graph outputs loss, not logits — read single scalar.
-    let loss_output = infer_session.read_output(1);
-    let loss = loss_output[0] as f64;
+    let logits = infer_session.read_output((batch * 1000) as usize);
+    // Cross-entropy on CPU with the same one-hot labels (matches PyTorch's
+    // F.cross_entropy(logits, labels), which defaults to mean reduction).
+    let mut total_loss = 0.0f64;
+    for b in 0..batch as usize {
+        let row = &logits[b * 1000..(b + 1) * 1000];
+        let target = labels_idx[b];
+        let max_l = row.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let sum_exp: f64 = row.iter().map(|&l| ((l - max_l) as f64).exp()).sum();
+        total_loss -= (row[target] - max_l) as f64 - sum_exp.ln();
+    }
+    let loss = total_loss / batch as f64;
     eprintln!("[meganeura] forward: {forward_ms:.2}ms, loss={loss:.6}");
 
-    // --- Training step ---
+    // --- Training step (separate graph for backward timing) ---
     train_session.set_input("image", &images);
     train_session.set_input("labels", &one_hot_labels);
     train_session.step();
@@ -702,34 +711,11 @@ fn bench_resnet() {
 
     // --- Latency (single-image) ---
     let lat_images: Vec<f32> = vec![0.0; (3 * 224 * 224) as usize];
-    let _lat_labels = vec![0.0f32; 1000]; // dummy one-hot
     let mut lat_g = Graph::new();
     let lat_logits = resnet::build_resnet50(&mut lat_g, 1);
     lat_g.set_outputs(vec![lat_logits]);
     let mut lat_session = build_inference_session(&lat_g);
-    for (name, buf_ref) in lat_session.plan().param_buffers.clone().iter() {
-        let n = lat_session.plan().buffers[buf_ref.0 as usize] / 4;
-        let data: Vec<f32> = if name.contains("fused_bias") {
-            vec![0.0; n]
-        } else if name == "fc.weight" {
-            let in_dim = 2048usize;
-            let out_dim = 1000usize;
-            let seed = name_seed(name);
-            let mut buf = vec![0.0f32; n];
-            for i in 0..out_dim {
-                for j in 0..in_dim {
-                    buf[j * out_dim + i] = ((i * in_dim + j) as f32 * 0.01 + seed).sin() * scale;
-                }
-            }
-            buf
-        } else {
-            let seed = name_seed(name);
-            (0..n)
-                .map(|j| (j as f32 * 0.01 + seed).sin() * scale)
-                .collect()
-        };
-        lat_session.set_parameter(name, &data);
-    }
+    init_params(&mut lat_session);
     lat_session.set_input("image", &lat_images);
     lat_session.step();
     lat_session.wait();
@@ -744,7 +730,7 @@ fn bench_resnet() {
         compile_s,
         forward_ms,
         backward_ms,
-        &loss_output,
+        &logits,
         loss,
         latency_ms,
         grad_norm,

@@ -22,15 +22,11 @@ Benchmark config: seq_len=128, float32, input=[0,1,...,127].
 | | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/Lavapipe) | ~~0.00~~ | ~~2369~~ | ~~320~~ | ~~5700~~ | ~~11.73~~ |
 | | [Meganeura](https://github.com/kvark/meganeura/tree/0b91e08) (Vulkan/Lavapipe) | 7.29 | 3933 | 852 | 3651 | 10.99 |
 | | [llama.cpp](https://github.com/ggml-org/llama.cpp/tree/5a0ed51) (CPU) | 0.10 | 221 | 24 | — | 10.98 |
-| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 53.54 | **148** | 21 | **128** | 8.35 |
-| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.01~~ | ~~258~~ | ~~11~~ | ~~—~~ | ~~10.80~~ |
-| | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/vulkan) | ~~0.00~~ | ~~187~~ | ~~30~~ | ~~207~~ | ~~11.50~~ |
+| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 54.71 | 67 | 27 | 123 | 8.35 |
+| | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/vulkan) | ~~0.00~~ | ~~175~~ | ~~31~~ | ~~204~~ | ~~11.65~~ |
 | | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |
-| | [Luminal](https://github.com/luminal-ai/luminal/tree/f32161d) (CPU) | ~~1.51~~ | ~~7465~~ | ~~—~~ | ~~7497~~ | ~~10.81~~ |
-| | [Meganeura](https://github.com/kvark/meganeura) | ✗ | ✗ | ✗ | ✗ | |
-| | [GGML](https://github.com/ggerganov/ggml/tree/0.3.16) (CPU) | **0.18** | 1406 | **18** | — | 8.69 |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/33dcf42) (Vulkan) | 1.41 | **34** | **12** | **87** | 8.64 |
 | | [ONNX Runtime](https://github.com/microsoft/onnxruntime) | ✗ | ✗ | ✗ | ✗ | |
-| | [JAX](https://github.com/jax-ml/jax) (CPU) | ~~4.49~~ | ~~162~~ | ~~33~~ | ~~376~~ | ~~5.79~~ |
 | Apple M3 | [PyTorch 2.11.0](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (MPS) | 0.00 | 247 | 34 | 432 | 8.35 |
 | | [MLX](https://github.com/ml-explore/mlx) (MLX) | 0.00 | 77 | — | **250** | 8.64 |
 | | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (Metal) | ~~0.02~~ | ~~19~~ | ~~2~~ | ~~—~~ | ~~10.80~~ |

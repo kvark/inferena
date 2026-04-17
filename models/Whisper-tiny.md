@@ -22,14 +22,13 @@ Benchmark config: 30s mel spectrogram (80x3000), 4-token decoder input, float32,
 | | [Meganeura](https://github.com/kvark/meganeura/tree/2ef151e) (Vulkan/Lavapipe) | ~~7.84~~ | ~~53467~~ | ~~—~~ | ~~—~~ | ~~0.01~~ |
 | | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | ✗ | |
 | | [JAX](https://github.com/jax-ml/jax) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 17.03 | **83** | **62** | **222** | 0.01 |
-| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | **0.01** | 375 | — | — | 0.00 |
-| | [Burn](https://github.com/tracel-ai/burn) (wgpu) | — | — | — | — | |
-| | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | — | — | — | — | |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/5ddf5e5) (Vulkan) | 0.16 | 238 | 230 | — | 0.01 |
-| | [GGML](https://github.com/ggerganov/ggml) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CPUExecutionProvider) | 3.87 | 117 | — | — | 0.01 |
-| | [JAX](https://github.com/jax-ml/jax) (CPU) | 1.74 | 297 | 230 | 594 | 0.01 |
+| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 17.73 | 86 | **66** | **211** | 0.01 |
+| | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
+| | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |
+| | [Luminal](https://github.com/luminal-ai/luminal) | — | — | — | — | |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/33dcf42) (Vulkan) | 0.52 | 97 | 89 | 354 | 0.01 |
+| | [GGML](https://github.com/ggerganov/ggml) | ✗ | ✗ | ✗ | ✗ | |
+| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (MIGraphXExecutionProvider) | 27.04 | **34** | — | — | 0.01 |
 | Apple M3 | [PyTorch 2.11.0](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (MPS) | 0.00 | 431 | **52** | **133** | 0.01 |
 | | [MLX](https://github.com/ml-explore/mlx) | — | — | — | — | |
 | | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (Metal) | 0.01 | **22** | — | — | 0.00 |

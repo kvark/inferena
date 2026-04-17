@@ -21,14 +21,14 @@ Benchmark config: chunk_size=50, vlm_seq_len=16, float32, random weights, MSE lo
 | | [Candle](https://github.com/huggingface/candle) (CPU) | ✗ | ✗ | ✗ | ✗ | |
 | | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | ✗ | |
 | | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 20.65 | 26 | 15 | 45 | 0.00 |
-| | [Candle](https://github.com/huggingface/candle) (CPU) | — | — | — | — | |
-| | [Burn](https://github.com/tracel-ai/burn) (wgpu) | — | — | — | — | |
-| | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | — | — | — | — | |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/5ddf5e5) (Vulkan) | **0.48** | **20** | **15** | **39** | 0.01 |
-| | [GGML](https://github.com/ggerganov/ggml) (CPU) | — | — | — | — | |
-| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CPUExecutionProvider) | 4.35 | 36 | — | — | 0.00 |
-| | [JAX](https://github.com/jax-ml/jax) (CPU) | 1.81 | 32 | — | 122 | 0.00 |
+| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 21.63 | 25 | 15 | 41 | 0.00 |
+| | [Candle](https://github.com/huggingface/candle) | — | — | — | — | |
+| | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
+| | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |
+| | [Luminal](https://github.com/luminal-ai/luminal) | — | — | — | — | |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/33dcf42) (Vulkan) | **0.51** | 15 | **6** | **35** | 0.01 |
+| | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
+| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (MIGraphXExecutionProvider) | 22.10 | **12** | — | — | 0.00 |
 | Apple M3 | [PyTorch 2.11.0](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (MPS) | 0.00 | 172 | 11 | 119 | 0.00 |
 | | [MLX](https://github.com/ml-explore/mlx) (MLX) | 0.00 | **13** | — | **24** | 0.00 |
 | | [Candle](https://github.com/huggingface/candle) | — | — | — | — | |

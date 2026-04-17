@@ -20,14 +20,13 @@ Benchmark config: batch=4, 3x224x224, float32, random weights, cross-entropy los
 | | [Meganeura](https://github.com/kvark/meganeura/tree/2ef151e) (Vulkan/Lavapipe) | ~~0.98~~ | ~~3906~~ | ~~1192~~ | ~~—~~ | ~~∞~~ |
 | | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | ✗ | |
 | | [JAX](https://github.com/jax-ml/jax) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 36.92 | **43** | **16** | **92** | 6.92 |
-| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | 0.00 | 549 | 163 | — | 6.91 |
-| | [Burn](https://github.com/tracel-ai/burn) (wgpu) | — | — | — | — | |
-| | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | — | — | — | — | |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/5ddf5e5) (Vulkan) | 0.23 | 138 | 38 | — | 6.92 |
-| | [GGML](https://github.com/ggerganov/ggml) (CPU) | — | — | — | — | |
-| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CPUExecutionProvider) | 2.54 | 59 | 23 | — | 6.92 |
-| | [JAX](https://github.com/jax-ml/jax) (CPU) | 1.46 | 106 | 46 | 283 | 6.92 |
+| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 39.54 | 48 | 15 | **96** | 6.92 |
+| | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
+| | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |
+| | [Luminal](https://github.com/luminal-ai/luminal) | — | — | — | — | |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/33dcf42) (Vulkan) | 0.79 | 65 | 25 | 260 | 6.92 |
+| | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
+| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (MIGraphXExecutionProvider) | 3.12 | **28** | **10** | — | 6.92 |
 | Apple M3 | [PyTorch 2.11.0](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (MPS) | 0.00 | 475 | 21 | 310 | 6.92 |
 | | [MLX](https://github.com/ml-explore/mlx) | — | — | — | — | |
 | | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (Metal) | 0.01 | 31 | 4 | — | 6.91 |

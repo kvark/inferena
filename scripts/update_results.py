@@ -150,13 +150,23 @@ def _platforms_match(a, b):
     na, nb = _normalize_platform(a), _normalize_platform(b)
     if na == nb:
         return True
-    # Substring match on normalized names
+    # Substring match on normalized names — handles short-vs-long forms like
+    # "M2" vs "Apple M2 Pro".
     if na in nb or nb in na:
         return True
-    # Word overlap: match if 2+ significant words overlap
+    # Word overlap: match if 2+ significant words overlap, UNLESS a numeric
+    # token differs. "NVIDIA GeForce RTX 5080" and "NVIDIA GeForce RTX 3050"
+    # share 3 words but are different products — the model number is the
+    # discriminator.
     wa, wb = set(na.split()), set(nb.split())
     overlap = wa & wb - {"@"}
-    return len(overlap) >= 2
+    if len(overlap) < 2:
+        return False
+    diff_a = {w for w in wa - wb if any(c.isdigit() for c in w)}
+    diff_b = {w for w in wb - wa if any(c.isdigit() for c in w)}
+    if diff_a or diff_b:
+        return False
+    return True
 
 
 def merge_results(md_path, new_rows, platform_name):

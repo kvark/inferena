@@ -217,6 +217,81 @@
                 display: none;
             }
 
+            /* Visual charts */
+            .charts-block {
+                margin: 0 0 16px 0;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                background: #fff;
+            }
+            .charts-block > summary {
+                cursor: pointer;
+                padding: 8px 12px;
+                font-weight: 600;
+                color: #1a1a2e;
+                background: #fafafa;
+                border-radius: 4px 4px 0 0;
+                user-select: none;
+            }
+            .charts-block > summary:hover {
+                background: #f0f0f4;
+            }
+            .charts-block[open] > summary {
+                border-bottom: 1px solid #ddd;
+            }
+            .charts-block .platform-section {
+                padding: 12px 14px;
+                border-bottom: 1px solid #eee;
+            }
+            .charts-block .platform-section:last-child {
+                border-bottom: none;
+            }
+            .charts-block .platform-section h4 {
+                font-size: 0.95em;
+                margin: 0 0 6px 0;
+                color: #1a1a2e;
+                font-weight: 600;
+            }
+            .charts-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+                gap: 12px;
+            }
+            .metric-chart {
+                width: 100%;
+                height: auto;
+                font-size: 10px;
+                font-family: inherit;
+            }
+            .metric-chart .chart-title {
+                font-weight: 600;
+                fill: #555;
+            }
+            .metric-chart .fw-label {
+                fill: #333;
+            }
+            .metric-chart .value {
+                fill: #555;
+                font-variant-numeric: tabular-nums;
+            }
+            .metric-chart .bar {
+                fill: #5b9bd5;
+            }
+            .metric-chart .bar.divergent {
+                fill: #d4d4d4;
+            }
+            .metric-chart .bar.best {
+                fill: #2e7d32;
+            }
+            .metric-chart .axis-line {
+                stroke: #ccc;
+                stroke-width: 0.5;
+            }
+            .metric-chart .tick-label {
+                fill: #999;
+                font-size: 8px;
+            }
+
             /* Legend bar */
             .legend {
                 display: flex;
@@ -391,6 +466,181 @@
                         }
                         prev = plat;
                     });
+                    renderCharts(panel, selected);
+                }
+
+                // Table columns: 0=Platform, 1=Framework, 2=Compile, 3=Inference,
+                // 4=Latency, 5=Training, 6=Loss. The first 4 timings chart cleanly
+                // on a log axis; Loss has different semantics — show it in the
+                // Pareto view, not here.
+                var METRICS = [
+                    { idx: 2, label: "Compile (s)" },
+                    { idx: 3, label: "Inference (ms)" },
+                    { idx: 4, label: "Latency (ms)" },
+                    { idx: 5, label: "Training (ms)" },
+                ];
+
+                function parseCell(td) {
+                    // Returns { value, divergent, missing }. Missing means no
+                    // numeric reading (—, ✗, blank). Divergent means the row
+                    // was struck through (different model).
+                    var text = td.textContent.trim();
+                    if (!text || text === "—" || text === "✗") {
+                        return { value: null, divergent: false, missing: true };
+                    }
+                    var divergent = td.querySelector("del") !== null;
+                    var m = text.match(/[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?/);
+                    if (!m) return { value: null, divergent: divergent, missing: true };
+                    return { value: parseFloat(m[0]), divergent: divergent, missing: false };
+                }
+
+                function collectPlatformData(panel, selected) {
+                    // Returns [{ platform, rows: [{fw, label, metrics: [{value, divergent, missing}, ...]}] }]
+                    var platforms = [];
+                    var byPlat = {};
+                    panel.querySelectorAll("table tbody tr").forEach(function (tr) {
+                        var fw = tr.dataset.framework;
+                        if (!fw || !selected.has(fw)) return;
+                        var plat = tr.dataset.platform;
+                        if (!byPlat[plat]) {
+                            byPlat[plat] = { platform: plat, rows: [] };
+                            platforms.push(byPlat[plat]);
+                        }
+                        var cells = tr.querySelectorAll("td");
+                        var metrics = METRICS.map(function (m) { return parseCell(cells[m.idx]); });
+                        byPlat[plat].rows.push({
+                            fw: fw,
+                            label: frameworkLabel[fw],
+                            metrics: metrics,
+                        });
+                    });
+                    return platforms;
+                }
+
+                function logScale(v, lo, hi) {
+                    // Values of 0 pinned to the floor of the axis. Log spans
+                    // map to [0, 1]. Guard against degenerate ranges.
+                    if (v <= 0) return 0;
+                    if (hi <= lo) return 0.5;
+                    var lg = Math.log10(Math.max(v, lo));
+                    return (lg - Math.log10(lo)) / (Math.log10(hi) - Math.log10(lo));
+                }
+
+                function formatValue(v) {
+                    if (v == null) return "";
+                    if (v >= 1000) return v.toFixed(0);
+                    if (v >= 100) return v.toFixed(0);
+                    if (v >= 10) return v.toFixed(1);
+                    if (v >= 1) return v.toFixed(2);
+                    return v.toFixed(3);
+                }
+
+                function svgBarChart(metric, rows) {
+                    // Compute scale bounds from non-missing values. Ignore
+                    // divergent rows when picking "best" but include them in
+                    // the axis so the bar lengths are comparable.
+                    var values = rows
+                        .map(function (r) { return r.metrics[metric._mi]; })
+                        .filter(function (v) { return !v.missing && v.value != null && v.value > 0; });
+                    if (values.length === 0) return "";
+                    var vmax = 0, vminPos = Infinity;
+                    values.forEach(function (v) {
+                        if (v.value > vmax) vmax = v.value;
+                        if (v.value > 0 && v.value < vminPos) vminPos = v.value;
+                    });
+                    var lo = Math.max(vminPos * 0.5, vmax / 1e6); // 1 decade below min
+                    var hi = vmax * 1.1;
+
+                    var bestVal = Infinity;
+                    rows.forEach(function (r) {
+                        var m = r.metrics[metric._mi];
+                        if (!m.missing && !m.divergent && m.value != null && m.value > 0 && m.value < bestVal) {
+                            bestVal = m.value;
+                        }
+                    });
+
+                    var rowH = 16;
+                    var labelW = 68;
+                    var valueW = 38;
+                    var chartW = 260;
+                    var barAreaX = labelW;
+                    var barAreaW = chartW - labelW - valueW;
+                    var titleH = 16;
+                    var axisH = 14;
+                    var chartH = titleH + rows.length * rowH + axisH;
+
+                    var parts = [];
+                    parts.push(
+                        '<svg class="metric-chart" viewBox="0 0 ' + chartW + ' ' + chartH +
+                        '" preserveAspectRatio="xMinYMin meet" role="img" aria-label="' +
+                        metric.label + ' chart">'
+                    );
+                    parts.push('<text class="chart-title" x="4" y="12">' + metric.label + '</text>');
+                    rows.forEach(function (r, i) {
+                        var y = titleH + i * rowH;
+                        var m = r.metrics[metric._mi];
+                        parts.push('<text class="fw-label" x="' + (labelW - 4) + '" y="' +
+                            (y + 11) + '" text-anchor="end">' + r.label + '</text>');
+                        if (!m.missing && m.value != null) {
+                            // Zero plots as a thin sliver at the axis floor so
+                            // "effectively instant" still shows up visually.
+                            var frac = m.value > 0 ? logScale(m.value, lo, hi) : 0;
+                            var w = Math.max(2, frac * barAreaW);
+                            var cls = "bar";
+                            if (m.divergent) cls += " divergent";
+                            else if (m.value === bestVal) cls += " best";
+                            parts.push('<rect class="' + cls + '" x="' + barAreaX + '" y="' +
+                                (y + 3) + '" width="' + w.toFixed(1) + '" height="10" rx="1"/>');
+                            parts.push('<text class="value" x="' + (chartW - 2) + '" y="' +
+                                (y + 11) + '" text-anchor="end">' + formatValue(m.value) + '</text>');
+                        } else {
+                            parts.push('<text class="value" x="' + (chartW - 2) + '" y="' +
+                                (y + 11) + '" text-anchor="end" opacity="0.4">—</text>');
+                        }
+                    });
+                    // Axis baseline with min/max ticks.
+                    var ay = titleH + rows.length * rowH + 2;
+                    parts.push('<line class="axis-line" x1="' + barAreaX + '" y1="' + ay +
+                        '" x2="' + (barAreaX + barAreaW) + '" y2="' + ay + '"/>');
+                    parts.push('<text class="tick-label" x="' + barAreaX + '" y="' + (ay + 10) + '">' +
+                        formatValue(lo) + '</text>');
+                    parts.push('<text class="tick-label" x="' + (barAreaX + barAreaW) + '" y="' +
+                        (ay + 10) + '" text-anchor="end">' + formatValue(hi) + '</text>');
+                    parts.push("</svg>");
+                    return parts.join("");
+                }
+
+                function renderCharts(panel, selected) {
+                    var block = panel.querySelector(".charts-block");
+                    if (!block) return;
+                    var body = block.querySelector(".charts-body");
+                    var platforms = collectPlatformData(panel, selected);
+                    if (platforms.length === 0) {
+                        body.innerHTML = '<div style="padding:12px 14px;color:#999;font-size:0.85em">' +
+                            "No frameworks selected.</div>";
+                        return;
+                    }
+                    // METRICS is reused — cache indices once.
+                    METRICS.forEach(function (m, i) { m._mi = i; });
+                    var html = platforms.map(function (p) {
+                        var charts = METRICS.map(function (m) { return svgBarChart(m, p.rows); })
+                            .filter(Boolean).join("");
+                        return '<div class="platform-section"><h4>' + p.platform +
+                            '</h4><div class="charts-grid">' + charts + "</div></div>";
+                    }).join("");
+                    body.innerHTML = html;
+                }
+
+                function buildChartsBlock(panel) {
+                    var block = document.createElement("details");
+                    block.className = "charts-block";
+                    var summary = document.createElement("summary");
+                    summary.textContent = "Visual comparison";
+                    block.appendChild(summary);
+                    var body = document.createElement("div");
+                    body.className = "charts-body";
+                    block.appendChild(body);
+                    return block;
                 }
 
                 // 2) Build filter bar per panel.
@@ -429,6 +679,9 @@
                     });
                     bar.appendChild(reset);
                     panel.insertBefore(bar, panel.firstChild);
+                    // Insert charts block after the filter bar, before the table.
+                    var charts = buildChartsBlock(panel);
+                    panel.insertBefore(charts, bar.nextSibling);
                     applyFilter(panel);
                 });
             })();

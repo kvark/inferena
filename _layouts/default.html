@@ -170,6 +170,53 @@
                 color: #999;
             }
 
+            /* Framework filter bar */
+            .framework-filter {
+                display: flex;
+                gap: 6px;
+                align-items: center;
+                flex-wrap: wrap;
+                padding: 8px 12px;
+                margin: 0 0 12px 0;
+                background: #fafafa;
+                border: 1px solid #e0e0e0;
+                border-radius: 4px;
+                font-size: 0.85em;
+            }
+            .framework-filter .filter-label {
+                font-weight: 600;
+                color: #555;
+                margin-right: 6px;
+            }
+            .framework-filter label {
+                cursor: pointer;
+                padding: 2px 8px;
+                display: inline-flex;
+                align-items: center;
+                gap: 5px;
+                border-radius: 3px;
+                user-select: none;
+            }
+            .framework-filter label:hover {
+                background: #e8f0fe;
+            }
+            .framework-filter button {
+                margin-left: auto;
+                padding: 2px 10px;
+                font-size: 0.9em;
+                background: #fff;
+                border: 1px solid #ccc;
+                border-radius: 3px;
+                color: #555;
+                cursor: pointer;
+            }
+            .framework-filter button:hover {
+                background: #eef;
+            }
+            tr.filtered-out {
+                display: none;
+            }
+
             /* Legend bar */
             .legend {
                 display: flex;
@@ -257,13 +304,134 @@
                             .classList.add("active");
                     });
                 });
-            // Mark rows that start a new platform group (first cell has real text).
-            document.querySelectorAll("table tbody tr").forEach(function (tr) {
-                var td = tr.querySelector("td:first-child");
-                if (td && td.textContent.trim().length > 0) {
-                    tr.classList.add("platform-start");
+
+            // Framework filter — client-side hide/show per model tab.
+            //
+            // The rendered markdown tables are flat: the first data cell is
+            // the platform name on the first row of each group, empty on
+            // continuation rows. Filtering can hide the platform-start row,
+            // so we also re-assign platform labels to the first visible
+            // row of each group.
+            (function () {
+                function slugify(s) {
+                    return s.trim().toLowerCase().split(/\s+/)[0].replace(/[^a-z0-9.]/g, "");
                 }
-            });
+                function frameworkFromCell(td) {
+                    var link = td.querySelector("a");
+                    var text = (link ? link.textContent : td.textContent).trim();
+                    // "PyTorch 2.11.0+cu130" → "pytorch", "ONNX Runtime" → "onnx",
+                    // "llama.cpp" → "llama.cpp". Good enough to group versions.
+                    return { slug: slugify(text), label: text.split(/\s+/)[0] };
+                }
+
+                // 1) Tag every row with its platform and framework.
+                var frameworkLabel = {}; // slug -> display name
+                document.querySelectorAll(".tab-panel").forEach(function (panel) {
+                    panel.querySelectorAll("table tbody tr").forEach(function (tr) {
+                        var cells = tr.querySelectorAll("td");
+                        if (cells.length < 2) return;
+                        var plat = cells[0].textContent.trim();
+                        if (plat) tr.dataset.platformOrig = plat;
+                        var fw = frameworkFromCell(cells[1]);
+                        tr.dataset.framework = fw.slug;
+                        if (!(fw.slug in frameworkLabel)) frameworkLabel[fw.slug] = fw.label;
+                    });
+                    // Forward-fill platform so continuation rows know their group.
+                    var cur = "";
+                    panel.querySelectorAll("table tbody tr").forEach(function (tr) {
+                        if (tr.dataset.platformOrig) cur = tr.dataset.platformOrig;
+                        tr.dataset.platform = cur;
+                    });
+                });
+
+                function storageKey(panelId) {
+                    return "inferena:fw:" + panelId;
+                }
+                function loadState(panelId) {
+                    try {
+                        var s = localStorage.getItem(storageKey(panelId));
+                        if (s) return new Set(JSON.parse(s));
+                    } catch (e) {}
+                    return null;
+                }
+                function saveState(panelId, set) {
+                    try {
+                        localStorage.setItem(storageKey(panelId), JSON.stringify(Array.from(set)));
+                    } catch (e) {}
+                }
+
+                function applyFilter(panel) {
+                    var selected = new Set();
+                    panel.querySelectorAll('.framework-filter input[type="checkbox"]').forEach(
+                        function (cb) { if (cb.checked) selected.add(cb.value); }
+                    );
+                    saveState(panel.id, selected);
+                    panel.querySelectorAll("table tbody tr").forEach(function (tr) {
+                        var show = selected.has(tr.dataset.framework);
+                        tr.classList.toggle("filtered-out", !show);
+                    });
+                    // Reassign platform-start and inject labels where needed.
+                    var prev = null;
+                    panel.querySelectorAll("table tbody tr").forEach(function (tr) {
+                        if (tr.classList.contains("filtered-out")) return;
+                        var plat = tr.dataset.platform;
+                        var firstTd = tr.querySelector("td:first-child");
+                        if (plat !== prev) {
+                            tr.classList.add("platform-start");
+                            if (!firstTd.textContent.trim()) {
+                                firstTd.textContent = plat;
+                                firstTd.dataset.injected = "1";
+                            }
+                        } else {
+                            tr.classList.remove("platform-start");
+                            if (firstTd.dataset.injected === "1") {
+                                firstTd.textContent = "";
+                                delete firstTd.dataset.injected;
+                            }
+                        }
+                        prev = plat;
+                    });
+                }
+
+                // 2) Build filter bar per panel.
+                document.querySelectorAll(".tab-panel").forEach(function (panel) {
+                    var fws = new Set();
+                    panel.querySelectorAll("table tbody tr").forEach(function (tr) {
+                        if (tr.dataset.framework) fws.add(tr.dataset.framework);
+                    });
+                    if (fws.size === 0) return;
+                    var bar = document.createElement("div");
+                    bar.className = "framework-filter";
+                    var lbl = document.createElement("span");
+                    lbl.className = "filter-label";
+                    lbl.textContent = "Frameworks:";
+                    bar.appendChild(lbl);
+                    var saved = loadState(panel.id);
+                    Array.from(fws).sort().forEach(function (fw) {
+                        var l = document.createElement("label");
+                        var cb = document.createElement("input");
+                        cb.type = "checkbox";
+                        cb.value = fw;
+                        cb.checked = saved ? saved.has(fw) : true;
+                        cb.addEventListener("change", function () { applyFilter(panel); });
+                        l.appendChild(cb);
+                        l.appendChild(document.createTextNode(frameworkLabel[fw]));
+                        bar.appendChild(l);
+                    });
+                    var reset = document.createElement("button");
+                    reset.type = "button";
+                    reset.textContent = "All";
+                    reset.addEventListener("click", function () {
+                        bar.querySelectorAll('input[type="checkbox"]').forEach(function (cb) {
+                            cb.checked = true;
+                        });
+                        applyFilter(panel);
+                    });
+                    bar.appendChild(reset);
+                    panel.insertBefore(bar, panel.firstChild);
+                    applyFilter(panel);
+                });
+            })();
         </script>
     </body>
 </html>

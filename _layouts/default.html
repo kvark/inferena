@@ -292,6 +292,51 @@
                 font-size: 8px;
             }
 
+            /* Pareto scatter */
+            .pareto-chart {
+                width: 100%;
+                height: auto;
+                font-size: 10px;
+                font-family: inherit;
+            }
+            .pareto-chart .axis-line,
+            .pareto-chart .grid-line {
+                stroke: #ddd;
+                stroke-width: 0.5;
+            }
+            .pareto-chart .axis-label {
+                fill: #555;
+                font-weight: 600;
+                font-size: 9px;
+            }
+            .pareto-chart .tick-label {
+                fill: #999;
+                font-size: 8px;
+            }
+            .pareto-chart .threshold {
+                stroke: #2e7d32;
+                stroke-width: 0.5;
+                stroke-dasharray: 3 2;
+                opacity: 0.6;
+            }
+            .pareto-chart .threshold-label {
+                fill: #2e7d32;
+                font-size: 8px;
+                opacity: 0.8;
+            }
+            .pareto-chart .point-label {
+                fill: #333;
+                font-size: 9px;
+            }
+            .pareto-chart .point {
+                stroke: #fff;
+                stroke-width: 1;
+            }
+            .pareto-chart .point.matching { fill: #2e7d32; }
+            .pareto-chart .point.borderline { fill: #ed6c02; }
+            .pareto-chart .point.divergent { fill: #c62828; }
+            .pareto-chart .point.reference { fill: #1a1a2e; }
+
             /* Legend bar */
             .legend {
                 display: flex;
@@ -467,6 +512,7 @@
                         prev = plat;
                     });
                     renderCharts(panel, selected);
+                    renderPareto(panel, selected);
                 }
 
                 // Table columns: 0=Platform, 1=Framework, 2=Compile, 3=Inference,
@@ -643,6 +689,175 @@
                     return block;
                 }
 
+                // ---- Pareto scatter: speed vs correctness ----
+                //
+                // Mirrors the harness's CLOSE threshold: rel_loss = |L - L_pt| /
+                // max(|L_pt|, 1). A framework lands in the bottom-left quadrant
+                // when it's both fast (low inference_ms) and correct (low
+                // rel_loss). The 0.05/0.10 dashed lines match the harness's
+                // own CLOSE / borderline bands.
+                function collectParetoData(panel, selected) {
+                    var platforms = [];
+                    var byPlat = {};
+                    panel.querySelectorAll("table tbody tr").forEach(function (tr) {
+                        var fw = tr.dataset.framework;
+                        if (!fw || !selected.has(fw)) return;
+                        var plat = tr.dataset.platform;
+                        if (!byPlat[plat]) {
+                            byPlat[plat] = { platform: plat, rows: [] };
+                            platforms.push(byPlat[plat]);
+                        }
+                        var cells = tr.querySelectorAll("td");
+                        byPlat[plat].rows.push({
+                            fw: fw,
+                            label: frameworkLabel[fw],
+                            inference: parseCell(cells[3]),
+                            loss: parseCell(cells[6]),
+                        });
+                    });
+                    platforms.forEach(function (p) {
+                        var pt = p.rows.find(function (r) { return r.fw === "pytorch"; });
+                        p.pytorchLoss = pt && pt.loss && !pt.loss.missing ? pt.loss.value : null;
+                        p.rows.forEach(function (r) {
+                            if (p.pytorchLoss != null && !r.loss.missing && r.loss.value != null) {
+                                var norm = Math.max(Math.abs(p.pytorchLoss), 1);
+                                r.relLoss = Math.abs(r.loss.value - p.pytorchLoss) / norm;
+                            } else {
+                                r.relLoss = null;
+                            }
+                        });
+                    });
+                    return platforms.filter(function (p) { return p.pytorchLoss != null; });
+                }
+
+                function svgParetoScatter(p) {
+                    // Points worth plotting.
+                    var pts = p.rows.filter(function (r) {
+                        return !r.inference.missing && r.inference.value != null &&
+                               r.inference.value > 0 && r.relLoss != null;
+                    });
+                    if (pts.length === 0) return "";
+
+                    var W = 340, H = 220;
+                    var padL = 42, padR = 12, padT = 14, padB = 28;
+                    var plotW = W - padL - padR;
+                    var plotH = H - padT - padB;
+
+                    // X: inference_ms, log scale. Use a min that is a power of 10
+                    // below the smallest observed value.
+                    var xs = pts.map(function (r) { return r.inference.value; });
+                    var xMin = Math.pow(10, Math.floor(Math.log10(Math.min.apply(null, xs))));
+                    var xMax = Math.pow(10, Math.ceil(Math.log10(Math.max.apply(null, xs))));
+                    if (xMax === xMin) xMax = xMin * 10;
+
+                    // Y: relLoss. Capped at the larger of 1.0 and the biggest
+                    // observed value (rounded up).
+                    var maxRel = Math.max.apply(null, pts.map(function (r) { return r.relLoss; }));
+                    var yMax = Math.max(1.0, Math.ceil(Math.min(maxRel, 10) * 10) / 10);
+
+                    function xPix(v) {
+                        var f = (Math.log10(Math.max(v, xMin)) - Math.log10(xMin)) /
+                                (Math.log10(xMax) - Math.log10(xMin));
+                        return padL + f * plotW;
+                    }
+                    function yPix(v) {
+                        var f = Math.min(v, yMax) / yMax;
+                        return padT + (1 - f) * plotH;
+                    }
+
+                    var parts = [];
+                    parts.push('<svg class="pareto-chart" viewBox="0 0 ' + W + ' ' + H +
+                        '" preserveAspectRatio="xMinYMin meet" role="img" aria-label="Speed vs loss divergence">');
+
+                    // Axes + gridlines at decade ticks.
+                    parts.push('<line class="axis-line" x1="' + padL + '" y1="' + (padT + plotH) +
+                        '" x2="' + (padL + plotW) + '" y2="' + (padT + plotH) + '"/>');
+                    parts.push('<line class="axis-line" x1="' + padL + '" y1="' + padT +
+                        '" x2="' + padL + '" y2="' + (padT + plotH) + '"/>');
+                    var decade = xMin;
+                    while (decade <= xMax + 1e-9) {
+                        var x = xPix(decade);
+                        parts.push('<line class="grid-line" x1="' + x + '" y1="' + padT +
+                            '" x2="' + x + '" y2="' + (padT + plotH) + '"/>');
+                        parts.push('<text class="tick-label" x="' + x + '" y="' + (padT + plotH + 10) +
+                            '" text-anchor="middle">' + formatValue(decade) + '</text>');
+                        decade *= 10;
+                    }
+                    // Y ticks at 0, yMax/2, yMax.
+                    [0, yMax / 2, yMax].forEach(function (yv) {
+                        var y = yPix(yv);
+                        parts.push('<line class="grid-line" x1="' + padL + '" y1="' + y +
+                            '" x2="' + (padL + plotW) + '" y2="' + y + '"/>');
+                        parts.push('<text class="tick-label" x="' + (padL - 4) + '" y="' + (y + 3) +
+                            '" text-anchor="end">' + yv.toFixed(2) + '</text>');
+                    });
+                    // Threshold bands: 0.05 (CLOSE) and 0.10 (borderline).
+                    [0.05, 0.10].forEach(function (t) {
+                        if (t < yMax) {
+                            var y = yPix(t);
+                            parts.push('<line class="threshold" x1="' + padL + '" y1="' + y +
+                                '" x2="' + (padL + plotW) + '" y2="' + y + '"/>');
+                        }
+                    });
+                    if (0.05 < yMax) {
+                        parts.push('<text class="threshold-label" x="' + (padL + plotW - 2) +
+                            '" y="' + (yPix(0.05) - 2) + '" text-anchor="end">CLOSE (≤0.05)</text>');
+                    }
+
+                    // Axis labels.
+                    parts.push('<text class="axis-label" x="' + (padL + plotW / 2) + '" y="' +
+                        (H - 4) + '" text-anchor="middle">Inference (ms, log)</text>');
+                    parts.push('<text class="axis-label" transform="translate(10 ' +
+                        (padT + plotH / 2) + ') rotate(-90)" text-anchor="middle">|Δ loss / ref|</text>');
+
+                    // Points.
+                    pts.forEach(function (r) {
+                        var x = xPix(r.inference.value);
+                        var y = yPix(r.relLoss);
+                        var cls = "point";
+                        if (r.fw === "pytorch") cls += " reference";
+                        else if (r.relLoss <= 0.05) cls += " matching";
+                        else if (r.relLoss <= 0.10) cls += " borderline";
+                        else cls += " divergent";
+                        parts.push('<circle class="' + cls + '" cx="' + x.toFixed(1) +
+                            '" cy="' + y.toFixed(1) + '" r="4"/>');
+                        parts.push('<text class="point-label" x="' + (x + 6).toFixed(1) + '" y="' +
+                            (y + 3).toFixed(1) + '">' + r.label + '</text>');
+                    });
+                    parts.push("</svg>");
+                    return parts.join("");
+                }
+
+                function renderPareto(panel, selected) {
+                    var block = panel.querySelector(".pareto-block");
+                    if (!block) return;
+                    var body = block.querySelector(".charts-body");
+                    var platforms = collectParetoData(panel, selected);
+                    if (platforms.length === 0) {
+                        body.innerHTML = '<div style="padding:12px 14px;color:#999;font-size:0.85em">' +
+                            "No PyTorch reference visible — enable PyTorch to see divergence.</div>";
+                        return;
+                    }
+                    body.innerHTML = platforms.map(function (p) {
+                        var svg = svgParetoScatter(p);
+                        if (!svg) return "";
+                        return '<div class="platform-section"><h4>' + p.platform +
+                            '</h4>' + svg + "</div>";
+                    }).filter(Boolean).join("");
+                }
+
+                function buildParetoBlock() {
+                    var block = document.createElement("details");
+                    block.className = "charts-block pareto-block";
+                    var summary = document.createElement("summary");
+                    summary.textContent = "Speed vs correctness";
+                    block.appendChild(summary);
+                    var body = document.createElement("div");
+                    body.className = "charts-body";
+                    block.appendChild(body);
+                    return block;
+                }
+
                 // 2) Build filter bar per panel.
                 document.querySelectorAll(".tab-panel").forEach(function (panel) {
                     var fws = new Set();
@@ -679,9 +894,11 @@
                     });
                     bar.appendChild(reset);
                     panel.insertBefore(bar, panel.firstChild);
-                    // Insert charts block after the filter bar, before the table.
+                    // Insert chart blocks after the filter bar, before the table.
                     var charts = buildChartsBlock(panel);
+                    var pareto = buildParetoBlock();
                     panel.insertBefore(charts, bar.nextSibling);
+                    panel.insertBefore(pareto, charts.nextSibling);
                     applyFilter(panel);
                 });
             })();

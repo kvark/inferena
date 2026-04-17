@@ -65,4 +65,18 @@ print('ok')
     fi
 fi
 
+# Pre-flight: detect if Metal backend is broken (e.g. jax-metal StableHLO version mismatch).
+if "$PYTHON" -c "import jax; exit(0 if jax.default_backend() == 'METAL' else 1)" 2>/dev/null; then
+    _JAX_METAL_OK=$("$PYTHON" -c "
+import jax.numpy as jnp
+_ = (jnp.ones(1) + jnp.ones(1)).block_until_ready()
+print('ok')
+" 2>&1) || _JAX_METAL_OK="fail"
+
+    if ! echo "$_JAX_METAL_OK" | grep -q "^ok$"; then
+        echo "[jax] Metal backend broken (likely jax-metal version mismatch) — falling back to CPU" >&2
+        export JAX_PLATFORMS="cpu"
+    fi
+fi
+
 exec "$PYTHON" "$SCRIPT_DIR/bench.py" "$MODEL"

@@ -310,6 +310,44 @@ def capture_cuda_graph(fn, warmup: int = 3):
     return g
 
 
+def capture_cuda_graph_train(fwd_bwd_fn, model, warmup: int = 3):
+    """Capture forward+backward as a CUDA graph for training.
+
+    Prerequisites for capture:
+    - All prior AccumulateGrad nodes must be destroyed before side-stream
+      warmup, so new ones are created on the capture stream (otherwise
+      stream mismatch invalidates the capture).
+    - Parameters and inputs must live at stable addresses across replays.
+    - No dynamic shapes, no Python control flow inside the captured region.
+
+    fwd_bwd_fn should run one forward+backward pass using pre-set inputs.
+    """
+    # Fully detach gradients — `grad = None` destroys AccumulateGrad so the
+    # next backward rebuilds it on whatever stream is active.
+    for p in model.parameters():
+        p.grad = None
+
+    s = torch.cuda.Stream()
+    s.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(s):
+        for _ in range(warmup):
+            for p in model.parameters():
+                p.grad = None
+            fwd_bwd_fn()
+    torch.cuda.current_stream().wait_stream(s)
+    torch.cuda.synchronize()
+
+    # Now gradients exist and live at stable addresses. Zero them (preserving
+    # the tensors) and capture: the captured graph zeros grads then adds to them.
+    g = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(g):
+        for p in model.parameters():
+            if p.grad is not None:
+                p.grad.zero_()
+        fwd_bwd_fn()
+    return g
+
+
 # --- Model registry ---
 
 MODEL_REGISTRY = {
@@ -752,8 +790,7 @@ def bench(model_name: str, spec: dict):
     # --- CUDA graph replay (fallback when torch.compile is unavailable) ---
     # On Windows Triton is missing, so we lose the graph-capture pass
     # Inductor would do. Capturing a manual CUDA graph here closes most of
-    # that gap on inference + latency (the no_grad paths). Training stays
-    # eager — autograd-graph capture is a larger project.
+    # that gap on inference + latency (no_grad) AND training (forward+backward).
     if dev.startswith("cuda") and compile_s == 0.0:
         if model_type == "sd_unet":
             inf_fn = lambda: model(fwd_kwargs["noisy_latent"])
@@ -788,9 +825,71 @@ def bench(model_name: str, spec: dict):
         except Exception as e:
             print(f"[pytorch] CUDA graph capture failed ({e}); keeping eager timings", file=sys.stderr)
 
+        # --- Training CUDA graph (forward + backward) ---
+        # Free prior autograd graph refs — the earlier loss.backward() and
+        # lingering logits/loss tensors keep AccumulateGrad nodes alive on
+        # the default stream, which breaks capture on a side stream.
+        # Save scalar values before dropping the tensors.
+        loss_val = float(loss.item())
+        logits_saved = logits.detach()
+        del outputs, loss, logits
+        try:
+            del target, noisy
+        except (NameError, UnboundLocalError):
+            pass
+        import gc
+        gc.collect()
+        torch.cuda.synchronize()
+
+        # Suppress the stream-mismatch warning — we've done our best to clear
+        # prior refs. If capture still fails we fall back to eager timing.
+        try:
+            torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
+        except AttributeError:
+            pass
+
+        # Define the forward+backward closure per model type.
+        captured_logits = [None]
+        def _train_step():
+            if model_type == "sd_unet":
+                out = model(fwd_kwargs["noisy_latent"])
+                captured_logits[0] = out
+                F.mse_loss(out, fwd_kwargs["noise_target"]).backward()
+            elif model_type == "smolvla":
+                out = model(**fwd_kwargs)
+                captured_logits[0] = out
+                F.mse_loss(out, torch.zeros_like(out)).backward()
+            elif model_type == "resnet":
+                out = model(fwd_kwargs["images"])
+                captured_logits[0] = out
+                F.cross_entropy(out, fwd_kwargs["labels"]).backward()
+            elif model_type == "whisper":
+                out = model(fwd_kwargs["input_features"])
+                captured_logits[0] = out.last_hidden_state
+                out.last_hidden_state.pow(2).mean().backward()
+            else:  # causal_lm
+                out = model(**fwd_kwargs)
+                captured_logits[0] = out.logits
+                out.loss.backward()
+
+        try:
+            print("[pytorch] capturing CUDA graph for training...", file=sys.stderr)
+            train_graph = capture_cuda_graph_train(_train_step, model)
+            sync()
+            t0 = time.perf_counter()
+            train_graph.replay()
+            sync()
+            training_ms = (time.perf_counter() - t0) * 1000.0
+            print(f"[pytorch] training (graph): {training_ms:.2f}ms", file=sys.stderr)
+        except Exception as e:
+            print(f"[pytorch] training CUDA graph capture failed ({e}); keeping eager training timing", file=sys.stderr)
+
     # --- Collect outputs ---
-    logits_hash = sha256_f32_tensor(logits)
-    logits_flat = logits.detach().float().cpu().flatten()
+    # Use saved tensor if training CUDA graph deleted the originals.
+    logits_src = logits if 'logits' in dir() and isinstance(locals().get('logits', None), torch.Tensor) else logits_saved
+    loss_out = loss.item() if 'loss' in dir() and hasattr(locals().get('loss', None), 'item') else loss_val
+    logits_hash = sha256_f32_tensor(logits_src)
+    logits_flat = logits_src.detach().float().cpu().flatten()
     logits_sample = logits_flat[:16].tolist()
 
     result = {
@@ -809,7 +908,7 @@ def bench(model_name: str, spec: dict):
         "outputs": {
             "logits_hash": logits_hash,
             "logits_sample": [round(v, 6) for v in logits_sample],
-            "loss": round(loss.item(), 6),
+            "loss": round(loss_out, 6),
         },
     }
     print(json.dumps(result))

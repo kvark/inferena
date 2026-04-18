@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
-
 # --- Platform flags (Windows via git bash = MINGW/MSYS) ---
 case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=true ;;
@@ -10,6 +8,15 @@ case "$(uname -s)" in
 esac
 EXE_SUFFIX=""
 $IS_WINDOWS && EXE_SUFFIX=".exe"
+
+# Use a native path on Windows (e.g. C:/Code/inferena), so values embedded
+# into Python/Cargo commands resolve correctly. MSYS `pwd` returns
+# `/c/Code/...` which Python cannot interpret as a filesystem path.
+if $IS_WINDOWS; then
+    ROOT_DIR="$(cd "$(dirname "$0")" && pwd -W)"
+else
+    ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+fi
 
 # --- Pick a Python interpreter ---
 # 1. Honor $VIRTUAL_ENV if set (user activated a venv).

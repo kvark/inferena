@@ -423,12 +423,18 @@ fn compare_outputs(results: &[&BenchResult]) {
 
 /// Determine which frameworks "match" the reference (first successful result).
 /// Returns a set of framework names that passed correctness checks.
+/// Uses PyTorch as the reference (ground truth). If PyTorch isn't present,
+/// all frameworks are considered matching (caller handles this case).
 fn matching_frameworks(successes: &[&BenchResult]) -> std::collections::HashSet<String> {
     let mut matching = std::collections::HashSet::new();
     if successes.is_empty() {
         return matching;
     }
-    let reference = successes[0];
+    // Find PyTorch as ground truth; fall back to first framework.
+    let reference = successes
+        .iter()
+        .find(|r| r.framework == "pytorch")
+        .unwrap_or(&successes[0]);
     matching.insert(reference.framework.clone());
     for other in &successes[1..] {
         let loss_diff = (reference.outputs.loss - other.outputs.loss).abs();

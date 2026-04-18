@@ -500,10 +500,17 @@ def _random_init(model_type: str, model_name: str):
             in_channels=4, base_channels=64, num_levels=3,
             num_groups=16, eps=1e-5,
         ).to(torch.float32)
-        return _deterministic_init(model)
+        # Name-seeded init: framework-independent, matches meganeura's init_params.
+        with torch.no_grad():
+            for name, p in model.named_parameters():
+                _name_seeded_init(p, name)
+        return model
     if model_type == "smolvla":
         model = ActionExpert().to(torch.float32)
-        return _deterministic_init(model)
+        with torch.no_grad():
+            for name, p in model.named_parameters():
+                _name_seeded_init(p, name)
+        return model
     else:
         from transformers import LlamaConfig, LlamaForCausalLM
         configs = {

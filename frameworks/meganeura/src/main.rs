@@ -54,6 +54,20 @@ fn name_seed(name: &str) -> f32 {
     (h % 10000) as f32
 }
 
+/// Initialize all session parameters with deterministic name-seeded values.
+/// Uses `sin(j * 0.01 + name_seed(name)) * 0.1` — matches PyTorch's
+/// `_name_seeded_init` for framework-independent weight init.
+fn init_params(session: &mut meganeura::Session) {
+    for (name, buf_ref) in session.plan().param_buffers.clone() {
+        let n = session.plan().buffers[buf_ref.0 as usize] / 4;
+        let seed = name_seed(&name);
+        let data: Vec<f32> = (0..n)
+            .map(|j| (j as f32 * 0.01 + seed).sin() * 0.1)
+            .collect();
+        session.set_parameter(&name, &data);
+    }
+}
+
 fn load_weights(
     session: &mut meganeura::Session,
     model: &SafeTensorsModel,
@@ -303,21 +317,8 @@ fn bench_smolvla() {
     eprintln!("[meganeura] inference ready (compile: {compile_s:.2}s)");
 
     // --- Initialize with deterministic random values ---
-    // Use infer_session's param list (avoids fused param names from optimizer).
     eprintln!("[meganeura] initializing parameters...");
-    for (i, (name, buf_ref)) in infer_session
-        .plan()
-        .param_buffers
-        .clone()
-        .iter()
-        .enumerate()
-    {
-        let n = infer_session.plan().buffers[buf_ref.0 as usize] / 4;
-        let data: Vec<f32> = (0..n)
-            .map(|j| (j as f32 * 0.01 + i as f32).sin() * 0.1)
-            .collect();
-        infer_session.set_parameter(name, &data);
-    }
+    init_params(&mut infer_session);
 
     // --- Prepare inputs ---
     let noisy_actions: Vec<f32> = (0..action_seq_len * action_dim)
@@ -400,20 +401,7 @@ fn bench_smolvla() {
     eprintln!("[meganeura] compiling training session...");
     let mut train_session = build_session(&training_g);
 
-    // Initialize training weights identically.
-    for (i, (name, buf_ref)) in train_session
-        .plan()
-        .param_buffers
-        .clone()
-        .iter()
-        .enumerate()
-    {
-        let n = train_session.plan().buffers[buf_ref.0 as usize] / 4;
-        let data: Vec<f32> = (0..n)
-            .map(|j| (j as f32 * 0.01 + i as f32).sin() * 0.1)
-            .collect();
-        train_session.set_parameter(name, &data);
-    }
+    init_params(&mut train_session);
 
     let target_actions = vec![0.0f32; action_seq_len * action_dim];
 
@@ -450,13 +438,7 @@ fn bench_smolvla() {
     let lat_pred = smolvla::build_action_expert(&mut lat_g, &config, 1, vlm_seq_len);
     lat_g.set_outputs(vec![lat_pred]);
     let mut lat_session = build_inference_session(&lat_g);
-    for (i, (name, buf_ref)) in lat_session.plan().param_buffers.clone().iter().enumerate() {
-        let n = lat_session.plan().buffers[buf_ref.0 as usize] / 4;
-        let data: Vec<f32> = (0..n)
-            .map(|j| (j as f32 * 0.01 + i as f32).sin() * 0.1)
-            .collect();
-        lat_session.set_parameter(name, &data);
-    }
+    init_params(&mut lat_session);
     let lat_actions: Vec<f32> = (0..action_dim).map(|i| (i as f32 * 0.01).sin()).collect();
     let lat_timestep = &timestep;
     lat_session.set_input("noisy_actions", &lat_actions);

@@ -48,13 +48,13 @@ Most frameworks (PyTorch, Meganeura, ONNX Runtime, JAX, MLX) run the **simplifie
 | | [Meganeura](https://github.com/kvark/meganeura/tree/33dcf42) (Vulkan) | **2.02** | 1.2 | 1.2 | 9.4 | 0.54 |
 | | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
 | | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | ~~0.88~~ | ~~7.4~~ | ~~—~~ | ~~—~~ | ~~0.05~~ |
-| NVIDIA GeForce RTX 3050 (Windows) | [PyTorch 2.11.0+cu128](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 12.8) | 0.00 | **1.4** | **1.0** | 151 | 0.57 |
+| NVIDIA GeForce RTX 3050 (Windows) | [PyTorch 2.11.0+cu128](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 12.8) | 0.00 | **1.4** | **1.0** | **68** | 0.57 |
 | | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
 | | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |
 | | [Luminal](https://github.com/luminal-ai/luminal) | — | — | — | — | |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/5eb5b56) (Vulkan/DX12) | 4.15 | 28 | 6.7 | **39** | 0.52 |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/1a06c02) (Vulkan/DX12) | ~~0.48~~ | ~~3.6~~ | ~~3.4~~ | ~~13~~ | ~~0.52~~ |
 | | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
-| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | ~~1.78~~ | ~~2.3~~ | ~~—~~ | ~~—~~ | ~~0.05~~ |
+| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | ~~1.67~~ | ~~2.3~~ | ~~—~~ | ~~—~~ | ~~0.05~~ |
 | | [JAX](https://github.com/jax-ml/jax) | ✗ | ✗ | ✗ | ✗ | |
 | Intel Graphics (RPL-U) | [PyTorch](https://github.com/pytorch/pytorch) | ✗ | ✗ | ✗ | ✗ | |
 |  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | 0.00 | **16876** | — | — | 0.00 |

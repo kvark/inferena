@@ -55,14 +55,16 @@ fn name_seed(name: &str) -> f32 {
 }
 
 /// Initialize all session parameters with deterministic name-seeded values.
-/// Uses `sin(j * 0.01 + name_seed(name)) * 0.1` — matches PyTorch's
-/// `_name_seeded_init` for framework-independent weight init.
+///
+/// Uses `sin(j * 0.01 + name_seed(name)) * 0.02` — the 0.02 scale matches
+/// standard transformer init (GPT-2/LLaMA convention) and produces
+/// realistic activation magnitudes through deep networks.
 fn init_params(session: &mut meganeura::Session) {
     for (name, buf_ref) in session.plan().param_buffers.clone() {
         let n = session.plan().buffers[buf_ref.0 as usize] / 4;
         let seed = name_seed(&name);
         let data: Vec<f32> = (0..n)
-            .map(|j| (j as f32 * 0.01 + seed).sin() * 0.1)
+            .map(|j| (j as f32 * 0.01 + seed).sin() * 0.02)
             .collect();
         session.set_parameter(&name, &data);
     }

@@ -430,11 +430,14 @@ _TRANSPOSED_SUFFIXES = frozenset([
 ])
 
 
+_INIT_SCALE = 0.02  # Standard transformer init scale (GPT-2/LLaMA convention)
+
+
 def _name_seeded_init(p, name):
-    """Fill parameter with sin(j*0.01 + name_seed) * 0.1."""
+    """Fill parameter with sin(j*0.01 + name_seed) * 0.02."""
     seed = _name_seed(name)
     n = p.numel()
-    p.copy_(torch.sin(torch.arange(n, dtype=torch.float32) * 0.01 + seed).view_as(p) * 0.1)
+    p.copy_(torch.sin(torch.arange(n, dtype=torch.float32) * 0.01 + seed).view_as(p) * _INIT_SCALE)
 
 
 def _transposed_init(p, name):
@@ -444,7 +447,7 @@ def _transposed_init(p, name):
     """
     seed = _name_seed(name)
     out_f, in_f = p.shape
-    w = torch.sin(torch.arange(in_f * out_f, dtype=torch.float32) * 0.01 + seed).view(in_f, out_f) * 0.1
+    w = torch.sin(torch.arange(in_f * out_f, dtype=torch.float32) * 0.01 + seed).view(in_f, out_f) * _INIT_SCALE
     p.copy_(w.T)
 
 
@@ -534,7 +537,11 @@ def _random_init(model_type: str, model_name: str):
         if config is None:
             print(f"[pytorch] no fallback config for {model_name}", file=sys.stderr)
             sys.exit(1)
-        return LlamaForCausalLM(config).to(torch.float32)
+        model = LlamaForCausalLM(config).to(torch.float32)
+        with torch.no_grad():
+            for name, p in model.named_parameters():
+                _name_seeded_init(p, name)
+        return model
 
 
 def prepare_inputs(model_type: str, model, dev: str, seq_len: int = 128):

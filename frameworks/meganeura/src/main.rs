@@ -625,6 +625,23 @@ fn bench_stable_diffusion() {
     });
     let backward_ms = (train_ms - forward_ms).max(0.0);
 
+    // GPU profiling for training breakdown.
+    if std::env::var("MEGANEURA_PROFILE").is_ok() {
+        train_session.set_profiling(true);
+        train_session.set_input("noisy_latent", &noisy_latent);
+        train_session.set_input("noise_target", &noise_target);
+        train_session.step();
+        train_session.wait();
+        train_session.set_profiling(false);
+        for _ in 0..2 {
+            train_session.set_input("noisy_latent", &noisy_latent);
+            train_session.set_input("noise_target", &noise_target);
+            train_session.step();
+            train_session.wait();
+        }
+        train_session.dump_gpu_timings();
+    }
+
     let grad_norm = compute_grad_norm(&train_session);
 
     emit_result(
@@ -743,6 +760,22 @@ fn bench_resnet() {
         s.set_input("labels", &one_hot_labels);
     });
     let backward_ms = (train_ms - forward_ms).max(0.0);
+
+    if std::env::var("MEGANEURA_PROFILE").is_ok() {
+        train_session.set_profiling(true);
+        train_session.set_input("image", &images);
+        train_session.set_input("labels", &one_hot_labels);
+        train_session.step();
+        train_session.wait();
+        train_session.set_profiling(false);
+        for _ in 0..2 {
+            train_session.set_input("image", &images);
+            train_session.set_input("labels", &one_hot_labels);
+            train_session.step();
+            train_session.wait();
+        }
+        train_session.dump_gpu_timings();
+    }
 
     let grad_norm = compute_grad_norm(&train_session);
 
@@ -873,6 +906,28 @@ fn bench_whisper() {
         s.set_input("labels", &one_hot_labels);
     });
     let backward_ms = (train_ms - forward_ms).max(0.0);
+
+    // GPU profiling: capture per-dispatch timings to identify hotspots.
+    if std::env::var("MEGANEURA_PROFILE").is_ok() {
+        train_session.set_profiling(true);
+        let set = |s: &mut meganeura::Session| {
+            s.set_input("mel", &mel);
+            s.set_input("labels", &one_hot_labels);
+        };
+        set(&mut train_session);
+        train_session.step();
+        train_session.wait();
+        train_session.set_profiling(false);
+        // Two more steps to rotate back to the profiled buffer's timestamps.
+        set(&mut train_session);
+        train_session.step();
+        train_session.wait();
+        set(&mut train_session);
+        train_session.step();
+        train_session.wait();
+        train_session.dump_gpu_timings();
+    }
+
     let grad_norm = compute_grad_norm(&train_session);
 
     emit_result(

@@ -125,6 +125,30 @@ fn compute_grad_norm(session: &meganeura::Session) -> f64 {
     grad_norm
 }
 
+/// Warm up a session (3 runs) then return the best of 5 timed runs in ms.
+fn bench_session(
+    session: &mut meganeura::Session,
+    set_inputs: &dyn Fn(&mut meganeura::Session),
+) -> f64 {
+    for _ in 0..3 {
+        set_inputs(session);
+        session.step();
+        session.wait();
+    }
+    let mut best = f64::MAX;
+    for _ in 0..5 {
+        set_inputs(session);
+        let t0 = Instant::now();
+        session.step();
+        session.wait();
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        if ms < best {
+            best = ms;
+        }
+    }
+    best
+}
+
 fn bench_smollm2(model_name: &str) {
     use meganeura::models::smollm2::{self, SmolLM2Config};
 
@@ -158,18 +182,11 @@ fn bench_smollm2(model_name: &str) {
     eprintln!("[meganeura] compiling...");
     let mut session = build_inference_session(&g);
 
-    // Also build training graph for grad_norm validation.
-    eprintln!("[meganeura] building training graph...");
-    let training_g = smollm2::build_training_graph(&config, seq_len);
-    eprintln!("[meganeura] compiling training session...");
-    let mut train_session = build_session(&training_g);
-
     // --- Load weights ---
     let transposed = smollm2::transposed_weight_names(&config);
     let transposed_set: std::collections::HashSet<&str> =
         transposed.iter().map(|s| s.as_str()).collect();
     load_weights(&mut session, &model, &transposed_set);
-    load_weights(&mut train_session, &model, &transposed_set);
 
     let compile_s = compile_start.elapsed().as_secs_f64();
     eprintln!("[meganeura] ready (compile: {compile_s:.2}s)");
@@ -180,16 +197,10 @@ fn bench_smollm2(model_name: &str) {
         .map(|i| (i + 1) % vocab as u32)
         .collect();
 
-    // Warm-up forward pass (first step compiles Vulkan pipelines).
-    session.set_input_u32("token_ids", &input_ids);
-    session.step();
-    session.wait();
-
-    session.set_input_u32("token_ids", &input_ids);
-    let fwd_start = Instant::now();
-    session.step();
-    session.wait();
-    let forward_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
+    // Warm-up + timed: 3 warmup runs + best of 5.
+    let forward_ms = bench_session(&mut session, &|s| {
+        s.set_input_u32("token_ids", &input_ids);
+    });
 
     let all_logits = session.read_output(seq_len * vocab);
 
@@ -206,7 +217,31 @@ fn bench_smollm2(model_name: &str) {
     }
     let loss = total_loss / loss_positions as f64;
 
+    // --- Latency (single-token forward) ---
+    // Build a separate seq_len=1 inference graph.
+    eprintln!("[meganeura] measuring single-token latency...");
+    let mut lat_g = Graph::new();
+    let lat_logits = smollm2::build_graph(&mut lat_g, &config, 1);
+    lat_g.set_outputs(vec![lat_logits]);
+    let mut lat_session = build_inference_session(&lat_g);
+    // Copy weights from main session.
+    load_weights(&mut lat_session, &model, &transposed_set);
+    // Warm-up + timed: 3 warmup runs + best of 5.
+    let latency_ms = bench_session(&mut lat_session, &|s| {
+        s.set_input_u32("token_ids", &[0u32]);
+    });
+
+    // Drop inference sessions to free GPU memory before training.
+    drop(session);
+    drop(lat_session);
+
     // --- Training step (forward + backward) ---
+    eprintln!("[meganeura] building training graph...");
+    let training_g = smollm2::build_training_graph(&config, seq_len);
+    eprintln!("[meganeura] compiling training session...");
+    let mut train_session = build_session(&training_g);
+    load_weights(&mut train_session, &model, &transposed_set);
+
     // HF-shifted labels: position p predicts labels[p+1] (the next token).
     // Last position has no target (zero label row).
     // Scale by seq_len/(seq_len-1) to compensate for meganeura dividing by seq_len
@@ -217,18 +252,12 @@ fn bench_smollm2(model_name: &str) {
         let target = labels[pos + 1] as usize;
         one_hot_labels[pos * vocab + target] = label_scale;
     }
-    // Warm-up training step (first step compiles Vulkan pipelines).
-    train_session.set_input_u32("token_ids", &input_ids);
-    train_session.set_input("labels", &one_hot_labels);
-    train_session.step();
-    train_session.wait();
 
-    train_session.set_input_u32("token_ids", &input_ids);
-    train_session.set_input("labels", &one_hot_labels);
-    let bwd_start = Instant::now();
-    train_session.step();
-    train_session.wait();
-    let train_ms = bwd_start.elapsed().as_secs_f64() * 1000.0;
+    // Warm-up training: 3 runs + best of 5.
+    let train_ms = bench_session(&mut train_session, &|s| {
+        s.set_input_u32("token_ids", &input_ids);
+        s.set_input("labels", &one_hot_labels);
+    });
     let backward_ms = (train_ms - forward_ms).max(0.0);
 
     let grad_norm = compute_grad_norm(&train_session);
@@ -238,26 +267,6 @@ fn bench_smollm2(model_name: &str) {
              possible GPU driver issue (see https://github.com/kvark/meganeura/issues/TBD)"
         );
     }
-
-    // --- Latency (single-token forward) ---
-    // Build a separate seq_len=1 inference graph.
-    eprintln!("[meganeura] measuring single-token latency...");
-    let mut lat_g = Graph::new();
-    let lat_logits = smollm2::build_graph(&mut lat_g, &config, 1);
-    lat_g.set_outputs(vec![lat_logits]);
-    let mut lat_session = build_inference_session(&lat_g);
-    // Copy weights from main session.
-    load_weights(&mut lat_session, &model, &transposed_set);
-    // Warm-up.
-    lat_session.set_input_u32("token_ids", &[0u32]);
-    lat_session.step();
-    lat_session.wait();
-    // Measure.
-    lat_session.set_input_u32("token_ids", &[0u32]);
-    let lat_start = Instant::now();
-    lat_session.step();
-    lat_session.wait();
-    let latency_ms = lat_start.elapsed().as_secs_f64() * 1000.0;
 
     emit_result(
         model_name,
@@ -290,14 +299,8 @@ fn bench_smolvla() {
     eprintln!("[meganeura] compiling inference session...");
     let mut infer_session = build_inference_session(&infer_g);
 
-    // Training graph: forward + backward + loss.
-    eprintln!("[meganeura] building SmolVLA training graph...");
-    let training_g = smolvla::build_action_expert_training(&config, action_seq_len, vlm_seq_len);
-    eprintln!("[meganeura] compiling training session...");
-    let mut train_session = build_session(&training_g);
-
     let compile_s = compile_start.elapsed().as_secs_f64();
-    eprintln!("[meganeura] ready (compile: {compile_s:.2}s)");
+    eprintln!("[meganeura] inference ready (compile: {compile_s:.2}s)");
 
     // --- Initialize with deterministic random values ---
     // Use infer_session's param list (avoids fused param names from optimizer).
@@ -314,7 +317,6 @@ fn bench_smolvla() {
             .map(|j| (j as f32 * 0.01 + i as f32).sin() * 0.1)
             .collect();
         infer_session.set_parameter(name, &data);
-        train_session.set_parameter(name, &data);
     }
 
     // --- Prepare inputs ---
@@ -341,16 +343,26 @@ fn bench_smolvla() {
     };
 
     // --- Forward (inference session) ---
-    // Warm-up (first step compiles Vulkan pipelines).
-    set_inputs(&mut infer_session);
-    infer_session.step();
-    infer_session.wait();
+    // Warm-up: 3 runs to stabilize pipeline caches and GPU clocks.
+    for _ in 0..3 {
+        set_inputs(&mut infer_session);
+        infer_session.step();
+        infer_session.wait();
+    }
 
-    set_inputs(&mut infer_session);
-    let fwd_start = Instant::now();
-    infer_session.step();
-    infer_session.wait();
-    let forward_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
+    // Timed: best of 5 runs.
+    let mut best_ms = f64::MAX;
+    for _ in 0..5 {
+        set_inputs(&mut infer_session);
+        let t0 = Instant::now();
+        infer_session.step();
+        infer_session.wait();
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        if ms < best_ms {
+            best_ms = ms;
+        }
+    }
+    let forward_ms = best_ms;
 
     let output = infer_session.read_output(action_seq_len * action_dim);
     eprintln!(
@@ -380,20 +392,55 @@ fn bench_smolvla() {
     let loss: f64 = output.iter().map(|&v| (v as f64).powi(2)).sum::<f64>() / output.len() as f64;
 
     // --- Training step (forward + backward + SGD) ---
+    // Drop inference session to free GPU memory before training.
+    drop(infer_session);
+
+    eprintln!("[meganeura] building SmolVLA training graph...");
+    let training_g = smolvla::build_action_expert_training(&config, action_seq_len, vlm_seq_len);
+    eprintln!("[meganeura] compiling training session...");
+    let mut train_session = build_session(&training_g);
+
+    // Initialize training weights identically.
+    for (i, (name, buf_ref)) in train_session
+        .plan()
+        .param_buffers
+        .clone()
+        .iter()
+        .enumerate()
+    {
+        let n = train_session.plan().buffers[buf_ref.0 as usize] / 4;
+        let data: Vec<f32> = (0..n)
+            .map(|j| (j as f32 * 0.01 + i as f32).sin() * 0.1)
+            .collect();
+        train_session.set_parameter(name, &data);
+    }
+
     let target_actions = vec![0.0f32; action_seq_len * action_dim];
 
-    // Warm-up training step.
-    set_inputs(&mut train_session);
-    train_session.set_input("target_actions", &target_actions);
-    train_session.step();
-    train_session.wait();
+    // Warm-up training steps.
+    for _ in 0..3 {
+        set_inputs(&mut train_session);
+        train_session.set_input("target_actions", &target_actions);
+        train_session.set_learning_rate(0.0);
+        train_session.step();
+        train_session.wait();
+    }
 
-    set_inputs(&mut train_session);
-    train_session.set_input("target_actions", &target_actions);
-    let bwd_start = Instant::now();
-    train_session.step();
-    train_session.wait();
-    let train_ms = bwd_start.elapsed().as_secs_f64() * 1000.0;
+    // Timed: best of 5 runs.
+    let mut best_train = f64::MAX;
+    for _ in 0..5 {
+        set_inputs(&mut train_session);
+        train_session.set_input("target_actions", &target_actions);
+        train_session.set_learning_rate(0.0);
+        let t0 = Instant::now();
+        train_session.step();
+        train_session.wait();
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        if ms < best_train {
+            best_train = ms;
+        }
+    }
+    let train_ms = best_train;
     // Approximate backward as train_step - forward.
     let backward_ms = (train_ms - forward_ms).max(0.0);
 
@@ -420,19 +467,36 @@ fn bench_smolvla() {
         }
     }
     // Warm-up.
-    lat_session.step();
-    lat_session.wait();
-    lat_session.set_input("noisy_actions", &lat_actions);
-    lat_session.set_input("timestep", lat_timestep);
-    for i in 0..config.expert.num_layers {
-        if i % config.expert.self_attn_every_n_layers != 0 {
-            lat_session.set_input(&format!("vlm_kv_layer_{i}"), &vlm_kv);
+    for _ in 0..3 {
+        lat_session.set_input("noisy_actions", &lat_actions);
+        lat_session.set_input("timestep", lat_timestep);
+        for i in 0..config.expert.num_layers {
+            if i % config.expert.self_attn_every_n_layers != 0 {
+                lat_session.set_input(&format!("vlm_kv_layer_{i}"), &vlm_kv);
+            }
+        }
+        lat_session.step();
+        lat_session.wait();
+    }
+    // Timed: best of 5.
+    let mut best_lat = f64::MAX;
+    for _ in 0..5 {
+        lat_session.set_input("noisy_actions", &lat_actions);
+        lat_session.set_input("timestep", lat_timestep);
+        for i in 0..config.expert.num_layers {
+            if i % config.expert.self_attn_every_n_layers != 0 {
+                lat_session.set_input(&format!("vlm_kv_layer_{i}"), &vlm_kv);
+            }
+        }
+        let t0 = Instant::now();
+        lat_session.step();
+        lat_session.wait();
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        if ms < best_lat {
+            best_lat = ms;
         }
     }
-    let lat_start = Instant::now();
-    lat_session.step();
-    lat_session.wait();
-    let latency_ms = lat_start.elapsed().as_secs_f64() * 1000.0;
+    let latency_ms = best_lat;
 
     let grad_norm = compute_grad_norm(&train_session);
 
@@ -507,20 +571,12 @@ fn bench_stable_diffusion() {
     let res = config.resolution;
     let in_size = (batch * in_c * res * res) as usize;
 
-    // Two graphs: inference (returns noise prediction tensor) for output
-    // validation, and a training graph (prediction + MSE loss) for backward.
     eprintln!("[meganeura] building SD U-Net inference graph (small config)...");
     let compile_start = Instant::now();
     let mut infer_g = Graph::new();
     let pred = sd_unet::build_unet(&mut infer_g, &config);
     infer_g.set_outputs(vec![pred]);
     let mut infer_session = build_inference_session(&infer_g);
-
-    eprintln!("[meganeura] building SD U-Net training graph...");
-    let mut train_g = Graph::new();
-    let loss = sd_unet::build_training_graph(&mut train_g, &config);
-    train_g.set_outputs(vec![loss]);
-    let mut train_session = build_session(&train_g);
 
     let compile_s = compile_start.elapsed().as_secs_f64();
     eprintln!("[meganeura] ready (compile: {compile_s:.2}s)");
@@ -540,22 +596,16 @@ fn bench_stable_diffusion() {
         }
     };
     init_params(&mut infer_session);
-    init_params(&mut train_session);
 
     // --- Prepare inputs ---
     let noisy_latent: Vec<f32> = (0..in_size).map(|i| (i as f32 * 0.01).sin()).collect();
     let noise_target: Vec<f32> = (0..in_size).map(|i| (i as f32 * 0.007).cos()).collect();
 
     // --- Forward (inference graph: returns noise prediction) ---
-    infer_session.set_input("noisy_latent", &noisy_latent);
-    infer_session.step();
-    infer_session.wait();
-
-    infer_session.set_input("noisy_latent", &noisy_latent);
-    let fwd_start = Instant::now();
-    infer_session.step();
-    infer_session.wait();
-    let forward_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
+    // Warm-up + timed: 3 warmup runs + best of 5.
+    let forward_ms = bench_session(&mut infer_session, &|s| {
+        s.set_input("noisy_latent", &noisy_latent);
+    });
 
     let output = infer_session.read_output(in_size);
     // MSE loss on CPU: mean((pred - target)^2) — matches PyTorch's F.mse_loss.
@@ -567,29 +617,29 @@ fn bench_stable_diffusion() {
         / output.len() as f64;
     eprintln!("[meganeura] forward: {forward_ms:.2}ms, loss={loss_val:.6}");
 
-    // --- Training step (separate graph for backward timing) ---
-    train_session.set_input("noisy_latent", &noisy_latent);
-    train_session.set_input("noise_target", &noise_target);
-    train_session.step();
-    train_session.wait();
-
-    train_session.set_input("noisy_latent", &noisy_latent);
-    train_session.set_input("noise_target", &noise_target);
-    let bwd_start = Instant::now();
-    train_session.step();
-    train_session.wait();
-    let train_ms = bwd_start.elapsed().as_secs_f64() * 1000.0;
-    let backward_ms = (train_ms - forward_ms).max(0.0);
-
     // --- Latency (re-run forward, batch=2 is already minimal) ---
-    infer_session.set_input("noisy_latent", &noisy_latent);
-    infer_session.step();
-    infer_session.wait();
-    infer_session.set_input("noisy_latent", &noisy_latent);
-    let lat_start = Instant::now();
-    infer_session.step();
-    infer_session.wait();
-    let latency_ms = lat_start.elapsed().as_secs_f64() * 1000.0;
+    // Already warmed up from forward benchmarking; 3 warmup + best of 5.
+    let latency_ms = bench_session(&mut infer_session, &|s| {
+        s.set_input("noisy_latent", &noisy_latent);
+    });
+
+    // Drop inference session to free GPU memory before training.
+    drop(infer_session);
+
+    // --- Training step (separate graph for backward timing) ---
+    eprintln!("[meganeura] building SD U-Net training graph...");
+    let mut train_g = Graph::new();
+    let loss = sd_unet::build_training_graph(&mut train_g, &config);
+    train_g.set_outputs(vec![loss]);
+    let mut train_session = build_session(&train_g);
+    init_params(&mut train_session);
+
+    // Warm-up training: 3 runs + best of 5.
+    let train_ms = bench_session(&mut train_session, &|s| {
+        s.set_input("noisy_latent", &noisy_latent);
+        s.set_input("noise_target", &noise_target);
+    });
+    let backward_ms = (train_ms - forward_ms).max(0.0);
 
     let grad_norm = compute_grad_norm(&train_session);
 
@@ -611,18 +661,12 @@ fn bench_resnet() {
     let batch: u32 = 4;
     let scale: f32 = 0.01; // small scale to prevent explosion with identity BN
 
-    // Two graphs: inference (returns logits) for output validation, and a
-    // separate training graph (logits + CE loss) for backward timing.
     eprintln!("[meganeura] building ResNet inference graph...");
     let compile_start = Instant::now();
     let mut infer_g = Graph::new();
     let logits_node = resnet::build_resnet50(&mut infer_g, batch);
     infer_g.set_outputs(vec![logits_node]);
     let mut infer_session = build_inference_session(&infer_g);
-
-    eprintln!("[meganeura] building ResNet training graph...");
-    let training_g = resnet::build_resnet50_training(batch);
-    let mut train_session = build_session(&training_g);
 
     let compile_s = compile_start.elapsed().as_secs_f64();
     eprintln!("[meganeura] ready (compile: {compile_s:.2}s)");
@@ -657,7 +701,6 @@ fn bench_resnet() {
         }
     };
     init_params(&mut infer_session);
-    init_params(&mut train_session);
 
     // --- Inputs ---
     let in_size = (batch * 3 * 224 * 224) as usize;
@@ -669,15 +712,10 @@ fn bench_resnet() {
     }
 
     // --- Forward (inference graph: returns logits) ---
-    infer_session.set_input("image", &images);
-    infer_session.step();
-    infer_session.wait();
-
-    infer_session.set_input("image", &images);
-    let fwd_start = Instant::now();
-    infer_session.step();
-    infer_session.wait();
-    let forward_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
+    // Warm-up + timed: 3 warmup runs + best of 5.
+    let forward_ms = bench_session(&mut infer_session, &|s| {
+        s.set_input("image", &images);
+    });
 
     let logits = infer_session.read_output((batch * 1000) as usize);
     // Cross-entropy on CPU with the same one-hot labels (matches PyTorch's
@@ -693,22 +731,6 @@ fn bench_resnet() {
     let loss = total_loss / batch as f64;
     eprintln!("[meganeura] forward: {forward_ms:.2}ms, loss={loss:.6}");
 
-    // --- Training step (separate graph for backward timing) ---
-    train_session.set_input("image", &images);
-    train_session.set_input("labels", &one_hot_labels);
-    train_session.step();
-    train_session.wait();
-
-    train_session.set_input("image", &images);
-    train_session.set_input("labels", &one_hot_labels);
-    let bwd_start = Instant::now();
-    train_session.step();
-    train_session.wait();
-    let train_ms = bwd_start.elapsed().as_secs_f64() * 1000.0;
-    let backward_ms = (train_ms - forward_ms).max(0.0);
-
-    let grad_norm = compute_grad_norm(&train_session);
-
     // --- Latency (single-image) ---
     let lat_images: Vec<f32> = vec![0.0; (3 * 224 * 224) as usize];
     let mut lat_g = Graph::new();
@@ -716,14 +738,29 @@ fn bench_resnet() {
     lat_g.set_outputs(vec![lat_logits]);
     let mut lat_session = build_inference_session(&lat_g);
     init_params(&mut lat_session);
-    lat_session.set_input("image", &lat_images);
-    lat_session.step();
-    lat_session.wait();
-    lat_session.set_input("image", &lat_images);
-    let lat_start = Instant::now();
-    lat_session.step();
-    lat_session.wait();
-    let latency_ms = lat_start.elapsed().as_secs_f64() * 1000.0;
+    // Warm-up + timed: 3 warmup runs + best of 5.
+    let latency_ms = bench_session(&mut lat_session, &|s| {
+        s.set_input("image", &lat_images);
+    });
+
+    // Drop inference sessions to free GPU memory before training.
+    drop(infer_session);
+    drop(lat_session);
+
+    // --- Training step (separate graph for backward timing) ---
+    eprintln!("[meganeura] building ResNet training graph...");
+    let training_g = resnet::build_resnet50_training(batch);
+    let mut train_session = build_session(&training_g);
+    init_params(&mut train_session);
+
+    // Warm-up training: 3 runs + best of 5.
+    let train_ms = bench_session(&mut train_session, &|s| {
+        s.set_input("image", &images);
+        s.set_input("labels", &one_hot_labels);
+    });
+    let backward_ms = (train_ms - forward_ms).max(0.0);
+
+    let grad_norm = compute_grad_norm(&train_session);
 
     emit_result(
         "ResNet-50",
@@ -755,12 +792,6 @@ fn bench_whisper() {
 
     eprintln!("[meganeura] compiling inference session...");
     let mut session = build_inference_session(&infer_g);
-
-    // Separate training graph (encoder + tiny classifier head + CE loss).
-    // PyTorch ground truth uses encoder MSE, so we only use this for backward timing.
-    eprintln!("[meganeura] building + compiling Whisper training graph...");
-    let train_g = whisper::build_training_graph(&config, batch, mel_len);
-    let mut train_session = build_session(&train_g);
 
     // Load weights with deterministic init matching PyTorch encoder.
     let transposed = whisper::transposed_weight_names(&config);
@@ -813,7 +844,6 @@ fn bench_whisper() {
         }
     };
     init_params(&mut session);
-    init_params(&mut train_session);
 
     let compile_s = compile_start.elapsed().as_secs_f64();
     eprintln!("[meganeura] ready (compile: {compile_s:.2}s)");
@@ -826,45 +856,40 @@ fn bench_whisper() {
         one_hot_labels[t * num_classes + (t % num_classes)] = 1.0;
     }
 
-    // Warm-up (first step compiles Vulkan pipelines).
-    session.set_input("mel", &mel);
-    session.step();
-    session.wait();
-
-    session.set_input("mel", &mel);
-    let fwd_start = Instant::now();
-    session.step();
-    session.wait();
-    let forward_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
+    // Warm-up + timed: 3 warmup runs + best of 5.
+    let forward_ms = bench_session(&mut session, &|s| {
+        s.set_input("mel", &mel);
+    });
 
     let output = session.read_output((batch * seq_len * d_model as u32) as usize);
     // MSE loss (encoder output vs zero) — matches PyTorch ground truth.
     let loss: f64 = output.iter().map(|&v| (v as f64).powi(2)).sum::<f64>() / output.len() as f64;
     eprintln!("[meganeura] forward: {forward_ms:.2}ms, loss={loss:.6}");
 
+    // --- Latency ---
+    // Already warmed up from forward benchmarking; 3 warmup + best of 5.
+    let latency_ms = bench_session(&mut session, &|s| {
+        s.set_input("mel", &mel);
+    });
+
+    // Drop inference session to free GPU memory before training.
+    drop(session);
+
     // --- Training step ---
     // NOTE: on AMD/RADV the backward kernels (GELU at [576000]) can cause a GPU
     // context loss; the main harness forces the NVIDIA ICD via VK_ICD_FILENAMES.
-    train_session.set_input("mel", &mel);
-    train_session.set_input("labels", &one_hot_labels);
-    train_session.step();
-    train_session.wait();
+    eprintln!("[meganeura] building + compiling Whisper training graph...");
+    let train_g = whisper::build_training_graph(&config, batch, mel_len);
+    let mut train_session = build_session(&train_g);
+    init_params(&mut train_session);
 
-    train_session.set_input("mel", &mel);
-    train_session.set_input("labels", &one_hot_labels);
-    let bwd_start = Instant::now();
-    train_session.step();
-    train_session.wait();
-    let train_ms = bwd_start.elapsed().as_secs_f64() * 1000.0;
+    // Warm-up training: 3 runs + best of 5.
+    let train_ms = bench_session(&mut train_session, &|s| {
+        s.set_input("mel", &mel);
+        s.set_input("labels", &one_hot_labels);
+    });
     let backward_ms = (train_ms - forward_ms).max(0.0);
     let grad_norm = compute_grad_norm(&train_session);
-
-    // --- Latency ---
-    session.set_input("mel", &mel);
-    let lat_start = Instant::now();
-    session.step();
-    session.wait();
-    let latency_ms = lat_start.elapsed().as_secs_f64() * 1000.0;
 
     emit_result(
         "Whisper-tiny",

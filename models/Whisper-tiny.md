@@ -47,13 +47,13 @@ Benchmark config: 30s mel spectrogram (80x3000), 4-token decoder input, float32,
 | | [Meganeura](https://github.com/kvark/meganeura/tree/ef9c251) (Vulkan) | 0.49 | 7.3 | 7.3 | 10 | 0.01 |
 | | [GGML](https://github.com/ggerganov/ggml) (faster-whisper (CTranslate2, CUDA)) | 6.70 | 24 | 22 | — | 0.00 |
 | | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | 1.80 | 3.4 | — | — | 0.01 |
-| NVIDIA GeForce RTX 3050 (Windows) | [PyTorch 2.11.0+cu128](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 12.8) | 0.00 | **13** | **12** | **43** | 0.00 |
+| NVIDIA GeForce RTX 3050 (Windows) | [PyTorch 2.11.0+cu128](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 12.8) | 0.00 | **13** | **13** | **43** | 0.00 |
 | | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
 | | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |
 | | [Luminal](https://github.com/luminal-ai/luminal) | — | — | — | — | |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/ef9c251) (Vulkan/DX12) | 0.64 | 19 | 19 | 44 | 0.01 |
-| | [GGML](https://github.com/ggerganov/ggml) (faster-whisper (CTranslate2, CUDA)) | 5.91 | 42 | 37 | — | 0.00 |
-| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | 4.74 | 20 | — | — | 0.01 |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/ef9c251) (Vulkan/DX12) | 0.66 | 19 | 19 | 43 | 0.01 |
+| | [GGML](https://github.com/ggerganov/ggml) (faster-whisper (CTranslate2, CUDA)) | 7.00 | 40 | 45 | — | 0.00 |
+| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | 4.82 | 20 | — | — | 0.01 |
 | | [JAX](https://github.com/jax-ml/jax) | ✗ | ✗ | ✗ | ✗ | |
 
 **Correctness:** PyTorch vs ONNX Runtime: **PASS** (loss diff 0.0).

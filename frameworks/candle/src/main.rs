@@ -1,13 +1,66 @@
 //! Candle framework benchmark runner for inferena.
 //!
-//! Uses candle-transformers' LLaMA implementation with random-init weights.
+//! Uses candle-transformers' real model implementations. ResNet-50 uses a
+//! deterministic name-seeded sin-init backend matching the PyTorch bench's
+//! `_resnet_init`; SmolLM2 loads real safetensors when available; Whisper
+//! and StableDiffusion currently use `VarBuilder::zeros` (see caveats).
 //! Supports CPU, CUDA (--features cuda), and Metal (--features metal).
 
-use candle_core::{DType, Device, Module, Tensor};
-use candle_nn::VarBuilder;
+use candle_core::{DType, Device, Module, Shape, Tensor};
+use candle_nn::var_builder::SimpleBackend;
+use candle_nn::{Init, VarBuilder};
 use candle_transformers::models::llama as llama_model;
 use sha2::{Digest, Sha256};
 use std::time::Instant;
+
+/// Deterministic name-seeded sin-init backend matching the PyTorch bench's
+/// `_name_seeded_init` / `_resnet_init`: each parameter is filled with
+/// `sin(arange(n) * 0.01 + seed) * scale`, where `seed = hash(name) % 10000`.
+///
+/// Layers that pass `Init::Const(c)` as an init hint (e.g. BatchNorm's
+/// running_mean/running_var/weight/bias) are filled with the constant. This
+/// keeps BN identity in eval mode, matching how the PyTorch reference
+/// initializes ResNet.
+struct SinInit {
+    scale: f64,
+}
+
+fn name_seed(name: &str) -> f64 {
+    let mut h: u32 = 0;
+    for b in name.bytes() {
+        h = h.wrapping_mul(31).wrapping_add(b as u32);
+    }
+    (h % 10000) as f64
+}
+
+impl SimpleBackend for SinInit {
+    fn get(
+        &self,
+        s: Shape,
+        name: &str,
+        h: Init,
+        dtype: DType,
+        dev: &Device,
+    ) -> candle_core::Result<Tensor> {
+        if let Init::Const(c) = h {
+            return Tensor::full(c as f32, s, dev)?.to_dtype(dtype);
+        }
+        let n = s.elem_count();
+        let seed = name_seed(name);
+        let data: Vec<f32> = (0..n)
+            .map(|i| ((i as f64 * 0.01 + seed).sin() * self.scale) as f32)
+            .collect();
+        Tensor::from_vec(data, s, dev)?.to_dtype(dtype)
+    }
+
+    fn get_unchecked(&self, _name: &str, _dtype: DType, _dev: &Device) -> candle_core::Result<Tensor> {
+        candle_core::bail!("SinInit requires a shape for tensor retrieval, use `get`")
+    }
+
+    fn contains_tensor(&self, _name: &str) -> bool {
+        true
+    }
+}
 
 /// Select the best available device based on compile-time features.
 fn select_device() -> Device {
@@ -318,7 +371,7 @@ fn bench_resnet() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("[candle] building ResNet-50...");
     let compile_start = Instant::now();
-    let vb = VarBuilder::zeros(dtype, &device);
+    let vb = VarBuilder::from_backend(Box::new(SinInit { scale: 0.01 }), dtype, device.clone());
     let model = resnet::resnet50(1000, vb)?;
     let compile_s = compile_start.elapsed().as_secs_f64();
     eprintln!("[candle] built in {compile_s:.2}s");

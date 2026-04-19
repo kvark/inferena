@@ -43,6 +43,12 @@ if [ -z "${PYTHON:-}" ]; then
 fi
 export PYTHON
 
+# Force UTF-8 I/O. Windows' default cp1252 stdout chokes when libraries
+# (e.g. torch.onnx's dynamo exporter) print non-ASCII characters, killing
+# the subprocess with UnicodeEncodeError even if the real work succeeded.
+export PYTHONIOENCODING="utf-8"
+export PYTHONUTF8="1"
+
 # --- Expose CUDA libraries bundled by pip packages (e.g. nvidia-cublas-cu12) ---
 # Linux-only: Windows pip wheels ship CUDA DLLs in site-packages/nvidia/*/bin
 # and the runtime loader is PATH, not LD_LIBRARY_PATH. Torch/ORT wheels on

@@ -52,9 +52,9 @@ Most frameworks (PyTorch, Meganeura, ONNX Runtime, JAX, MLX) run the **simplifie
 | | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
 | | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |
 | | [Luminal](https://github.com/luminal-ai/luminal) | — | — | — | — | |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/ef9c251) (Vulkan/DX12) | 0.48 | 3.1 | 3.0 | 8.0 | 0.52 |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/ef9c251) (Vulkan/DX12) | 0.50 | 3.1 | 3.1 | 7.8 | 0.52 |
 | | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
-| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | ~~1.71~~ | ~~2.4~~ | ~~—~~ | ~~—~~ | ~~0.05~~ |
+| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | ~~1.70~~ | ~~4.0~~ | ~~—~~ | ~~—~~ | ~~0.05~~ |
 | | [JAX](https://github.com/jax-ml/jax) | ✗ | ✗ | ✗ | ✗ | |
 | Intel Graphics (RPL-U) | [PyTorch](https://github.com/pytorch/pytorch) | ✗ | ✗ | ✗ | ✗ | |
 |  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | 0.00 | **16876** | — | — | 0.00 |

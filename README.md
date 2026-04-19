@@ -15,7 +15,7 @@ links in the results tables always point to the exact revision tested.
 
 | Framework | Language | GPU Backend |
 |-----------|----------|-------------|
-| [PyTorch](https://pytorch.org/) | Python | CUDA / ROCm / MPS |
+| [PyTorch](https://pytorch.org/) | Python | CUDA / ROCm / XPU / MPS |
 | [Candle](https://github.com/huggingface/candle) | Rust | CUDA / Metal / CPU |
 | [Burn](https://github.com/tracel-ai/burn) | Rust | wgpu (Vulkan / Metal / DX12) |
 | [Luminal](https://github.com/luminal-ai/luminal) | Rust | CUDA / Metal / CPU |
@@ -28,7 +28,7 @@ links in the results tables always point to the exact revision tested.
 
 | Framework | Linux | macOS | Windows |
 |-----------|:-----:|:-----:|:-------:|
-| PyTorch | CUDA, ROCm, CPU | MPS, CPU | CPU |
+| PyTorch | CUDA, ROCm, XPU, CPU | MPS, CPU | CPU |
 | ONNX Runtime | CUDA, TensorRT, CPU | CoreML, CPU | DirectML, CPU |
 | JAX | CUDA, TPU, CPU | CPU | CPU |
 | Candle | CUDA, CPU | Metal, CPU | CPU |
@@ -83,6 +83,14 @@ sudo apt install nvidia-cuda-toolkit        # nvcc — needed for Candle, Lumina
 
 # AMD GPU:
 # sudo apt install rocm-libs                # ROCm runtime
+
+# Intel GPU (Arc, Data Center GPU, Xe iGPU):
+# sudo apt install libze-intel-gpu1 libze1 intel-opencl-icd
+# SYCL/oneMKL runtime libs ship as dependencies of the torch+xpu wheel.
+
+# Enable torch.compile on CPU (Inductor needs Python headers + g++):
+# sudo apt install python3-dev g++
+# Without these, the pytorch runner falls back to eager mode.
 ```
 
 Run `./run.sh --check` after setup to verify what's working and get
@@ -94,6 +102,7 @@ install hints for anything missing.
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-nvidia.txt       # NVIDIA CUDA
 # pip install -r requirements-amd.txt        # AMD ROCm
+# pip install -r requirements-intel.txt      # Intel XPU (Arc / Xe iGPU)
 # pip install -r requirements-apple.txt      # Apple Metal
 # pip install -r requirements-cpu.txt        # CPU only
 ./run.sh                                     # all models, all frameworks

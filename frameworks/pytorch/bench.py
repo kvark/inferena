@@ -226,10 +226,23 @@ def sync():
         torch.mps.synchronize()
 
 
+def _xpu_actually_works() -> bool:
+    """XPU may report available but fail at kernel-launch time on older Intel
+    iGPUs (Gen12 Raptor/Alder Lake UHD) — JIT compilation aborts with
+    "program was built for 1 devices". Probe with a trivial matmul."""
+    try:
+        x = torch.ones(4, 4, device="xpu")
+        _ = (x @ x.t()).cpu()
+        return True
+    except Exception as e:
+        print(f"[pytorch] XPU present but compute probe failed ({e}); falling back", file=sys.stderr)
+        return False
+
+
 def detect_device() -> str:
     if torch.cuda.is_available():
         return "cuda:0"
-    if hasattr(torch, "xpu") and torch.xpu.is_available():
+    if hasattr(torch, "xpu") and torch.xpu.is_available() and _xpu_actually_works():
         return "xpu:0"
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return "mps"
@@ -681,31 +694,43 @@ def bench(model_name: str, spec: dict):
         print("[pytorch] compiling with torch.compile()...", file=sys.stderr)
         clear_compile_cache()
         compile_t0 = time.perf_counter()
-        model = torch.compile(model)
+        try:
+            compiled = torch.compile(model)
 
-        # Force compilation with a dummy forward+backward pass.
-        # Must run WITH gradients — compiling under no_grad() produces different
-        # code, causing a costly recompilation on the first grad-enabled forward.
-        dummy_kwargs = prepare_inputs(model_type, model, dev)
-        if model_type == "sd_unet":
-            dummy_out = model(dummy_kwargs["noisy_latent"])
-            F.mse_loss(dummy_out, dummy_kwargs["noise_target"]).backward()
-        elif model_type == "smolvla":
-            dummy_out = model(**dummy_kwargs)
-            F.mse_loss(dummy_out, torch.zeros_like(dummy_out)).backward()
-        elif model_type == "resnet":
-            dummy_out = model(dummy_kwargs["images"])
-            F.cross_entropy(dummy_out, dummy_kwargs["labels"]).backward()
-        elif model_type == "whisper":
-            dummy_out = model(dummy_kwargs["input_features"])
-            dummy_out.last_hidden_state.sum().backward()
-        else:
-            dummy_out = model(**dummy_kwargs)
-            dummy_out.loss.backward()
-        model.zero_grad()
-        sync()
-        compile_s = time.perf_counter() - compile_t0
-        print(f"[pytorch] compiled in {compile_s:.2f}s", file=sys.stderr)
+            # Force compilation with a dummy forward+backward pass.
+            # Must run WITH gradients — compiling under no_grad() produces different
+            # code, causing a costly recompilation on the first grad-enabled forward.
+            dummy_kwargs = prepare_inputs(model_type, compiled, dev)
+            if model_type == "sd_unet":
+                dummy_out = compiled(dummy_kwargs["noisy_latent"])
+                F.mse_loss(dummy_out, dummy_kwargs["noise_target"]).backward()
+            elif model_type == "smolvla":
+                dummy_out = compiled(**dummy_kwargs)
+                F.mse_loss(dummy_out, torch.zeros_like(dummy_out)).backward()
+            elif model_type == "resnet":
+                dummy_out = compiled(dummy_kwargs["images"])
+                F.cross_entropy(dummy_out, dummy_kwargs["labels"]).backward()
+            elif model_type == "whisper":
+                dummy_out = compiled(dummy_kwargs["input_features"])
+                dummy_out.last_hidden_state.sum().backward()
+            else:
+                dummy_out = compiled(**dummy_kwargs)
+                dummy_out.loss.backward()
+            compiled.zero_grad()
+            sync()
+            model = compiled
+            compile_s = time.perf_counter() - compile_t0
+            print(f"[pytorch] compiled in {compile_s:.2f}s", file=sys.stderr)
+        except Exception as e:
+            # Inductor CPU backend needs a C++ toolchain + Python headers
+            # (Python.h). On minimal Linux setups without python3-dev this
+            # fails; XPU/CUDA kernel compilation can also fail on unsupported
+            # hardware. Eager mode still runs — keep going with zero compile
+            # time so the rest of the bench still produces valid results.
+            msg = str(e).split("\n")[0][:200]
+            print(f"[pytorch] torch.compile failed ({msg}); falling back to eager", file=sys.stderr)
+            torch._dynamo.reset()
+            compile_s = 0.0
 
     # --- Prepare deterministic input ---
     fwd_kwargs = prepare_inputs(model_type, model, dev)

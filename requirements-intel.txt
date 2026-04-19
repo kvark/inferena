@@ -1,0 +1,17 @@
+# Intel XPU (Arc, Data Center GPU Max/Flex, newer Xe iGPUs).
+# The `+xpu` local version outranks the plain CPU wheel on PyPI, so pip picks
+# the XPU build even with `torch>=2.0` in requirements-common.txt. Runtime
+# SYCL/oneMKL libraries are pulled as dependencies of the torch wheel.
+--index-url https://download.pytorch.org/whl/xpu
+--extra-index-url https://pypi.org/simple
+
+-r requirements-common.txt
+
+# Intel XPU support is patchy on pre-Arc integrated GPUs (Gen12 UHD on
+# Raptor/Alder Lake etc.) — kernel JIT can fail with "program was built for
+# 1 devices". The pytorch runner probes XPU with a tiny matmul and falls
+# back to CPU on failure, so the bench still produces valid results.
+
+# CPU-targeted runtimes for frameworks without XPU support.
+onnxruntime
+jax

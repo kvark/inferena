@@ -82,7 +82,8 @@ print("yes" if llama_supports_gpu_offload() else "no")
             _CMAKE_BACKEND=""
             if [ "$(uname -s)" = "Darwin" ]; then
                 _CMAKE_BACKEND="-DGGML_METAL=ON"
-            elif command -v vulkaninfo &>/dev/null && dpkg -l libvulkan-dev &>/dev/null 2>&1; then
+            elif command -v vulkaninfo &>/dev/null && \
+                 dpkg-query -W -f='${Status}' libvulkan-dev 2>/dev/null | grep -q 'install ok installed'; then
                 _CMAKE_BACKEND="-DGGML_VULKAN=ON"
             elif command -v nvcc &>/dev/null || [ -d /usr/local/cuda ]; then
                 _CMAKE_BACKEND="-DGGML_CUDA=ON"

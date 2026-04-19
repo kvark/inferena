@@ -184,7 +184,12 @@ def _export_causal_lm_onnx(onnx_path, model_dir):
         except Exception as e:
             print(f"[onnxruntime] cannot load model: {e}", file=sys.stderr)
             sys.exit(1)
-    model = AutoModelForCausalLM.from_pretrained(src, torch_dtype=torch.float32)
+    # Force eager attention implementation — SDPA/GQA paths have tracing
+    # bugs in torch 2.11's dynamo ONNX exporter (SymbolicDim comparison) and
+    # in transformers' legacy-exporter masking_utils (empty tuple shape).
+    model = AutoModelForCausalLM.from_pretrained(
+        src, torch_dtype=torch.float32, attn_implementation="eager",
+    )
     model.eval()
 
     # Wrap to return only logits (avoids DynamicCache tracing issues).
@@ -200,18 +205,37 @@ def _export_causal_lm_onnx(onnx_path, model_dir):
     dummy_ids = torch.arange(seq_len, dtype=torch.long).unsqueeze(0)
     dummy_mask = torch.ones(1, seq_len, dtype=torch.long)
     os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
-    torch.onnx.export(
-        wrapper, (dummy_ids, dummy_mask), onnx_path,
-        input_names=["input_ids", "attention_mask"],
-        output_names=["logits"],
-        opset_version=17,
-        dynamic_axes={
-            "input_ids": {0: "batch", 1: "seq"},
-            "attention_mask": {0: "batch", 1: "seq"},
-            "logits": {0: "batch", 1: "seq"},
-        },
-        dynamo=True,
-    )
+    # Try the dynamo exporter first; fall back to the legacy TorchScript path.
+    # torch 2.11 + onnxscript 0.6 can fail on GQA's scaled_dot_product_attention
+    # with a SymbolicDim comparison error — the legacy exporter still handles it.
+    try:
+        torch.onnx.export(
+            wrapper, (dummy_ids, dummy_mask), onnx_path,
+            input_names=["input_ids", "attention_mask"],
+            output_names=["logits"],
+            opset_version=17,
+            dynamic_axes={
+                "input_ids": {0: "batch", 1: "seq"},
+                "attention_mask": {0: "batch", 1: "seq"},
+                "logits": {0: "batch", 1: "seq"},
+            },
+            dynamo=True,
+        )
+    except Exception as e:
+        msg = str(e).split("\n")[0][:200]
+        print(f"[onnxruntime] dynamo export failed ({msg}); retrying with legacy exporter", file=sys.stderr)
+        torch.onnx.export(
+            wrapper, (dummy_ids, dummy_mask), onnx_path,
+            input_names=["input_ids", "attention_mask"],
+            output_names=["logits"],
+            opset_version=17,
+            dynamic_axes={
+                "input_ids": {0: "batch", 1: "seq"},
+                "attention_mask": {0: "batch", 1: "seq"},
+                "logits": {0: "batch", 1: "seq"},
+            },
+            dynamo=False,
+        )
 
 
 def bench_causal_lm(model_name):

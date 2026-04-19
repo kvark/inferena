@@ -56,12 +56,15 @@ Benchmark config: chunk_size=50, vlm_seq_len=16, float32, random weights, MSE lo
 | | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
 | | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | 4.14 | 4.9 | — | — | 0.00 |
 | | [JAX](https://github.com/jax-ml/jax) | ✗ | ✗ | ✗ | ✗ | |
-| Intel Graphics (RPL-U) | [PyTorch](https://github.com/pytorch/pytorch) | ✗ | ✗ | ✗ | ✗ | |
-|  | [Candle](https://github.com/huggingface/candle) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-|  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | ✗ | |
-|  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-|  | [Meganeura](https://github.com/kvark/meganeura/tree/77ceb78) (Vulkan) | **2.62** | **114** | — | **188** | 0.01 |
-|  | [llama.cpp](https://github.com/ggml-org/llama.cpp) (CPU) | ✗ | ✗ | ✗ | ✗ | |
+| Intel(R) Graphics (RPL-U) | [PyTorch](https://github.com/pytorch/pytorch) | ✗ | ✗ | ✗ | ✗ | |
+| | [Candle](https://github.com/huggingface/candle) | — | — | — | — | |
+| | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
+| | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |
+| | [Luminal](https://github.com/luminal-ai/luminal) | — | — | — | — | |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/ef9c251) (Vulkan) | **0.50** | **62** | **25** | **219** | 0.00 |
+| | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
+| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CPUExecutionProvider) | 10.00 | 111 | — | — | 0.00 |
+| | [JAX](https://github.com/jax-ml/jax) (CPU) | 4.02 | 172 | — | 473 | 0.00 |
 
 **Correctness:** PyTorch vs Meganeura: **CLOSE** (loss diff 1e-5, max error 4.6e-3).
 

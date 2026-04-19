@@ -967,6 +967,33 @@ fn main() {
         return;
     }
 
+    // Pipeline-stats-driven auto-tune: spin up a temporary GPU context,
+    // measure register counts for each flash kernel × candidate EPT and
+    // for the fused ops the e-graph cost model recognizes, then install
+    // the result in process globals. Subsequent Sessions and graph
+    // optimizations pick it up automatically.
+    //
+    // Skipped for ResNet-50 (no flash attention) and skip-able
+    // explicitly via INFERENA_MEGANEURA_SKIP_AUTOTUNE=1.
+    if model_name != "ResNet-50"
+        && std::env::var("INFERENA_MEGANEURA_SKIP_AUTOTUNE").as_deref() != Ok("1")
+    {
+        let gpu = meganeura::runtime::init_gpu_context()
+            .expect("[meganeura] failed to init GPU for auto-tune");
+        let auto_start = Instant::now();
+        let result = meganeura::runtime::auto_tune(&gpu, 64);
+        eprintln!(
+            "[meganeura] auto-tune ({:.2}s): forward={} grad_q={} grad_kv={} grad_k={} grad_v={}",
+            auto_start.elapsed().as_secs_f64(),
+            result.flash_ept.forward_cap,
+            result.flash_ept.grad_q_cap,
+            result.flash_ept.grad_kv_cap,
+            result.flash_ept.grad_k_cap,
+            result.flash_ept.grad_v_cap,
+        );
+        meganeura::runtime::install_auto_tune(result);
+    }
+
     match model_name.as_str() {
         "SmolLM2-135M" => bench_smollm2(&model_name),
         "SmolVLA" => bench_smolvla(),

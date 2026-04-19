@@ -968,16 +968,12 @@ fn main() {
     }
 
     // Pipeline-stats-driven auto-tune: spin up a temporary GPU context,
-    // measure register counts for each flash kernel × candidate EPT and
-    // for the fused ops the e-graph cost model recognizes, then install
-    // the result in process globals. Subsequent Sessions and graph
-    // optimizations pick it up automatically.
-    //
-    // Skipped for ResNet-50 (no flash attention) and skip-able
-    // explicitly via INFERENA_MEGANEURA_SKIP_AUTOTUNE=1.
-    if model_name != "ResNet-50"
-        && std::env::var("INFERENA_MEGANEURA_SKIP_AUTOTUNE").as_deref() != Ok("1")
-    {
+    // measure register counts for each flash kernel × candidate EPT,
+    // measure fused-op register costs the e-graph cost model uses,
+    // and probe cooperative_matrix support so the conv backward path
+    // can pick Conv2dGradInputGemmCoop3x3. Skip-able via
+    // INFERENA_MEGANEURA_SKIP_AUTOTUNE=1.
+    if std::env::var("INFERENA_MEGANEURA_SKIP_AUTOTUNE").as_deref() != Ok("1") {
         let gpu = meganeura::runtime::init_gpu_context()
             .expect("[meganeura] failed to init GPU for auto-tune");
         let auto_start = Instant::now();

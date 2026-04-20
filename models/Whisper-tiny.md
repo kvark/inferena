@@ -39,14 +39,15 @@ Benchmark config: 30s mel spectrogram (80x3000), 4-token decoder input, float32,
 | | [GGML](https://github.com/ggerganov/ggml) | ✗ | ✗ | ✗ | ✗ | |
 | | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CoreMLExecutionProvider) | 7.93 | 440 | — | — | 0.01 |
 | | [JAX](https://github.com/jax-ml/jax) (METAL) | 2.17 | 128 | 315 | 445 | 0.01 |
-| NVIDIA GeForce RTX 5080 | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 13.0) | 3.85 | **2.3** | **2.1** | **9.5** | 0.00 |
-| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CUDA) | **0.01** | 43 | — | — | 0.00 |
+| NVIDIA GeForce RTX 5080 | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 13.0) | 4.04 | **2.3** | **2.1** | 13 | 0.00 |
+| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CUDA) | **0.01** | 44 | — | — | 0.00 |
 | | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
 | | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |
 | | [Luminal](https://github.com/luminal-ai/luminal) | — | — | — | — | |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/ef9c251) (Vulkan) | 0.49 | 7.3 | 7.3 | 10 | 0.01 |
-| | [GGML](https://github.com/ggerganov/ggml) (faster-whisper (CTranslate2, CUDA)) | 6.70 | 24 | 22 | — | 0.00 |
-| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | 1.80 | 3.4 | — | — | 0.01 |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/8042e00) (Vulkan) | 0.48 | 2.9 | 2.8 | **12** | 0.01 |
+| | [GGML](https://github.com/ggerganov/ggml) (faster-whisper (CTranslate2, CUDA)) | 7.05 | 19 | 19 | — | 0.00 |
+| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | 1.94 | 3.5 | — | — | 0.01 |
+| | [MAX](https://github.com/modular/modular) | — | — | — | — | |
 | NVIDIA GeForce RTX 3050 (Windows) | [PyTorch 2.11.0+cu128](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 12.8) | 0.00 | **13** | **13** | **43** | 0.00 |
 | | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
 | | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |

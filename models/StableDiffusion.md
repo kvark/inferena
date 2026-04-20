@@ -40,14 +40,15 @@ Most frameworks (PyTorch, Meganeura, ONNX Runtime, JAX, MLX) run the **simplifie
 | | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
 | | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CoreMLExecutionProvider) | ~~2.38~~ | ~~12~~ | ~~—~~ | ~~—~~ | ~~0.05~~ |
 | | [JAX](https://github.com/jax-ml/jax) (METAL) | ~~0.72~~ | ~~6.0~~ | ~~—~~ | ~~25~~ | ~~0.05~~ |
-| NVIDIA GeForce RTX 5080 | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 13.0) | 6.22 | **0.9** | **0.8** | **1.3** | 0.50 |
-| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CUDA) | ~~0.01~~ | ~~91~~ | ~~—~~ | ~~—~~ | ~~0.00~~ |
+| NVIDIA GeForce RTX 5080 | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 13.0) | 6.35 | **1.0** | **0.9** | **1.4** | 0.50 |
+| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CUDA) | ~~0.01~~ | ~~108~~ | ~~—~~ | ~~—~~ | ~~0.00~~ |
 | | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
 | | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |
 | | [Luminal](https://github.com/luminal-ai/luminal) | — | — | — | — | |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/ef9c251) (Vulkan) | **0.43** | 1.0 | 0.9 | 5.8 | 0.53 |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/8042e00) (Vulkan) | **0.42** | **1.0** | 0.9 | 5.5 | 0.53 |
 | | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
-| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | ~~0.78~~ | ~~0.8~~ | ~~—~~ | ~~—~~ | ~~0.05~~ |
+| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | ~~0.84~~ | ~~0.8~~ | ~~—~~ | ~~—~~ | ~~0.05~~ |
+| | [MAX](https://github.com/modular/modular) | — | — | — | — | |
 | NVIDIA GeForce RTX 3050 (Windows) | [PyTorch 2.11.0+cu128](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 12.8) | 0.00 | **1.4** | **1.0** | **4.7** | 0.50 |
 | | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
 | | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |

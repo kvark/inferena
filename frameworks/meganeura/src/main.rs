@@ -979,13 +979,9 @@ fn main() {
         let auto_start = Instant::now();
         let result = meganeura::runtime::auto_tune(&gpu, 64);
         eprintln!(
-            "[meganeura] auto-tune ({:.2}s): forward={} grad_q={} grad_kv={} grad_k={} grad_v={}",
+            "[meganeura] auto-tune ({:.2}s): coop_matrix={}",
             auto_start.elapsed().as_secs_f64(),
-            result.flash_ept.forward_cap,
-            result.flash_ept.grad_q_cap,
-            result.flash_ept.grad_kv_cap,
-            result.flash_ept.grad_k_cap,
-            result.flash_ept.grad_v_cap,
+            result.coop_caps.is_supported(),
         );
         meganeura::runtime::install_auto_tune(result);
     }

@@ -36,13 +36,14 @@ Benchmark config: seq_len=128, float32, input=[0,1,...,127].
 | | [Meganeura](https://github.com/kvark/meganeura/tree/ef9c251) (Metal) | 1.50 | 201 | **9.1** | 464 | 8.65 |
 | | [GGML](https://github.com/ggerganov/ggml/tree/0.3.20) (Metal) | 0.38 | **49** | 11 | — | 8.69 |
 | | [JAX](https://github.com/jax-ml/jax) (METAL) | ~~3.13~~ | ~~47~~ | ~~21~~ | ~~253~~ | ~~5.79~~ |
-| NVIDIA GeForce RTX 5080 | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 13.0) | 16.31 | **3.8** | 2.8 | **6.5** | 8.35 |
-| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CUDA) | ~~0.04~~ | ~~27~~ | ~~2.4~~ | ~~—~~ | ~~10.80~~ |
-| | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/vulkan) | ~~0.00~~ | ~~81~~ | ~~26~~ | ~~86~~ | ~~11.80~~ |
+| NVIDIA GeForce RTX 5080 | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 13.0) | 16.83 | **4.0** | 2.8 | **6.5** | 8.35 |
+| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CUDA) | ~~0.05~~ | ~~48~~ | ~~2.4~~ | ~~—~~ | ~~10.80~~ |
+| | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/vulkan) | ~~0.00~~ | ~~154~~ | ~~26~~ | ~~86~~ | ~~11.69~~ |
 | | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/33dcf42) (Vulkan) | 1.93 | 6.4 | 2.7 | 23 | 8.64 |
-| | [GGML](https://github.com/ggerganov/ggml/tree/0.3.20) (CUDA) | **0.22** | 30 | **1.8** | — | 8.69 |
-| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | ~~21.39~~ | ~~6.1~~ | ~~3.9~~ | ~~—~~ | ~~6.01~~ 
+| | [Meganeura](https://github.com/kvark/meganeura/tree/8042e00) (Vulkan) | 0.87 | 5.2 | 2.2 | 17 | 8.64 |
+| | [GGML](https://github.com/ggerganov/ggml/tree/0.3.20) (CUDA) | **0.25** | 25 | **1.5** | — | 8.69 |
+| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | ~~20.54~~ | ~~5.2~~ | ~~3.1~~ | ~~—~~ | ~~6.01~~ |
+| | [MAX](https://github.com/modular/modular) (GPU) | ~~18.79~~ | ~~3.5~~ | ~~0.1~~ | ~~—~~ | ~~10.80~~ |
 | NVIDIA GeForce RTX 3050 (Windows) | [PyTorch 2.11.0+cu128](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 12.8) | 0.00 | **11** | 5.1 | **51** | 8.35 |
 | | [Burn](https://github.com/tracel-ai/burn/tree/ed72d2b) (wgpu/vulkan) | ~~0.00~~ | ~~125~~ | ~~28~~ | ~~138~~ | ~~11.76~~ |
 | | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |

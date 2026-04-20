@@ -54,6 +54,16 @@ Benchmark config: batch=4, 3x224x224, float32, random weights, cross-entropy los
 | | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
 | | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | 3.20 | 13 | 4.5 | — | 6.92 |
 | | [JAX](https://github.com/jax-ml/jax) | ✗ | ✗ | ✗ | ✗ | |
+| Intel(R) Graphics (RPL-U) | [PyTorch 2.11.0+xpu](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CPU) | 0.00 | 511 | 127 | **1048** | 6.92 |
+| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | 0.36 | 1187 | 368 | — | 6.92 |
+| | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
+| | [Inferi](https://github.com/dimforge/inferi) | — | — | — | — | |
+| | [Luminal](https://github.com/luminal-ai/luminal) | — | — | — | — | |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/8042e00) (Vulkan) | 0.77 | 225 | 73 | 1049 | 6.92 |
+| | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
+| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CPUExecutionProvider) | 5.75 | **204** | **53** | — | 6.92 |
+| | [MAX](https://github.com/modular/modular) | ✗ | ✗ | ✗ | ✗ | |
+| | [JAX](https://github.com/jax-ml/jax) (CPU) | 6.99 | 436 | 176 | 2813 | 6.92 |
 
 **Correctness:** PyTorch vs ONNX Runtime: **CLOSE** (loss diff 0.27, rel error 8.8%).
 

@@ -56,6 +56,16 @@ Benchmark config: 30s mel spectrogram (80x3000), 4-token decoder input, float32,
 | | [GGML](https://github.com/ggerganov/ggml) (faster-whisper (CTranslate2, CUDA)) | 7.00 | 40 | 45 | — | 0.00 |
 | | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | 4.82 | 20 | — | — | 0.01 |
 | | [JAX](https://github.com/jax-ml/jax) | ✗ | ✗ | ✗ | ✗ | |
+| Intel(R) Graphics (RPL-U) | [PyTorch 2.11.0+xpu](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CPU) | 0.00 | 477 | **420** | **899** | 0.00 |
+| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | 0.02 | 795 | — | — | 0.00 |
+| | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
+| | [Inferi](https://github.com/dimforge/inferi) | — | — | — | — | |
+| | [Luminal](https://github.com/luminal-ai/luminal) | — | — | — | — | |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/8042e00) (Vulkan) | 0.39 | 467 | 466 | 1594 | 0.01 |
+| | [GGML](https://github.com/ggerganov/ggml) (faster-whisper (CTranslate2, CPU)) | 14.76 | 1036 | 1104 | — | 0.00 |
+| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CPUExecutionProvider) | 6.18 | **333** | — | — | 0.01 |
+| | [MAX](https://github.com/modular/modular) | ✗ | ✗ | ✗ | ✗ | |
+| | [JAX](https://github.com/jax-ml/jax) (CPU) | 5.59 | 717 | 686 | 2681 | 0.01 |
 
 **Correctness:** PyTorch vs ONNX Runtime: **PASS** (loss diff 0.0).
 

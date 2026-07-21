@@ -39,15 +39,14 @@ Benchmark config: chunk_size=50, vlm_seq_len=16, float32, random weights, MSE lo
 | | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
 | | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CoreMLExecutionProvider) | 7.96 | 86 | — | — | 0.00 |
 | | [JAX](https://github.com/jax-ml/jax) (METAL) | 1.17 | 15 | — | 147 | 0.00 |
-| NVIDIA GeForce RTX 5080 | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 13.0) | 8.39 | 2.5 | **1.2** | **3.2** | 0.00 |
+| NVIDIA GeForce RTX 5080 | [PyTorch 2.13.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.13.0) (CUDA 13.0) | 9.30 | 2.0 | **1.1** | **2.6** | 0.00 |
 | | [Candle](https://github.com/huggingface/candle) | — | — | — | — | |
 | | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
-| | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |
-| | [Luminal](https://github.com/luminal-ai/luminal) | — | — | — | — | |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/8042e00) (Vulkan) | **0.47** | 3.2 | 1.5 | 9.1 | 0.00 |
+| | [Meganeura](https://github.com/kvark/meganeura/tree/a7ced10) (Vulkan) | **0.24** | 3.3 | 1.5 | 8.2 | 0.00 |
 | | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
-| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | 2.54 | **1.6** | — | — | 0.00 |
-| | [MAX](https://github.com/modular/modular) (GPU) | 33.04 | 32 | — | — | 0.00 |
+| | [ONNX Runtime 1.27.0](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | 2.64 | **1.5** | — | — | 0.00 |
+| | [MAX](https://github.com/modular/modular) (GPU) | 1.12 | 25 | — | — | 0.00 |
+| | [JAX 0.11.0](https://github.com/jax-ml/jax) (GPU) | 15.82 | 2.4 | — | 3.9 | 0.00 |
 | NVIDIA GeForce RTX 3050 (Windows) | [PyTorch 2.11.0+cu128](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 12.8) | 0.00 | **4.5** | 3.5 | **22** | 0.00 |
 | | [Candle](https://github.com/huggingface/candle) | — | — | — | — | |
 | | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |

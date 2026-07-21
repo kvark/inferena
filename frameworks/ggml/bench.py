@@ -128,16 +128,25 @@ def main():
                 backend = "Metal"
                 gpu_name = "metal"
             else:
-                # Distinguish CUDA/ROCm vs Vulkan.
-                try:
-                    import torch
-                    if torch.cuda.is_available():
-                        gpu_name = torch.cuda.get_device_name(0)
-                        backend = "ROCm" if torch.version.hip else "CUDA"
-                    else:
-                        backend = "Vulkan"
-                        gpu_name = "vulkan"
-                except ImportError:
+                # Distinguish CUDA/ROCm vs Vulkan by which backend llama.cpp
+                # was actually built with — torch.cuda.is_available() says
+                # nothing about that (this machine has a CUDA-capable torch
+                # even when llama-cpp-python was built with -DGGML_VULKAN=ON).
+                lib_dir = os.path.join(os.path.dirname(_lc.__file__), "lib")
+                has_lib = lambda name: os.path.isfile(os.path.join(lib_dir, name))
+                if has_lib("libggml-cuda.so") or has_lib("ggml-cuda.dll"):
+                    backend = "CUDA"
+                    gpu_name = "cuda"
+                    try:
+                        import torch
+                        if torch.cuda.is_available():
+                            gpu_name = torch.cuda.get_device_name(0)
+                    except ImportError:
+                        pass
+                elif has_lib("libggml-vulkan.so") or has_lib("ggml-vulkan.dll"):
+                    backend = "Vulkan"
+                    gpu_name = "vulkan"
+                else:
                     backend = "GPU"
                     gpu_name = "gpu"
     except (AttributeError, ImportError):

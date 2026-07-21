@@ -132,7 +132,10 @@ fn framework_meta(name: &str) -> (&'static str, &'static str) {
 
 /// Format framework name as a markdown link with backend.
 /// Revision comes from the runner's JSON output ("framework_rev" field),
-/// which each run.sh extracts from Cargo.lock.
+/// which each run.sh extracts from Cargo.lock. Python frameworks instead
+/// report their installed package version as a "<name>_version" field
+/// (e.g. "onnxruntime_version", "jax_version", "mlx_version") — pytorch is
+/// the one special case that links straight to its GitHub release tag.
 fn framework_md_link(name: &str, extra: &serde_json::Map<String, serde_json::Value>) -> String {
     let (display, url) = framework_meta(name);
     if url.is_empty() {
@@ -141,6 +144,11 @@ fn framework_md_link(name: &str, extra: &serde_json::Map<String, serde_json::Val
 
     let rev = extra
         .get("framework_rev")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let version_field = format!("{name}_version");
+    let version = extra
+        .get(&version_field)
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
@@ -155,6 +163,8 @@ fn framework_md_link(name: &str, extra: &serde_json::Map<String, serde_json::Val
         } else {
             format!("[{display}]({url})")
         }
+    } else if !version.is_empty() {
+        format!("[{display} {version}]({url})")
     } else if rev.is_empty() {
         format!("[{display}]({url})")
     } else {

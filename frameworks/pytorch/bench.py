@@ -714,8 +714,16 @@ def bench(model_name: str, spec: dict):
                 dummy_out = compiled(dummy_kwargs["input_features"])
                 dummy_out.last_hidden_state.sum().backward()
             else:
-                dummy_out = compiled(**dummy_kwargs)
-                dummy_out.loss.backward()
+                # Drop labels — HF's built-in `loss` shifts logits/labels by
+                # one position internally, assuming labels are input_ids-
+                # aligned. Ours are pre-shifted (labels[i] = next token after
+                # position i), so relying on outputs.loss double-shifts.
+                dummy_kw = {k: v for k, v in dummy_kwargs.items() if k != "labels"}
+                dummy_out = compiled(**dummy_kw)
+                vocab_size = dummy_out.logits.shape[-1]
+                F.cross_entropy(
+                    dummy_out.logits.reshape(-1, vocab_size), dummy_kwargs["labels"].reshape(-1)
+                ).backward()
             compiled.zero_grad()
             sync()
             model = compiled
@@ -747,7 +755,10 @@ def bench(model_name: str, spec: dict):
     elif model_type == "whisper":
         outputs = model(fwd_kwargs["input_features"])
     else:
-        outputs = model(**fwd_kwargs)
+        # Drop labels — see the loss-computation comment below for why we
+        # never let HF compute `outputs.loss` for causal_lm internally.
+        fwd_only_kwargs = {k: v for k, v in fwd_kwargs.items() if k != "labels"}
+        outputs = model(**fwd_only_kwargs)
     sync()
     inference_ms = (time.perf_counter() - t0) * 1000.0
 
@@ -766,8 +777,17 @@ def bench(model_name: str, spec: dict):
         logits = outputs.last_hidden_state  # encoder hidden states
         loss = logits.pow(2).mean()  # MSE vs zero (matches meganeura)
     else:
-        loss = outputs.loss
+        # Compute cross-entropy manually instead of using outputs.loss.
+        # `prepare_inputs` already pre-shifts labels (labels[i] = the token
+        # at position i+1), but HF's built-in `loss` shifts AGAIN internally
+        # (comparing logits[i] against labels[i+1], assuming labels come in
+        # input_ids-aligned) — that double shift silently inflates the loss
+        # and was making PyTorch's own "ground truth" wrong in correctness
+        # checks against other frameworks (which compute it manually, like
+        # this, without relying on the model's internal loss).
         logits = outputs.logits
+        vocab_size = logits.shape[-1]
+        loss = F.cross_entropy(logits.reshape(-1, vocab_size), fwd_kwargs["labels"].reshape(-1))
 
     # --- Backward ---
     sync()
@@ -893,9 +913,15 @@ def bench(model_name: str, spec: dict):
                 captured_logits[0] = out.last_hidden_state
                 out.last_hidden_state.pow(2).mean().backward()
             else:  # causal_lm
-                out = model(**fwd_kwargs)
+                # Drop labels so the model returns logits only (no internal
+                # loss) — see the manual cross_entropy comment above.
+                inf_kw = {k: v for k, v in fwd_kwargs.items() if k != "labels"}
+                out = model(**inf_kw)
                 captured_logits[0] = out.logits
-                out.loss.backward()
+                vocab_size = out.logits.shape[-1]
+                F.cross_entropy(
+                    out.logits.reshape(-1, vocab_size), fwd_kwargs["labels"].reshape(-1)
+                ).backward()
 
         try:
             print("[pytorch] capturing CUDA graph for training...", file=sys.stderr)

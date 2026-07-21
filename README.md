@@ -20,10 +20,12 @@ links in the results tables always point to the exact revision tested.
 | [Burn](https://github.com/tracel-ai/burn) | Rust | wgpu (Vulkan / Metal / DX12) |
 | [Luminal](https://github.com/luminal-ai/luminal) | Rust | CUDA / Metal / CPU |
 | [Meganeura](https://github.com/kvark/meganeura) | Rust | blade (Vulkan / Metal) |
+| [Inferi](https://github.com/dimforge/inferi) | Rust | wgpu (Vulkan / Metal) / CUDA |
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) | C++ | CUDA / Metal / Vulkan / CPU |
 | [ONNX Runtime](https://github.com/microsoft/onnxruntime) | Python/C++ | CUDA / TensorRT / DirectML / CPU |
 | [JAX](https://github.com/jax-ml/jax) | Python | CUDA / TPU / CPU |
 | [MAX](https://github.com/modular/modular) | Python | CUDA / CPU |
+| [MLX](https://github.com/ml-explore/mlx) | Python | Metal (Apple Silicon only) |
 
 ## Platform support
 
@@ -37,7 +39,9 @@ links in the results tables always point to the exact revision tested.
 | Burn | Vulkan, CPU | Metal, CPU | — |
 | Luminal | CUDA, CPU | Metal, CPU | — |
 | Meganeura | Vulkan | Metal | Vulkan |
+| Inferi | CUDA, Vulkan | Metal | CUDA, Vulkan |
 | llama.cpp | CUDA, Vulkan, CPU | Metal, CPU | CUDA, Vulkan, CPU |
+| MLX | — | Metal | — |
 
 Frameworks that can't run on a given platform are reported as `✗` in the results.
 

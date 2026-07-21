@@ -11,16 +11,16 @@ members = [
 
 [workspace.dependencies]
 # Bleeding-edge git dependencies, pinned to specific revisions.
-burn = { git = "https://github.com/tracel-ai/burn", rev = "ed72d2b125a364aff18aed2a53396c128e01cb42", default-features = false }
-candle-core = { git = "https://github.com/huggingface/candle", rev = "6b4d8a1bfb7f19412239e4fb86f6c01507c1ff4d" }
-candle-nn = { git = "https://github.com/huggingface/candle", rev = "6b4d8a1bfb7f19412239e4fb86f6c01507c1ff4d" }
-candle-transformers = { git = "https://github.com/huggingface/candle", rev = "6b4d8a1bfb7f19412239e4fb86f6c01507c1ff4d" }
-luminal = { git = "https://github.com/luminal-ai/luminal", rev = "f32161d43bcf9f74265eee5f0dfcdbcdab3ad027" }
-luminal_nn = { git = "https://github.com/luminal-ai/luminal", rev = "f32161d43bcf9f74265eee5f0dfcdbcdab3ad027" }
-luminal_cuda_lite = { git = "https://github.com/luminal-ai/luminal", rev = "f32161d43bcf9f74265eee5f0dfcdbcdab3ad027" }
-luminal_metal = { git = "https://github.com/luminal-ai/luminal", rev = "f32161d43bcf9f74265eee5f0dfcdbcdab3ad027" }
+burn = { git = "https://github.com/tracel-ai/burn", rev = "406374e477bb404847dc1891f685aa3871b7d49e", default-features = false }
+candle-core = { git = "https://github.com/huggingface/candle", rev = "31f35b147389700ed2a178ee66a91c3cc25cc80d" }
+candle-nn = { git = "https://github.com/huggingface/candle", rev = "31f35b147389700ed2a178ee66a91c3cc25cc80d" }
+candle-transformers = { git = "https://github.com/huggingface/candle", rev = "31f35b147389700ed2a178ee66a91c3cc25cc80d" }
+luminal = { git = "https://github.com/luminal-ai/luminal", rev = "324d60172381c2a014e40cac602ca8ee377a3f32" }
+luminal_nn = { git = "https://github.com/luminal-ai/luminal", rev = "324d60172381c2a014e40cac602ca8ee377a3f32" }
+luminal_cuda_lite = { git = "https://github.com/luminal-ai/luminal", rev = "324d60172381c2a014e40cac602ca8ee377a3f32" }
+luminal_metal = { git = "https://github.com/luminal-ai/luminal", rev = "324d60172381c2a014e40cac602ca8ee377a3f32" }
 inferi = { git = "https://github.com/dimforge/inferi" }
-meganeura = { git = "https://github.com/kvark/meganeura", rev = "8042e0050b6697086883df8005f3addb99a1d5a1" }
+meganeura = { git = "https://github.com/kvark/meganeura", rev = "a7ced10d8a71921c1c77e0e6e1a2efca6f596590" }
 
 # Shared dependencies.
 serde = { version = "1", features = ["derive"] }

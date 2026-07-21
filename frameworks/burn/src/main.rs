@@ -8,11 +8,6 @@
 //! randomly initialized. The goal is to match the computational graph so that
 //! timing comparisons are meaningful.
 
-use burn::backend::Autodiff;
-use burn::backend::wgpu::{
-    Wgpu, WgpuDevice,
-    graphics::{AutoGraphicsApi, GraphicsApi},
-};
 use burn::nn::{Embedding, EmbeddingConfig, Linear, LinearConfig};
 use burn::prelude::*;
 use burn::tensor::activation::softmax;
@@ -21,17 +16,17 @@ use std::time::Instant;
 
 /// Simplified LLaMA-style transformer block.
 #[derive(Module, Debug)]
-pub struct TransformerBlock<B: Backend> {
-    attn_q: Linear<B>,
-    attn_k: Linear<B>,
-    attn_v: Linear<B>,
-    attn_out: Linear<B>,
-    ffn_up: Linear<B>,
-    ffn_down: Linear<B>,
+pub struct TransformerBlock {
+    attn_q: Linear,
+    attn_k: Linear,
+    attn_v: Linear,
+    attn_out: Linear,
+    ffn_up: Linear,
+    ffn_down: Linear,
 }
 
-impl<B: Backend> TransformerBlock<B> {
-    fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
+impl TransformerBlock {
+    fn forward(&self, x: Tensor<3>) -> Tensor<3> {
         let [_batch, _seq, dim] = x.dims();
 
         // Self-attention (single-head for simplicity).
@@ -60,10 +55,10 @@ impl<B: Backend> TransformerBlock<B> {
 
 /// Minimal SmolLM2-style model.
 #[derive(Module, Debug)]
-pub struct SmolModel<B: Backend> {
-    embedding: Embedding<B>,
-    blocks: Vec<TransformerBlock<B>>,
-    lm_head: Linear<B>,
+pub struct SmolModel {
+    embedding: Embedding,
+    blocks: Vec<TransformerBlock>,
+    lm_head: Linear,
 }
 
 /// Model hyperparameters matching SmolLM2-135M.
@@ -112,7 +107,7 @@ impl ModelConfig {
     }
 }
 
-fn init_model<B: Backend>(cfg: &ModelConfig, device: &B::Device) -> SmolModel<B> {
+fn init_model(cfg: &ModelConfig, device: &Device) -> SmolModel {
     let embedding = EmbeddingConfig::new(cfg.vocab_size, cfg.dim).init(device);
 
     let mut blocks = Vec::new();
@@ -137,7 +132,7 @@ fn init_model<B: Backend>(cfg: &ModelConfig, device: &B::Device) -> SmolModel<B>
     }
 }
 
-fn forward<B: Backend>(model: &SmolModel<B>, input_ids: Tensor<B, 2, Int>) -> Tensor<B, 3> {
+fn forward(model: &SmolModel, input_ids: Tensor<2, Int>) -> Tensor<3> {
     let mut x = model.embedding.forward(input_ids);
     for block in &model.blocks {
         x = block.forward(x);
@@ -145,10 +140,7 @@ fn forward<B: Backend>(model: &SmolModel<B>, input_ids: Tensor<B, 2, Int>) -> Te
     model.lm_head.forward(x)
 }
 
-fn cross_entropy_loss<B: Backend>(
-    logits: Tensor<B, 3>,
-    targets: Tensor<B, 2, Int>,
-) -> Tensor<B, 1> {
+fn cross_entropy_loss(logits: Tensor<3>, targets: Tensor<2, Int>) -> Tensor<1> {
     let [batch, seq, vocab] = logits.dims();
     let logits_2d = logits.reshape([batch * seq, vocab]);
     let targets_1d = targets.reshape([batch * seq]);
@@ -156,7 +148,7 @@ fn cross_entropy_loss<B: Backend>(
     // Manual cross-entropy: -log(softmax(logits))[target]
     let log_probs = burn::tensor::activation::log_softmax(logits_2d, 1);
     // Gather the log-prob at each target index.
-    let target_log_probs: Tensor<B, 2> = log_probs.gather(1, targets_1d.unsqueeze_dim(1));
+    let target_log_probs: Tensor<2> = log_probs.gather(1, targets_1d.unsqueeze_dim(1));
     // Mean negative log-likelihood.
     target_log_probs.neg().mean()
 }
@@ -183,13 +175,12 @@ fn main() {
         return;
     }
 
-    type MyBackend = Autodiff<Wgpu>;
-    let device = WgpuDevice::default();
+    let device = Device::wgpu(DeviceKind::DefaultDevice).autodiff();
     let seq_len = 128;
 
     // --- Compile / init ---
     let t0 = Instant::now();
-    let model = init_model::<MyBackend>(&cfg, &device);
+    let model = init_model(&cfg, &device);
     let compile_s = t0.elapsed().as_secs_f64();
 
     // --- Prepare dummy input (deterministic) ---
@@ -200,12 +191,12 @@ fn main() {
     let label_data: Vec<i64> = (0..seq_len as i64)
         .map(|i| (i + 1) % cfg.vocab_size as i64)
         .collect();
-    let input_ids = Tensor::<MyBackend, 1, Int>::from_data(
+    let input_ids = Tensor::<1, Int>::from_data(
         burn::tensor::TensorData::new(input_data, [seq_len]),
         &device,
     )
     .unsqueeze::<2>();
-    let labels = Tensor::<MyBackend, 1, Int>::from_data(
+    let labels = Tensor::<1, Int>::from_data(
         burn::tensor::TensorData::new(label_data, [seq_len]),
         &device,
     )
@@ -220,11 +211,8 @@ fn main() {
 
     // --- Latency (single-token forward) ---
     let lat_data: Vec<i64> = vec![0];
-    let lat_input = Tensor::<MyBackend, 1, Int>::from_data(
-        burn::tensor::TensorData::new(lat_data, [1]),
-        &device,
-    )
-    .unsqueeze::<2>();
+    let lat_input = Tensor::<1, Int>::from_data(burn::tensor::TensorData::new(lat_data, [1]), &device)
+        .unsqueeze::<2>();
     // Warm-up.
     let _ = forward(&model, lat_input.clone()).to_data();
     let t0 = Instant::now();
@@ -240,13 +228,11 @@ fn main() {
     let _ = grads;
     let backward_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
-    let loss_val: f64 = loss.inner().into_scalar().elem();
+    let loss_val: f64 = loss.inner().into_scalar::<f32>().elem();
 
     // --- Collect outputs ---
     let logits_hash = sha256_f32(&logits_data);
     let logits_sample: Vec<f64> = logits_data.iter().take(16).map(|&v| v as f64).collect();
-
-    let wgpu_backend = AutoGraphicsApi::backend();
 
     let result = serde_json::json!({
         "framework": "burn",
@@ -254,7 +240,7 @@ fn main() {
         "model": model_name,
         "device": format!("{:?}", device),
         "gpu_name": format!("{:?}", device),
-        "backend": format!("wgpu/{wgpu_backend}"),
+        "backend": "wgpu",
         "timings": {
             "compile_s": (compile_s * 100.0).round() / 100.0,
             "inference_ms": (forward_ms * 1000.0).round() / 1000.0,

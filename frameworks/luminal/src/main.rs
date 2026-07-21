@@ -7,22 +7,30 @@
 //! count and computational profile, compiled via Luminal's graph search.
 
 use luminal::prelude::*;
-use luminal_nn::{LayerNorm, Linear};
+use luminal_nn::{LayerNorm, Linear, gather_rows};
 use sha2::{Digest, Sha256};
 use std::time::Instant;
 
 /// Compile the graph and return a runtime matching the best available backend.
 /// Uses CUDA when compiled with --features cuda, Metal with --features metal,
-/// and falls back to NativeRuntime (CPU) otherwise.
+/// and falls back to ReferenceRuntime (CPU) otherwise.
 macro_rules! compile_and_run {
     ($cx:expr, |$rt:ident, $backend:ident| $body:block) => {{
+        // CompileOptions::default() has an unbounded search_time_limit
+        // (Duration::MAX) — build_search_space()'s e-graph saturation must
+        // be given the same tight limit as search(), or it can spend many
+        // minutes and tens of GB of RAM saturating a 30-layer transformer
+        // graph before search() ever runs.
+        let compile_opts = CompileOptions::default()
+            .search_graph_limit(1)
+            .search_time_limit(std::time::Duration::from_secs(60));
         #[cfg(feature = "cuda")]
         {
             use luminal_cuda_lite::runtime::CudaRuntime;
             eprintln!("[luminal] compiling (graph search, CUDA)...");
-            $cx.build_search_space::<CudaRuntime>();
+            $cx.build_search_space::<CudaRuntime>(compile_opts.clone());
             let cuda_rt = CudaRuntime::new().expect("Failed to create CUDA runtime");
-            let mut $rt = $cx.search(cuda_rt, 1);
+            let mut $rt = $cx.search(cuda_rt, compile_opts);
             let $backend = "CUDA";
             $body
         }
@@ -30,16 +38,16 @@ macro_rules! compile_and_run {
         {
             use luminal_metal::MetalRuntime;
             eprintln!("[luminal] compiling (graph search, Metal)...");
-            $cx.build_search_space::<MetalRuntime>();
-            let mut $rt = $cx.search(MetalRuntime::initialize(()), 1);
+            $cx.build_search_space::<MetalRuntime>(compile_opts.clone());
+            let mut $rt = $cx.search(MetalRuntime::initialize(()), compile_opts);
             let $backend = "Metal";
             $body
         }
         #[cfg(not(any(feature = "cuda", feature = "metal")))]
         {
             eprintln!("[luminal] compiling (graph search, CPU)...");
-            $cx.build_search_space::<NativeRuntime>();
-            let mut $rt = $cx.search(NativeRuntime::default(), 1);
+            $cx.build_search_space::<ReferenceRuntime>(compile_opts.clone());
+            let mut $rt = $cx.search(ReferenceRuntime::default(), compile_opts);
             let $backend = "CPU";
             $body
         }
@@ -129,6 +137,7 @@ impl TransformerBlock {
 
 struct SmolModel {
     embed_weight: GraphTensor,
+    dim: usize,
     blocks: Vec<TransformerBlock>,
     norm: LayerNorm,
     lm_head: Linear,
@@ -146,6 +155,7 @@ impl SmolModel {
         let lm_head = Linear::new(cfg.dim, cfg.vocab_size, false, cx);
         SmolModel {
             embed_weight,
+            dim: cfg.dim,
             blocks,
             norm,
             lm_head,
@@ -153,7 +163,11 @@ impl SmolModel {
     }
 
     fn forward(&self, input_ids: GraphTensor) -> GraphTensor {
-        let mut x = self.embed_weight.gather(input_ids);
+        // `GraphTensor::gather` is now a flat, index-shaped gather (output
+        // matches the index tensor's shape element-for-element), not a
+        // row gather — use luminal_nn's `gather_rows` helper to pull whole
+        // embedding rows for each token id.
+        let mut x = gather_rows(self.embed_weight, input_ids, self.dim);
         for block in &self.blocks {
             x = block.forward(x);
         }

@@ -1,7 +1,7 @@
-# Pull CUDA-enabled torch wheels (the `+cu128` local version outranks the
+# Pull CUDA-enabled torch wheels (the `+cu130` local version outranks the
 # plain CPU wheel on PyPI, so pip picks the CUDA build even with `torch>=2.0`
 # in requirements-common.txt). Works for Ampere (30xx), Ada (40xx), Blackwell (50xx+).
---extra-index-url https://download.pytorch.org/whl/cu128
+--extra-index-url https://download.pytorch.org/whl/cu130
 
 -r requirements-common.txt
 

@@ -220,18 +220,22 @@ fn bench_smollm2(model_name: &str) {
 
     let all_logits = session.read_output(seq_len * vocab);
 
-    // Cross-entropy loss on CPU (HF-compatible: shifted labels).
-    // HF internally shifts: logits[0..seq-1] predict labels[1..seq].
+    // Cross-entropy loss on CPU. `labels[pos]` is already the target token
+    // for position `pos` (labels = (i+1) % vocab, i.e. pre-shifted relative
+    // to input_ids), so this compares logits at `pos` directly against
+    // `labels[pos]` — no additional shift. (Earlier code shifted an extra
+    // position, assuming `labels` was input_ids-aligned like HF's raw
+    // `labels` kwarg; that double-shift silently compared each position
+    // against the token two steps ahead and inflated the loss.)
     let mut total_loss = 0.0f64;
-    let loss_positions = seq_len - 1;
-    for pos in 0..loss_positions {
+    for pos in 0..seq_len {
         let sl = &all_logits[pos * vocab..(pos + 1) * vocab];
-        let target = labels[pos + 1] as usize; // shifted: predict next label
+        let target = labels[pos] as usize;
         let max_l = sl.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let sum_exp: f64 = sl.iter().map(|&l| ((l - max_l) as f64).exp()).sum();
         total_loss -= (sl[target] - max_l) as f64 - sum_exp.ln();
     }
-    let loss = total_loss / loss_positions as f64;
+    let loss = total_loss / seq_len as f64;
 
     // --- Latency (single-token forward) ---
     // Build a separate seq_len=1 inference graph.
@@ -258,15 +262,13 @@ fn bench_smollm2(model_name: &str) {
     let mut train_session = build_session(&training_g);
     load_weights(&mut train_session, &model, &transposed_set);
 
-    // HF-shifted labels: position p predicts labels[p+1] (the next token).
-    // Last position has no target (zero label row).
-    // Scale by seq_len/(seq_len-1) to compensate for meganeura dividing by seq_len
-    // while HF divides by seq_len-1.
-    let label_scale = seq_len as f32 / (seq_len - 1) as f32;
+    // `labels[pos]` is already the target for position `pos` (see the
+    // inference loss above) — every position has a target, so no scale
+    // compensation for an excluded last position is needed anymore.
     let mut one_hot_labels = vec![0.0f32; seq_len * vocab];
-    for pos in 0..seq_len - 1 {
-        let target = labels[pos + 1] as usize;
-        one_hot_labels[pos * vocab + target] = label_scale;
+    for pos in 0..seq_len {
+        let target = labels[pos] as usize;
+        one_hot_labels[pos * vocab + target] = 1.0;
     }
 
     // Warm-up training: 3 runs + best of 5.

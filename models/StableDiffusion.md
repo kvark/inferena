@@ -1,128 +1,89 @@
 ---
 layout: default
-title: Stable Diffusion 1.5
+title: Scaled Stable Diffusion 1.x U-Net
 permalink: /models/StableDiffusion
 ---
 
-# Stable Diffusion 1.5
+# Scaled Stable Diffusion 1.x U-Net
 
-[stable-diffusion-v1-5/stable-diffusion-v1-5](https://hf.co/stable-diffusion-v1-5/stable-diffusion-v1-5) — Latent diffusion model for text-to-image generation.
+The CLI retains the historical `StableDiffusion` workload name. The matched
+PyTorch/Meganeura workload is now a scaled, conditioned latent-diffusion U-Net,
+not the earlier generic convolutional U-Net and not the complete Stable
+Diffusion 1.5 pipeline.
+
+It retains the denoiser features that materially change the compiler workload:
+timestep conditioning in every residual block, spatial self-attention,
+77-token text cross-attention, transformer feed-forward blocks, convolutional
+down/up paths, GroupNorm, and U-Net skip connections.
 
 ## Results
 
-Most frameworks (PyTorch, Meganeura, ONNX Runtime, JAX, MLX) run the **simplified U-Net** — Conv + GroupNorm + skip connections, no cross-attention or timestep embedding. Batch 2, 32×32×4 latent, base\_channels=64, 3 levels, ~2M params. Shared architecture, but each framework uses its own random-init parameters, so losses don't match across frameworks and several end up marked DIFFERENT MODEL even on identical structure.
+The previous table measured the superseded 5.29M-parameter convolution-only
+workload and has been removed to prevent accidental comparison. Freeze one
+Meganeura revision and rerun both practical-default and strict configurations
+on every platform before publishing a new table:
 
-**Candle** runs the **full SD 1.5 U-Net** (~860M params, 64×64×4 latent, cross-attention + timestep) — the real thing, marked DIFFERENT MODEL by design.
+```bash
+./run.sh -m StableDiffusion -f pytorch,meganeura
+./run.sh -m StableDiffusion -f pytorch,meganeura --strict
+```
 
-| Platform | Framework | Compile (s) | Inference (ms) | Latency (ms) | Training (ms) | Loss |
-|----------|-----------|:-----------:|:--------------:|:------------:|:-------------:|:----:|
-| Intel Xeon @ 2.10GHz | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CPU) | 53.02 | **14** | **11** | **28** | 0.57 |
-|  | [Meganeura](https://github.com/kvark/meganeura/tree/0b91e08) (Vulkan/Lavapipe) | **2.75** | 379 | — | 666 | 0.57 |
-|  | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~10777~~ | ~~—~~ | ~~—~~ | ~~0.00~~ |
-|  | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-|  | [JAX](https://github.com/jax-ml/jax) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-|  | [Burn](https://github.com/tracel-ai/burn) (wgpu) | ✗ | ✗ | ✗ | ✗ | |
-|  | [Luminal](https://github.com/luminal-ai/luminal) (CPU) | ✗ | ✗ | ✗ | ✗ | |
-| AMD Radeon 890M Graphics | [PyTorch 2.10.0](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.2.53210) | 12.68 | **2.6** | **3.0** | **5.4** | 0.50 |
-| | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
-| | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |
-| | [Luminal](https://github.com/luminal-ai/luminal) | — | — | — | — | |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/ef9c251) (Vulkan) | **0.09** | 10 | 11 | 15 | 0.53 |
-| | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
-| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (MIGraphXExecutionProvider) | ~~29.97~~ | ~~3.7~~ | ~~—~~ | ~~—~~ | ~~0.05~~ |
-| Apple M3 | [PyTorch 2.11.0](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (MPS) | 0.00 | 504 | 11 | 222 | 0.50 |
-| | [MLX](https://github.com/ml-explore/mlx) (MLX) | 0.00 | **6.9** | — | **9.3** | 0.51 |
-| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (Metal) | ~~0.01~~ | ~~233~~ | ~~—~~ | ~~—~~ | ~~0.00~~ |
-| | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
-| | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |
-| | [Luminal](https://github.com/luminal-ai/luminal) | — | — | — | — | |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/ef9c251) (Metal) | 0.49 | 8.9 | **8.9** | 68 | 0.53 |
-| | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
-| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CoreMLExecutionProvider) | ~~2.38~~ | ~~12~~ | ~~—~~ | ~~—~~ | ~~0.05~~ |
-| | [JAX](https://github.com/jax-ml/jax) (METAL) | ~~0.72~~ | ~~6.0~~ | ~~—~~ | ~~25~~ | ~~0.05~~ |
-| NVIDIA GeForce RTX 5080 | [PyTorch 2.13.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.13.0) (CUDA 13.0) | 6.35 | 0.9 | 0.9 | **1.2** | 0.50 |
-| | [Candle](https://github.com/huggingface/candle/tree/31f35b1) (CUDA) | ~~0.01~~ | ~~103~~ | ~~—~~ | ~~—~~ | ~~0.00~~ |
-| | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/a7ced10) (Vulkan) | **0.18** | **0.8** | **0.8** | 3.5 | 0.53 |
-| | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
-| | [ONNX Runtime 1.27.0](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | ~~0.81~~ | ~~0.8~~ | ~~—~~ | ~~—~~ | ~~0.05~~ |
-| | [MAX](https://github.com/modular/modular) | — | — | — | — | |
-| | [JAX 0.11.0](https://github.com/jax-ml/jax) (GPU) | ~~1.93~~ | ~~1.4~~ | ~~—~~ | ~~2.1~~ | ~~0.05~~ |
-| NVIDIA GeForce RTX 3050 (Windows) | [PyTorch 2.11.0+cu128](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CUDA 12.8) | 0.00 | **1.4** | **1.0** | **4.7** | 0.50 |
-| | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
-| | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |
-| | [Luminal](https://github.com/luminal-ai/luminal) | — | — | — | — | |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/ef9c251) (Vulkan/DX12) | 0.50 | 3.1 | 3.1 | 7.8 | 0.52 |
-| | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
-| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CUDAExecutionProvider) | ~~1.70~~ | ~~4.0~~ | ~~—~~ | ~~—~~ | ~~0.05~~ |
-| | [JAX](https://github.com/jax-ml/jax) | ✗ | ✗ | ✗ | ✗ | |
-| Intel(R) Graphics (RPL-U) | [PyTorch 2.11.0+xpu](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CPU) | 0.00 | 118 | 33 | 153 | 0.50 |
-| | [Candle](https://github.com/huggingface/candle/tree/6b4d8a1) (CPU) | ~~0.00~~ | ~~16529~~ | ~~—~~ | ~~—~~ | ~~0.00~~ |
-| | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
-| | [Inferi](https://github.com/dimforge/inferi) | — | — | — | — | |
-| | [Luminal](https://github.com/luminal-ai/luminal) | — | — | — | — | |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/8042e00) (Vulkan) | 0.12 | **21** | **21** | **88** | 0.53 |
-| | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
-| | [ONNX Runtime](https://github.com/microsoft/onnxruntime) (CPUExecutionProvider) | ~~2.39~~ | ~~31~~ | ~~—~~ | ~~—~~ | ~~0.05~~ |
-| | [MAX](https://github.com/modular/modular) | ✗ | ✗ | ✗ | ✗ | |
-| | [JAX](https://github.com/jax-ml/jax) (CPU) | ~~4.85~~ | ~~73~~ | ~~—~~ | ~~206~~ | ~~0.05~~ |
-| AMD Radeon RX 7900 XT | [PyTorch 2.10.0+rocm7.1](https://github.com/pytorch/pytorch/releases/tag/v2.10.0) (ROCm 7.1.25424) | 11.06 | 1.7 | 1.5 | **3.3** | 0.50 |
-| | [Burn](https://github.com/tracel-ai/burn) | — | — | — | — | |
-| | [Inferi](https://github.com/dimforge/inferi) | ✗ | ✗ | ✗ | ✗ | |
-| | [Luminal](https://github.com/luminal-ai/luminal) | — | — | — | — | |
-| | [Meganeura](https://github.com/kvark/meganeura/tree/8042e00) (Vulkan) | **0.77** | **1.6** | **1.5** | 7.3 | 0.51 |
-| | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
-| | [MAX](https://github.com/modular/modular) | — | — | — | — | |
+During development, strict-f32 cross-engine validation on an NVIDIA RTX 5080
+reached approximately `1.2e-5` forward relative L2 error and `8.1e-5`
+per-parameter gradient-vector relative L2 error. These are correctness smoke
+results from a dirty development revision, not frozen performance results.
 
-*Run `./run.sh -m StableDiffusion` to populate this table.*
+The legacy Candle runner uses a much larger SD 1.5-like U-Net and is not
+comparable to this matched workload.
 
-## Architecture
-
-The benchmark measures the **UNet denoising backbone** — the compute-intensive core of Stable Diffusion.
-
-### Full SD 1.5 (Candle)
+## Matched architecture
 
 | Component | Parameter | Value |
 |-----------|-----------|-------|
-| **UNet** | Input channels | 4 (latent space) |
-| | Base channels | 320 |
-| | Channel multipliers | [1, 2, 4, 4] |
-| | Layers per block | 2 |
-| | Attention resolutions | 32×32, 16×16, 8×8 |
-| | Attention heads | 8 |
-| | Cross-attention dim | 768 (CLIP text encoder) |
-| | Parameters | ~860M |
-| **Input** | Latent | 64×64×4 (512×512 image) |
-| | Text embedding | 77×768 |
-| | Timestep | 500 |
-
-### Simplified U-Net (PyTorch, Meganeura)
-
-| Component | Parameter | Value |
-|-----------|-----------|-------|
-| **UNet** | Input channels | 4 (latent space) |
+| **U-Net** | Input/output channels | 4 (latent space) |
 | | Base channels | 64 |
 | | Channel multipliers | [1, 2, 4] |
 | | Levels | 3 |
 | | GroupNorm groups | 16 |
-| | Parameters | ~2M |
-| **Input** | Latent | 32×32×4, batch 2 |
-| | Loss | MSE (predict noise) |
+| | Parameters | 10,928,768 |
+| **Conditioning** | Timestep input / MLP width | 64 / 256 |
+| | Text context | 77 × 768 |
+| **Attention** | Spatial resolutions | 16×16 and 8×8, plus middle block |
+| | Head width | 32 |
+| | Blocks | self-attention + text cross-attention + GELU FFN |
+| **Input** | Latent | batch 1, 4 × 32 × 32 |
+| | Training objective | MSE noise prediction |
+
+Batch 1 is currently required because Meganeura's differentiable attention
+primitive represents one sequence per operation. For this workload, inference
+and latency therefore use the same shape.
 
 ## What this exercises
 
-Completely different compute profile from SmolLM2 / SmolVLA:
+- 3×3 and 1×1 Conv2D, including stride-2 downsampling
+- nearest-neighbor upsampling and channel-wise U-Net skip concatenation
+- GroupNorm and token-wise LayerNorm
+- timestep projection and spatial broadcast into residual blocks
+- non-causal self-attention and 77-token cross-attention
+- dense GELU feed-forward expansion and contraction
+- end-to-end autodiff through the combined convolution/attention graph
 
-- **Conv2D** (not present in transformer-only models) — spatial convolutions in UNet
-- **Skip connections** (U-Net architecture) — memory-intensive residual paths
-- **GroupNorm** (not RMSNorm/LayerNorm)
-- **Spatial downsampling / upsampling** at multiple resolutions
-- Tests Conv2D kernel performance, a major framework differentiator
-- Full SD 1.5 (Candle) additionally exercises cross-attention and timestep embedding
+This operator mix is intentionally complementary to the transformer-only
+SmolLM2 and SmolVLA workloads.
 
-## Caveats
+## Scope and caveats
 
-- Only the **UNet** is benchmarked (not VAE encode/decode or text encoding).
-- Input is deterministic synthetic data — no actual image generation.
-- PyTorch and Meganeura use a simplified architecture for fair comparison.
-- Candle runs the full SD 1.5 UNet but on CPU only (DIFFERENT MODEL vs others).
+- This is a scaled research workload, not an SD 1.5 checkpoint-compatible
+  architecture. SD 1.5's U-Net alone is roughly two orders of magnitude larger
+  and contains more blocks.
+- Only the denoising U-Net is represented. The VAE, CLIP text encoder,
+  scheduler, classifier-free guidance, and iterative denoising loop are out of
+  scope.
+- The feed-forward activation is GELU rather than SD 1.x's GEGLU because the
+  reduced workload stays within Meganeura's current primitive set.
+- Inputs and parameters are deterministic synthetic values. The benchmark
+  checks matched computation and gradients; it does not generate an image or
+  make a quality claim.
+- Normalization scales use identity initialization and normalization biases
+  use zero initialization. Other parameters use matched canonical-name-seeded
+  values at scale 0.02.

@@ -6,11 +6,17 @@ permalink: /models/SmolVLA
 
 # SmolVLA Action Expert
 
-[lerobot/smolvla_base](https://hf.co/lerobot/smolvla_base) — SmolVLA action expert decoder for robotics.
+[lerobot/smolvla_base](https://hf.co/lerobot/smolvla_base) — a matched
+99,848,592-parameter SmolVLA-style action expert workload for robotics.
 
 ## Results
 
-Benchmark config: chunk_size=50, vlm_seq_len=16, float32, random weights, MSE loss.
+Benchmark config: batch=1, chunk_size=50, vlm_seq_len=16, float32,
+deterministic matched weights, MSE loss.
+
+The table below predates the current timing and validation metadata. Its
+timings and historical `CLOSE` label are exploratory; regenerate the table
+from one revision before using it in a publication.
 
 | Platform | Framework | Compile (s) | Inference (ms) | Latency (ms) | Training (ms) | Loss |
 |----------|-----------|:-----------:|:--------------:|:------------:|:-------------:|:----:|
@@ -75,7 +81,10 @@ Benchmark config: chunk_size=50, vlm_seq_len=16, float32, random weights, MSE lo
 | | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
 | | [MAX](https://github.com/modular/modular) (GPU) | 2.20 | 15 | — | — | 0.00 |
 
-**Correctness:** PyTorch vs Meganeura: **CLOSE** (loss diff 1e-5, max error 4.6e-3).
+**Historical correctness:** PyTorch vs Meganeura was reported as **CLOSE**
+(loss diff 1e-5, max error 4.6e-3) under the old validator. The current
+harness rechecks output samples distributed across the tensor, loss, total
+gradient norm, and per-parameter gradient norms.
 
 ## Architecture
 
@@ -93,6 +102,7 @@ Transformer action expert with alternating self-attention and cross-attention:
 | Normalization | RMSNorm |
 | Action dim | 32 |
 | Chunk size | 50 |
+| Parameters | 99,848,592 |
 
 ## What this exercises
 

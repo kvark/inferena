@@ -10,10 +10,14 @@ permalink: /models/SmolLM2-135M
 
 ## Results
 
-Benchmark config: seq_len=128, float32, input=[0,1,...,127].
+Benchmark config: seq_len=128, input=[0,1,...,127]. The full forward is a
+128-token prefill. The minimal measurement is a stateless one-token forward
+without a KV cache; it is not decode latency. The historical table below
+predates the current timing and precision metadata; regenerate it from one
+pinned revision before using it in a publication.
 
-| Platform | Framework | Compile (s) | Inference (ms) | Latency (ms) | Training (ms) | Loss |
-|----------|-----------|:-----------:|:--------------:|:------------:|:-------------:|:----:|
+| Platform | Framework | Compile (s) | Prefill (ms) | Stateless 1-token (ms) | Training (ms) | Loss |
+|----------|-----------|:-----------:|:------------:|:----------------------:|:-------------:|:----:|
 | Intel Xeon @ 2.10GHz | [PyTorch 2.11.0+cu130](https://github.com/pytorch/pytorch/releases/tag/v2.11.0) (CPU) | 135.63 | 188 | **18** | **486** | 10.98 |
 | | [ONNX Runtime 1.24.4](https://github.com/microsoft/onnxruntime) (CPU) | 65.50 | **118** | 20 | — | 10.98 |
 | | [JAX 0.9.2](https://github.com/jax-ml/jax) (CPU) | 6.79 | 194 | 31 | 2107 | 10.98 |
@@ -68,11 +72,12 @@ Benchmark config: seq_len=128, float32, input=[0,1,...,127].
 | | [GGML](https://github.com/ggerganov/ggml/tree/0.3.20) (ROCm) | **0.11** | 259 | 3.4 | — | 8.69 |
 | | [MAX](https://github.com/modular/modular) (GPU) | ~~2.13~~ | ~~3.5~~ | ~~0.1~~ | ~~—~~ | ~~10.80~~ |
 
-**Correctness:** PyTorch vs ONNX Runtime: **PASS** (loss diff 3.2e-3).
-PyTorch vs JAX: **PASS** (loss diff 3.2e-3).
-PyTorch vs Meganeura: **PASS** (max error 1.7e-6, loss diff 5.3e-3).
-PyTorch vs llama.cpp: **PASS** (loss diff 4.5e-3). Candle, Luminal: **CLOSE**.
-Struck-through values are from frameworks running a different (simplified) model.
+**Historical correctness note:** the old validator sampled the first 16
+flattened logits, all from sequence position 0, and could accept a backend
+when only its loss was close. Those PASS/CLOSE labels are not
+publication-grade. The current harness samples across the complete output and
+requires both output and loss agreement, plus gradient-norm agreement when
+available.
 
 ## Architecture
 
@@ -85,10 +90,10 @@ LLaMA-family transformer with Grouped Query Attention:
 | Attention heads | 9 (3 KV heads, GQA) |
 | FFN intermediate | 1536 |
 | Vocab size | 49152 |
-| Context length | 2048 |
+| Context length | 8192 |
 | Activations | SiLU / SwiGLU |
 | Normalization | RMSNorm |
-| Position encoding | RoPE |
+| Position encoding | RoPE, θ=100000 |
 
 ## What this exercises
 

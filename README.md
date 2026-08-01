@@ -2,8 +2,11 @@
 
 [![CI](https://github.com/kvark/inferena/actions/workflows/ci.yml/badge.svg)](https://github.com/kvark/inferena/actions/workflows/ci.yml)
 
-ML framework inference benchmark. Compares inference and training performance of
-the same models across different ML frameworks on single-GPU hardware.
+Single-GPU ML systems benchmark for matched inference and training workloads.
+PyTorch and Meganeura currently report the complete timing, precision,
+environment, output, and gradient metadata used for strict cross-engine
+validation. Other runners remain available while their reporting is brought
+up to the same standard.
 
 Inspired by [meganeura's bench/compare.sh](https://github.com/kvark/meganeura/tree/main/bench) pipeline.
 
@@ -31,7 +34,7 @@ links in the results tables always point to the exact revision tested.
 
 | Framework | Linux | macOS | Windows |
 |-----------|:-----:|:-----:|:-------:|
-| PyTorch | CUDA, ROCm, XPU, CPU | MPS, CPU | CPU |
+| PyTorch | CUDA, ROCm, XPU, CPU | MPS, CPU | CUDA, CPU |
 | ONNX Runtime | CUDA, TensorRT, CPU | CoreML, CPU | DirectML, CPU |
 | JAX | CUDA, TPU, CPU | CPU | CPU |
 | MAX | CUDA, CPU | CPU | — |
@@ -53,22 +56,45 @@ and results tables.
 | Model | Type | Params | Results |
 |-------|------|-------:|---------|
 | [SmolLM2-135M](models/SmolLM2-135M.md) | Text LLM | 135M | [results](models/SmolLM2-135M.md#results) |
-| [SmolVLA](models/SmolVLA.md) | Robotics Action Expert | ~14M | [results](models/SmolVLA.md#results) |
-| [Stable Diffusion 1.5](models/StableDiffusion.md) | Image Diffusion (UNet) | ~860M | [results](models/StableDiffusion.md#results) |
-| [ResNet-50](models/ResNet-50.md) | Image Classification (CNN) | 25.6M | [results](models/ResNet-50.md#results) |
-| [Whisper-tiny](models/Whisper-tiny.md) | Speech Recognition | ~39M | [results](models/Whisper-tiny.md#results) |
+| [SmolVLA](models/SmolVLA.md) | Robotics Action Expert | 99.85M | [results](models/SmolVLA.md#results) |
+| [Conditioned diffusion U-Net](models/StableDiffusion.md) | Conv + attention U-Net | 10.93M | [results](models/StableDiffusion.md#results) |
+| [ResNet-50](models/ResNet-50.md) | Image Classification (CNN) | 25.53M | [results](models/ResNet-50.md#results) |
+| [Whisper-tiny encoder](models/Whisper-tiny.md) | Speech Encoder | 8.21M | [results](models/Whisper-tiny.md#results) |
 
 ## What it measures
 
-Each framework runs a fake training step on the selected model:
+For each instrumented framework and model, Inferena records:
 
-1. **Compile** — Time to build, compile/optimize, and prepare the model (seconds).
-2. **Inference** — Full forward pass with a fixed dummy input (milliseconds).
-3. **Latency** — Single-token / minimal-input forward pass (milliseconds).
-4. **Training** — Backpropagation from a cross-entropy loss (milliseconds).
+1. **Compile** — Graph/compiler specialization and executable preparation
+   (seconds; model loading and parameter upload are reported or excluded
+   separately).
+2. **Inference** — A no-gradient full forward pass with fixed deterministic
+   input (milliseconds). For decoder LLMs this is explicitly the 128-token
+   prefill measurement.
+3. **Latency** — A matched single-token or minimal-batch workload
+   (milliseconds). The current LLM workload is a stateless one-token forward
+   without a KV cache, so it is not reported as decode latency.
+4. **Training** — Forward, loss, and backward together, without an optimizer
+   update (milliseconds).
 
-Outputs (logits, loss) are compared across frameworks to verify they run
-the same model — flagged as **PASS**, **CLOSE**, or **DIFFERENT MODEL**.
+Each series uses configurable warmups followed by retained raw samples and
+reports the median and interquartile range. Correctness requires agreement in
+canonical output shape, loss, and a deterministic 256-value sample spanning
+the output tensor. The audited runners must also report total and
+per-parameter gradient norms. A close loss by itself is not enough to validate
+a result, and inference and training validity are recorded independently.
+
+Precision is part of every result:
+
+- The default is the practical accelerated configuration. It keeps f32
+  storage/output but permits documented reduced-input, f32-accumulate hardware
+  paths. PyTorch may use TF32; Meganeura may use f16 cooperative-matrix
+  inputs.
+- `--strict` disables those paths for an f32 control run. PyTorch TF32 and
+  Meganeura f16 cooperative-matrix paths are disabled.
+
+The two configurations are separate comparison classes because TF32 and f16
+are not numerically equivalent.
 
 ## Prerequisites
 
@@ -121,10 +147,37 @@ pip install -r requirements-nvidia.txt       # NVIDIA CUDA
 # pip install -r requirements-intel.txt      # Intel XPU (Arc / Xe iGPU)
 # pip install -r requirements-apple.txt      # Apple Metal
 # pip install -r requirements-cpu.txt        # CPU only
-./run.sh                                     # all models, all frameworks
+./run.sh                                     # practical defaults, all models/frameworks
 ./run.sh -m SmolLM2-135M                     # single model
 ./run.sh -m SmolLM2-135M -f pytorch          # single model + framework
 ./run.sh --json                              # machine-readable output
+./run.sh --strict                            # controlled f32 comparison
+./run.sh --warmup-runs 5 --measurement-runs 20
+./run.sh --results-dir ../paper-results       # preserve a named experiment
+./run.sh -f meganeura -m Whisper-tiny --profile --profile-samples 5
+```
+
+`--profile` retains the ordinary grouped-pass timing as the reported benchmark,
+then asks Meganeura to collect repeated per-dispatch hardware timestamps for
+inference, latency, and training. Structured JSON sidecars are written under
+`<results-dir>/profiles/` and referenced by the Meganeura result artifact.
+They include the selected pipeline variants, phase and kernel-family
+breakdowns, workgroup geometry, driver pipeline statistics when available,
+and the instrumentation-overhead ratio. Capture tools such as RenderDoc are
+not required. Summarize one profile or compare two revisions with:
+
+```bash
+python3 scripts/profile_report.py results/profiles/<profile>.json
+python3 scripts/profile_report.py before.json after.json --top 20
+```
+
+Inferena normally builds the Meganeura revision pinned in `Cargo.toml`. When
+developing both sibling repositories, opt into the local working tree
+explicitly; the result records the revision with a `-dirty` suffix when
+appropriate:
+
+```bash
+INFERENA_MEGANEURA_PATH=../meganeura ./run.sh -f pytorch,meganeura
 ```
 
 ### Download pre-trained weights
@@ -151,7 +204,7 @@ python3 models/generate_weights.py SmolLM2-135M
 │   ├── pytorch/              # Python + bash wrapper (HF transformers)
 │   ├── burn/                 # Rust (wgpu backend, LLaMA-style model)
 │   ├── luminal/              # Rust (graph-compiled, e-graph optimized)
-│   └── meganeura/            # Rust (blade-graphics, e-graph optimized)
+│   └── meganeura/            # Rust (blade-graphics, graph compiled)
 ├── models/
 │   ├── SmolLM2-135M.md       # Model description + results
 │   ├── SmolVLA.md            # Model description + results

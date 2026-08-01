@@ -6,11 +6,17 @@ permalink: /models/ResNet-50
 
 # ResNet-50
 
-Classic convolutional neural network for image classification. 25.6M parameters.
+Classic convolutional neural network for image classification. The matched
+benchmark graph has 25,530,472 trainable parameters.
 
 ## Results
 
-Benchmark config: batch=4, 3x224x224, float32, random weights, cross-entropy loss.
+Benchmark config: batch=4, 3×224×224, float32, deterministic matched weights,
+cross-entropy loss.
+
+The table below predates the current timing and validation metadata.
+Regenerate it before using the numbers or the historical correctness label in
+a publication.
 
 | Platform | Framework | Compile (s) | Inference (ms) | Latency (ms) | Training (ms) | Loss |
 |----------|-----------|:-----------:|:--------------:|:------------:|:-------------:|:----:|
@@ -71,7 +77,8 @@ Benchmark config: batch=4, 3x224x224, float32, random weights, cross-entropy los
 | | [GGML](https://github.com/ggerganov/ggml) | — | — | — | — | |
 | | [MAX](https://github.com/modular/modular) | — | — | — | — | |
 
-**Correctness:** PyTorch vs ONNX Runtime: **CLOSE** (loss diff 0.27, rel error 8.8%).
+**Historical correctness:** the old PyTorch/ONNX Runtime `CLOSE` label
+predates the matched folded-BatchNorm graph and the audited validator.
 
 ## Architecture
 
@@ -80,19 +87,28 @@ Benchmark config: batch=4, 3x224x224, float32, random weights, cross-entropy los
 | Input | 3x224x224 (ImageNet) |
 | Conv layers | 53 (1x1, 3x3, 1x1 bottleneck) |
 | Residual blocks | 16 (3+4+6+3) |
-| Batch normalization | After every conv |
+| Batch normalization | Inference-folded identity scale + trainable per-channel bias |
 | Activation | ReLU |
 | Global average pool | 7x7 -> 1x1 |
 | Classifier | 2048 -> 1000 |
-| Parameters | 25.6M |
+| Parameters | 25,530,472 |
 
 ## What this exercises
 
 Completely different compute profile from transformer models:
 
 - **Conv2D** — the dominant operation, not present in LLM benchmarks
-- **Batch normalization** (not LayerNorm/RMSNorm/GroupNorm)
+- **Inference-folded BatchNorm bias** as a compact per-channel operation
 - **Residual connections** with dimension-matching 1x1 convolutions
 - **Global average pooling** — spatial reduction
 - No attention, no embedding lookup, no positional encoding
 - Tests how well frameworks optimize spatial convolution kernels
+
+## Caveats
+
+- The benchmark intentionally does not measure training-mode BatchNorm
+  statistics or their backward pass. Both engines run the same
+  inference-folded representation: identity scale plus a trainable channel
+  bias.
+- Inputs and labels are synthetic, so this measures systems performance and
+  numerical equivalence, not ImageNet accuracy.

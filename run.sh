@@ -20,14 +20,22 @@ fi
 
 # --- Pick a Python interpreter ---
 # 1. Honor $VIRTUAL_ENV if set (user activated a venv).
-# 2. On Windows, prefer `python` — venvs don't ship a `python3` shim, so
+# 2. Prefer this repository's .venv when present.
+# 3. On Windows, prefer `python` — venvs don't ship a `python3` shim, so
 #    `python3` falls through to the Store shim, which has none of our packages.
-# 3. On Linux/macOS, prefer `python3`.
+# 4. On Linux/macOS, prefer `python3`.
 if [ -n "${VIRTUAL_ENV:-}" ]; then
     if [ -x "$VIRTUAL_ENV/bin/python" ]; then
         PYTHON="$VIRTUAL_ENV/bin/python"
     elif [ -x "$VIRTUAL_ENV/Scripts/python.exe" ]; then
         PYTHON="$VIRTUAL_ENV/Scripts/python.exe"
+    fi
+fi
+if [ -z "${PYTHON:-}" ]; then
+    if [ -x "$ROOT_DIR/.venv/bin/python" ]; then
+        PYTHON="$ROOT_DIR/.venv/bin/python"
+    elif [ -x "$ROOT_DIR/.venv/Scripts/python.exe" ]; then
+        PYTHON="$ROOT_DIR/.venv/Scripts/python.exe"
     fi
 fi
 if [ -z "${PYTHON:-}" ]; then
@@ -88,6 +96,12 @@ CHECK_ONLY=false
 DRY_RUN=false
 UPDATE=false
 PLATFORM_OVERRIDE=""
+STRICT=false
+WARMUP_RUNS=5
+MEASUREMENT_RUNS=20
+PROFILE=false
+PROFILE_SAMPLES=3
+RESULTS_DIR="$ROOT_DIR/results"
 HAS_ARGS=false
 
 while [[ $# -gt 0 ]]; do
@@ -130,13 +144,43 @@ while [[ $# -gt 0 ]]; do
             PLATFORM_OVERRIDE="$2"
             shift 2
             ;;
+        --strict)
+            STRICT=true
+            HAS_ARGS=true
+            shift
+            ;;
+        --warmup-runs)
+            WARMUP_RUNS="$2"
+            HAS_ARGS=true
+            shift 2
+            ;;
+        --measurement-runs)
+            MEASUREMENT_RUNS="$2"
+            HAS_ARGS=true
+            shift 2
+            ;;
+        --profile)
+            PROFILE=true
+            HAS_ARGS=true
+            shift
+            ;;
+        --profile-samples)
+            PROFILE_SAMPLES="$2"
+            HAS_ARGS=true
+            shift 2
+            ;;
+        --results-dir)
+            RESULTS_DIR="$2"
+            HAS_ARGS=true
+            shift 2
+            ;;
         -h|--help)
             echo "inferena - Inference Arena"
             echo ""
             echo "Usage: $0 [options]"
             echo ""
             echo "Options:"
-            echo "  -m, --model <name>        Model to benchmark (default: all)"
+            echo "  -m, --model <name|all>    Model to benchmark (default: all)"
             echo "  -f, --frameworks <list>   Comma-separated frameworks (default: all)"
             echo "  --json                    Output results as JSON"
             echo "  --download                Download model weights before running"
@@ -144,6 +188,12 @@ while [[ $# -gt 0 ]]; do
             echo "  --dry-run                 Validate framework+model support without running benchmarks"
             echo "  --update                  Update models/*.md with results after benchmarking"
             echo "  --platform <name>         Override auto-detected platform name (with --update)"
+            echo "  --strict                  Disable reduced-input fast paths for an f32 control run"
+            echo "  --warmup-runs <n>         Untimed runs per measurement (default: 5)"
+            echo "  --measurement-runs <n>    Timed samples per measurement (default: 20)"
+            echo "  --profile                 Collect Meganeura per-dispatch GPU profile sidecars"
+            echo "  --profile-samples <n>     Timestamp samples per profile (default: 3)"
+            echo "  --results-dir <path>      JSON/chart artifact directory (default: results/)"
             echo "  -h, --help                Show this help"
             echo ""
             echo "Models: $ALL_MODELS"
@@ -159,6 +209,8 @@ done
 
 # Default: all models.
 if [ -z "$MODELS" ]; then
+    MODELS="$ALL_MODELS"
+elif [ "$MODELS" = "all" ]; then
     MODELS="$ALL_MODELS"
 fi
 
@@ -498,16 +550,46 @@ if [ "$UPDATE" = true ]; then
 fi
 
 # --- Create results directory ---
-mkdir -p "$ROOT_DIR/results"
+mkdir -p "$RESULTS_DIR"
 
 # --- Build all Rust crates (harness + framework runners) at once ---
 echo "Building all Rust crates..." >&2
+WORKSPACE_CARGO_ARGS=(
+    build
+    --release
+    --manifest-path "$ROOT_DIR/Cargo.toml"
+)
+WORKSPACE_LOCK_BACKUP=""
+restore_workspace_lockfile() {
+    if [ -n "$WORKSPACE_LOCK_BACKUP" ] && [ -f "$WORKSPACE_LOCK_BACKUP" ]; then
+        cp "$WORKSPACE_LOCK_BACKUP" "$ROOT_DIR/Cargo.lock"
+        rm -f "$WORKSPACE_LOCK_BACKUP"
+        WORKSPACE_LOCK_BACKUP=""
+    fi
+}
+if [ -n "${INFERENA_MEGANEURA_PATH:-}" ]; then
+    if [ ! -f "$INFERENA_MEGANEURA_PATH/Cargo.toml" ]; then
+        echo "INFERENA_MEGANEURA_PATH does not contain Cargo.toml: $INFERENA_MEGANEURA_PATH" >&2
+        exit 2
+    fi
+    INFERENA_MEGANEURA_PATH=$(cd "$INFERENA_MEGANEURA_PATH" && pwd -P)
+    export INFERENA_MEGANEURA_PATH
+    WORKSPACE_LOCK_BACKUP=$(mktemp)
+    cp "$ROOT_DIR/Cargo.lock" "$WORKSPACE_LOCK_BACKUP"
+    trap restore_workspace_lockfile EXIT
+    WORKSPACE_CARGO_ARGS+=(
+        --config
+        "patch.\"https://github.com/kvark/meganeura\".meganeura.path=\"$INFERENA_MEGANEURA_PATH\""
+    )
+fi
 if cargo gpu --version &>/dev/null; then
-    cargo build --release --manifest-path "$ROOT_DIR/Cargo.toml" --workspace 2>&1 >&2
+    cargo "${WORKSPACE_CARGO_ARGS[@]}" --workspace >&2
 else
     echo "  (cargo-gpu not found — skipping inferi; install via: cargo install cargo-gpu --git https://github.com/Rust-GPU/cargo-gpu)" >&2
-    cargo build --release --manifest-path "$ROOT_DIR/Cargo.toml" --workspace --exclude inferena-inferi 2>&1 >&2
+    cargo "${WORKSPACE_CARGO_ARGS[@]}" --workspace --exclude inferena-inferi >&2
 fi
+restore_workspace_lockfile
+trap - EXIT
 
 HARNESS="$ROOT_DIR/target/release/inferena${EXE_SUFFIX}"
 
@@ -524,7 +606,21 @@ for MODEL in $MODELS; do
         bash "$ROOT_DIR/models/download.sh" "$MODEL" || true
     fi
 
-    ARGS=("--model" "$MODEL" "--root" "$ROOT_DIR")
+    ARGS=(
+        "--model" "$MODEL"
+        "--root" "$ROOT_DIR"
+        "--results-dir" "$RESULTS_DIR"
+        "--warmup-runs" "$WARMUP_RUNS"
+        "--measurement-runs" "$MEASUREMENT_RUNS"
+    )
+
+    if [ "$STRICT" = true ]; then
+        ARGS+=("--strict")
+    fi
+
+    if [ "$PROFILE" = true ]; then
+        ARGS+=("--profile" "--profile-samples" "$PROFILE_SAMPLES")
+    fi
 
     if [ -n "$FRAMEWORKS" ]; then
         ARGS+=("--frameworks" "$FRAMEWORKS")
@@ -560,6 +656,6 @@ if [ -z "$CHART_PLATFORM" ] && [ "$DRY_RUN" != true ]; then
 fi
 if [ "$DRY_RUN" != true ]; then
     python3 "$ROOT_DIR/scripts/generate_chart.py" \
-        --results-dir "$ROOT_DIR/results" \
+        --results-dir "$RESULTS_DIR" \
         ${CHART_PLATFORM:+--platform "$CHART_PLATFORM"} || true
 fi

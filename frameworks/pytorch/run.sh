@@ -8,6 +8,18 @@ MODEL="${1:-SmolLM2-135M}"
 
 : "${PYTHON:?must be set by run.sh}"
 
+# Own the CUDA-library override before importing torch. Strict mode closes the
+# environment-variable escape hatch that can force TF32 even when
+# torch.set_float32_matmul_precision("highest") is requested. The practical
+# default leaves the choice to the explicit PyTorch settings in bench.py.
+if [ "${INFERENA_STRICT:-0}" = "1" ]; then
+    export NVIDIA_TF32_OVERRIDE=0
+    unset TORCH_ALLOW_TF32_CUBLAS_OVERRIDE
+else
+    unset NVIDIA_TF32_OVERRIDE
+    unset TORCH_ALLOW_TF32_CUBLAS_OVERRIDE
+fi
+
 # Check torch is importable.
 if ! "$PYTHON" -c "import torch" 2>/dev/null; then
     ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"

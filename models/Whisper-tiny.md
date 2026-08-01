@@ -4,15 +4,22 @@ title: Whisper-tiny
 permalink: /models/Whisper-tiny
 ---
 
-# Whisper-tiny
+# Whisper-tiny encoder
 
-[openai/whisper-tiny](https://hf.co/openai/whisper-tiny) — Encoder-decoder transformer for speech recognition. ~39M parameters.
-
-Uses a custom tiny configuration (4 encoder + 4 decoder layers) for fast benchmarking.
+[openai/whisper-tiny](https://hf.co/openai/whisper-tiny) supplies the
+configuration, but the audited workload is the four-layer **encoder only**:
+8,208,384 total parameters, of which 7,632,384 are trainable. It is not a
+full speech-to-text pipeline.
 
 ## Results
 
-Benchmark config: 30s mel spectrogram (80x3000), 4-token decoder input, float32, random weights.
+Benchmark config: batch=1, synthetic 30-second mel spectrogram (80×3000),
+float32, deterministic matched weights, and mean-square encoder-output loss.
+The positional embedding is frozen in both implementations.
+
+The table below predates the current timing and validation metadata and
+includes runners that measured older or different Whisper workloads.
+Regenerate it before using the numbers in a publication.
 
 | Platform | Framework | Compile (s) | Inference (ms) | Latency (ms) | Training (ms) | Loss |
 |----------|-----------|:-----------:|:--------------:|:------------:|:-------------:|:----:|
@@ -72,7 +79,9 @@ Benchmark config: 30s mel spectrogram (80x3000), 4-token decoder input, float32,
 | | [Meganeura](https://github.com/kvark/meganeura/tree/8042e00) (Vulkan) | 0.82 | **4.8** | **4.8** | **21** | 0.01 |
 | | [MAX](https://github.com/modular/modular) | — | — | — | — | |
 
-**Correctness:** PyTorch vs ONNX Runtime: **PASS** (loss diff 0.0).
+**Historical correctness:** the old table's PyTorch/ONNX Runtime `PASS`
+applies to the prior workload and validator, not the audited encoder
+comparison.
 
 ## Architecture
 
@@ -83,27 +92,23 @@ Benchmark config: 30s mel spectrogram (80x3000), 4-token decoder input, float32,
 | | Attention heads | 6 |
 | | Model dim | 384 |
 | | FFN dim | 1536 |
-| **Decoder** | Transformer layers | 4 |
-| | Cross-attention | encoder->decoder at each layer |
-| | Attention heads | 6 |
-| | Model dim | 384 |
-| | FFN dim | 1536 |
-| | Vocab size | 51865 |
 | **Input** | Mel spectrogram | 80 bins x 3000 frames (30s) |
-| **Parameters** | Total | ~39M |
+| **Objective** | Training loss | Mean square of encoder output |
+| **Parameters** | Total / trainable | 8,208,384 / 7,632,384 |
 
 ## What this exercises
 
 Exercises several operations absent from text-only LLMs:
 
 - **Conv1D** — audio frontend (mel spectrogram -> encoder input)
-- **Encoder-decoder cross-attention** — not just self-attention
-- **Sinusoidal positional encoding** (encoder) + learned positions (decoder)
-- **Encoder-decoder architecture** — separate compute graphs with cross-attention bridge
-- Tests framework support for multi-modal input processing
+- **Full bidirectional self-attention** over 1,500 encoded positions
+- **Learned positional embedding**, frozen as in the reference encoder
+- **LayerNorm and GELU** in an audio-transformer workload
+- Tests the same training-capable compiler on a long-sequence speech encoder
 
 ## Caveats
 
-- Uses a custom tiny config (4+4 layers, d=384), not the full whisper-tiny from OpenAI
+- Uses the Whisper-tiny encoder shape (4 layers, d=384), not its decoder
 - Input is synthetic mel spectrogram, not real audio
-- Decoder runs with a 4-token input (language/task tokens), not full transcription
+- The objective is a synthetic differentiable systems workload, not a
+  transcription-quality evaluation

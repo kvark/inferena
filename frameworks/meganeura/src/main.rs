@@ -45,6 +45,18 @@ fn sha256_f32(data: &[f32]) -> String {
     format!("sha256:{}", hex::encode(hasher.finalize()))
 }
 
+fn validation_sample(data: &[f32], count: usize) -> Vec<f64> {
+    if data.len() <= count {
+        return data.iter().map(|&value| value as f64).collect();
+    }
+    (0..count)
+        .map(|index| {
+            let source_index = index * (data.len() - 1) / (count - 1);
+            data[source_index] as f64
+        })
+        .collect()
+}
+
 /// Deterministic seed from parameter name — framework-independent init.
 fn name_seed(name: &str) -> f32 {
     let mut h: u32 = 0;
@@ -104,12 +116,15 @@ fn load_weights(
     }
 }
 
-fn compute_grad_norm(session: &meganeura::Session) -> f64 {
+fn compute_grad_norm(
+    session: &meganeura::Session,
+) -> (f64, std::collections::BTreeMap<String, f64>) {
     let plan = session.plan();
     let num_buffers = plan.buffers.len();
     let mut norm_sq = 0.0f64;
     let mut total_params = 0usize;
     let mut param_norms: Vec<(String, f64, usize)> = Vec::new();
+    let mut gradient_norms = std::collections::BTreeMap::new();
     for (name, buf_ref) in plan.param_buffers.iter() {
         let grad_pair = plan.param_grad_pairs.iter().find(|&&(p, _)| p == *buf_ref);
         let grad_buf = match grad_pair {
@@ -119,17 +134,27 @@ fn compute_grad_norm(session: &meganeura::Session) -> f64 {
         if buf_ref.0 as usize >= num_buffers || grad_buf.0 as usize >= num_buffers {
             continue;
         }
-        let n = plan.buffers[buf_ref.0 as usize] / 4;
+        let parameter_size = plan.buffers[buf_ref.0 as usize] / 4;
+        // Cooperative kernels pad gradient output buffers to whole tiles.
+        // Read only the logical parameter extent. A one-element gradient for
+        // a larger parameter is the autodiff placeholder for a dead/fused
+        // logical parameter and must not appear in the canonical map.
         let grad_size = plan.buffers[grad_buf.0 as usize] / 4;
-        if n != grad_size {
+        if grad_size == 1 && parameter_size > 1 {
             continue;
         }
-        let mut grad = vec![0.0f32; n];
+        assert!(
+            grad_size >= parameter_size,
+            "gradient buffer for {name} is smaller than its parameter"
+        );
+        let mut grad = vec![0.0f32; parameter_size];
         session.read_param_grad(name, &mut grad);
         let param_sq: f64 = grad.iter().map(|&v| (v as f64) * (v as f64)).sum();
         norm_sq += param_sq;
         total_params += 1;
-        param_norms.push((name.clone(), param_sq.sqrt(), n));
+        let param_norm = param_sq.sqrt();
+        gradient_norms.insert(name.clone(), param_norm);
+        param_norms.push((name.clone(), param_norm, parameter_size));
     }
     let grad_norm = norm_sq.sqrt();
     eprintln!("[meganeura] grad_norm={grad_norm:.6} ({total_params} params with gradients)");
@@ -138,36 +163,239 @@ fn compute_grad_norm(session: &meganeura::Session) -> f64 {
     for (name, norm, n) in param_norms.iter().take(10) {
         eprintln!("  {name}: {norm:.6} ({n} params)");
     }
-    grad_norm
+    (grad_norm, gradient_norms)
 }
 
-/// Warm up a session (3 runs) then return the best of 5 timed runs in ms.
+#[derive(Clone, Debug)]
+struct BenchStats {
+    samples_ms: Vec<f64>,
+    median_ms: f64,
+    p25_ms: f64,
+    p75_ms: f64,
+}
+
+fn benchmark_counts() -> (usize, usize) {
+    let warmups = std::env::var("INFERENA_WARMUP_RUNS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(5);
+    let samples = std::env::var("INFERENA_MEASUREMENT_RUNS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(20);
+    assert!(samples > 0, "INFERENA_MEASUREMENT_RUNS must be positive");
+    (warmups, samples)
+}
+
+fn quantile(sorted: &[f64], q: f64) -> f64 {
+    if sorted.len() == 1 {
+        return sorted[0];
+    }
+    let position = (sorted.len() - 1) as f64 * q;
+    let low = position.floor() as usize;
+    let high = (low + 1).min(sorted.len() - 1);
+    let fraction = position - low as f64;
+    sorted[low] * (1.0 - fraction) + sorted[high] * fraction
+}
+
+impl BenchStats {
+    fn from_samples(samples_ms: Vec<f64>) -> Self {
+        let mut sorted = samples_ms.clone();
+        sorted.sort_by(f64::total_cmp);
+        Self {
+            median_ms: quantile(&sorted, 0.5),
+            p25_ms: quantile(&sorted, 0.25),
+            p75_ms: quantile(&sorted, 0.75),
+            samples_ms,
+        }
+    }
+}
+
+/// What Meganeura's per-phase `allocated_bytes` counts. Recorded with every
+/// figure so it can never be tabulated against PyTorch's allocator
+/// high-water mark as if the two measured the same thing.
+const PLAN_MEMORY_BASIS: &str = "execution-plan physical allocation after lifetime-based aliasing";
+
+/// GPU memory collected per phase.
+///
+/// Each phase must be recorded while its session is alive: the plan's
+/// allocation is released when the session drops, and these runners drop
+/// inference sessions before building the training graph.
+#[derive(Default)]
+struct MemoryCollector {
+    phases: serde_json::Map<String, serde_json::Value>,
+    /// Largest per-process device usage seen at any phase boundary.
+    peak_process_bytes: Option<u64>,
+    budget_bytes: Option<u64>,
+}
+
+impl MemoryCollector {
+    fn record(&mut self, phase: &str, session: &meganeura::Session) {
+        let summary = session.memory_summary();
+        self.phases.insert(
+            phase.to_string(),
+            serde_json::json!({
+                "allocated_bytes": summary.allocated_buffer_bytes,
+                "basis": PLAN_MEMORY_BASIS,
+                // Same plan without lifetime reuse — the aliasing saving is
+                // the difference between this and `allocated_bytes`.
+                "plan_logical_bytes": summary.total_buffer_bytes,
+                "device_local_bytes": summary.device_local_bytes,
+                "largest_buffer_bytes": summary.largest_buffer_bytes,
+                "optimizer_state_bytes": summary.adam_state_bytes,
+                "buffer_count": summary.num_buffers,
+                "allocation_count": summary.num_allocations,
+            }),
+        );
+        if let Some(stats) = session.device_memory_stats() {
+            self.peak_process_bytes = Some(
+                self.peak_process_bytes
+                    .map_or(stats.usage_bytes, |peak| peak.max(stats.usage_bytes)),
+            );
+            self.budget_bytes = Some(stats.budget_bytes);
+        }
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        let device = self.peak_process_bytes.map(|process_bytes| {
+            serde_json::json!({
+                "process_bytes": process_bytes,
+                "budget_bytes": self.budget_bytes,
+                "process_source": if cfg!(target_vendor = "apple") {
+                    "metal-current-allocated"
+                } else {
+                    "vulkan-memory-budget"
+                },
+                // Sampled between phases, not continuously during a step,
+                // so this bounds residency from below.
+                "sampled_at": "maximum over phase boundaries after warmup",
+            })
+        });
+        serde_json::json!({ "device": device, "phases": self.phases })
+    }
+}
+
+/// Warm up a session, retain every timed sample, and summarize by median.
 fn bench_session(
     session: &mut meganeura::Session,
     set_inputs: &dyn Fn(&mut meganeura::Session),
-) -> f64 {
-    for _ in 0..3 {
+) -> BenchStats {
+    let (warmups, samples) = benchmark_counts();
+    for _ in 0..warmups {
         set_inputs(session);
         session.step();
         session.wait();
     }
-    let mut best = f64::MAX;
-    for _ in 0..5 {
+    let mut samples_ms = Vec::with_capacity(samples);
+    for _ in 0..samples {
         set_inputs(session);
         let t0 = Instant::now();
         session.step();
         session.wait();
-        let ms = t0.elapsed().as_secs_f64() * 1000.0;
-        if ms < best {
-            best = ms;
-        }
+        samples_ms.push(t0.elapsed().as_secs_f64() * 1000.0);
     }
-    best
+    BenchStats::from_samples(samples_ms)
+}
+
+fn capture_gap_profile(
+    model: &str,
+    mode: &str,
+    session: &mut meganeura::Session,
+    benchmark: &BenchStats,
+    set_inputs: &dyn Fn(&mut meganeura::Session),
+) -> Option<String> {
+    let profile_dir = std::env::var_os("INFERENA_PROFILE_DIR")?;
+    let sample_count = std::env::var("INFERENA_PROFILE_SAMPLES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(3);
+    assert!(
+        sample_count > 0,
+        "INFERENA_PROFILE_SAMPLES must be positive"
+    );
+
+    let profile_dir = std::path::PathBuf::from(profile_dir);
+    std::fs::create_dir_all(&profile_dir).unwrap_or_else(|error| {
+        panic!(
+            "failed to create profile directory {}: {error}",
+            profile_dir.display()
+        )
+    });
+    let strict = std::env::var("INFERENA_STRICT").as_deref() == Ok("1");
+    let precision = if strict {
+        "strict-f32"
+    } else {
+        "accelerated-f32"
+    };
+    let slug: String = model
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let path = profile_dir.join(format!("{slug}_{mode}_{precision}.json"));
+
+    eprintln!("[meganeura] profiling {model} {mode}: {sample_count} retained GPU samples");
+    let profile = meganeura::profiler::capture_session_profile(
+        session,
+        |session| set_inputs(session),
+        meganeura::profiler::CaptureOptions {
+            samples: sample_count,
+            unprofiled_median_ms: Some(benchmark.median_ms),
+            include_pipeline_statistics: true,
+        },
+    )
+    .unwrap_or_else(|error| panic!("failed to profile {model} {mode}: {error}"));
+
+    let artifact = serde_json::json!({
+        "schema_version": 1,
+        "artifact": "inferena-meganeura-gap-profile",
+        "model": model,
+        "mode": mode,
+        "precision": precision,
+        "framework_rev": std::env::var("FRAMEWORK_REV").unwrap_or_default(),
+        "environment": {
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+        },
+        "graph_optimizer": {
+            "mode": std::env::var("MEGANEURA_OPTIMIZER").unwrap_or_else(|_| "greedy".to_string()),
+            "extraction_cost": std::env::var("MEGANEURA_EGRAPH_COST").unwrap_or_else(|_| "tensor-traffic".to_string()),
+        },
+        "benchmark_protocol": "inferena-paper-v1",
+        "normal_benchmark": {
+            "samples_ms": &benchmark.samples_ms,
+            "median_ms": benchmark.median_ms,
+            "p25_ms": benchmark.p25_ms,
+            "p75_ms": benchmark.p75_ms,
+        },
+        "profile": profile,
+    });
+    let file = std::fs::File::create(&path)
+        .unwrap_or_else(|error| panic!("failed to create {}: {error}", path.display()));
+    serde_json::to_writer_pretty(std::io::BufWriter::new(file), &artifact)
+        .unwrap_or_else(|error| panic!("failed to write {}: {error}", path.display()));
+    eprintln!("[meganeura] wrote {}", path.display());
+    let directory_name = profile_dir
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("profiles");
+    let file_name = path
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .expect("profile filename is UTF-8");
+    Some(format!("{directory_name}/{file_name}"))
 }
 
 fn bench_smollm2(model_name: &str) {
     use meganeura::models::smollm2::{self, SmolLM2Config};
 
+    let mut profile_artifacts = std::collections::BTreeMap::new();
+    let mut memory = MemoryCollector::default();
     let (repo_id, config) = match model_name {
         "SmolLM2-135M" => ("HuggingFaceTB/SmolLM2-135M", SmolLM2Config::smollm2_135m()),
         _ => {
@@ -197,6 +425,7 @@ fn bench_smollm2(model_name: &str) {
 
     eprintln!("[meganeura] compiling...");
     let mut session = build_inference_session(&g);
+    let mut compile_s = compile_start.elapsed().as_secs_f64();
 
     // --- Load weights ---
     let transposed = smollm2::transposed_weight_names(&config);
@@ -204,7 +433,6 @@ fn bench_smollm2(model_name: &str) {
         transposed.iter().map(|s| s.as_str()).collect();
     load_weights(&mut session, &model, &transposed_set);
 
-    let compile_s = compile_start.elapsed().as_secs_f64();
     eprintln!("[meganeura] ready (compile: {compile_s:.2}s)");
 
     // --- Forward ---
@@ -214,9 +442,14 @@ fn bench_smollm2(model_name: &str) {
         .collect();
 
     // Warm-up + timed: 3 warmup runs + best of 5.
-    let forward_ms = bench_session(&mut session, &|s| {
+    let forward = bench_session(&mut session, &|s| {
         s.set_input_u32("token_ids", &input_ids);
     });
+    if let Some(path) = capture_gap_profile(model_name, "inference", &mut session, &forward, &|s| {
+        s.set_input_u32("token_ids", &input_ids)
+    }) {
+        profile_artifacts.insert("inference", path);
+    }
 
     let all_logits = session.read_output(seq_len * vocab);
 
@@ -240,16 +473,29 @@ fn bench_smollm2(model_name: &str) {
     // --- Latency (single-token forward) ---
     // Build a separate seq_len=1 inference graph.
     eprintln!("[meganeura] measuring single-token latency...");
+    let lat_compile_start = Instant::now();
     let mut lat_g = Graph::new();
     let lat_logits = smollm2::build_graph(&mut lat_g, &config, 1);
     lat_g.set_outputs(vec![lat_logits]);
     let mut lat_session = build_inference_session(&lat_g);
+    compile_s += lat_compile_start.elapsed().as_secs_f64();
     // Copy weights from main session.
     load_weights(&mut lat_session, &model, &transposed_set);
-    // Warm-up + timed: 3 warmup runs + best of 5.
-    let latency_ms = bench_session(&mut lat_session, &|s| {
+    let latency = bench_session(&mut lat_session, &|s| {
         s.set_input_u32("token_ids", &[0u32]);
     });
+    if let Some(path) =
+        capture_gap_profile(model_name, "latency", &mut lat_session, &latency, &|s| {
+            s.set_input_u32("token_ids", &[0u32])
+        })
+    {
+        profile_artifacts.insert("latency", path);
+    }
+
+    // Record memory while the plans are still resident — dropping a session
+    // releases the allocation this measures.
+    memory.record("inference", &session);
+    memory.record("latency", &lat_session);
 
     // Drop inference sessions to free GPU memory before training.
     drop(session);
@@ -257,9 +503,11 @@ fn bench_smollm2(model_name: &str) {
 
     // --- Training step (forward + backward) ---
     eprintln!("[meganeura] building training graph...");
+    let train_compile_start = Instant::now();
     let training_g = smollm2::build_training_graph(&config, seq_len);
     eprintln!("[meganeura] compiling training session...");
     let mut train_session = build_session(&training_g);
+    compile_s += train_compile_start.elapsed().as_secs_f64();
     load_weights(&mut train_session, &model, &transposed_set);
 
     // `labels[pos]` is already the target for position `pos` (see the
@@ -271,36 +519,57 @@ fn bench_smollm2(model_name: &str) {
         one_hot_labels[pos * vocab + target] = 1.0;
     }
 
-    // Warm-up training: 3 runs + best of 5.
-    let train_ms = bench_session(&mut train_session, &|s| {
+    let training = bench_session(&mut train_session, &|s| {
         s.set_input_u32("token_ids", &input_ids);
         s.set_input("labels", &one_hot_labels);
     });
-    let backward_ms = (train_ms - forward_ms).max(0.0);
+    if let Some(path) = capture_gap_profile(
+        model_name,
+        "training",
+        &mut train_session,
+        &training,
+        &|s| {
+            s.set_input_u32("token_ids", &input_ids);
+            s.set_input("labels", &one_hot_labels);
+        },
+    ) {
+        profile_artifacts.insert("training", path);
+    }
 
-    let grad_norm = compute_grad_norm(&train_session);
+    memory.record("training", &train_session);
+    let (grad_norm, gradient_norms) = compute_grad_norm(&train_session);
     if !grad_norm.is_finite() || grad_norm > 1e6 {
         eprintln!(
             "[meganeura] WARNING: grad_norm={grad_norm:.1} is suspiciously large — \
              possible GPU driver issue (see https://github.com/kvark/meganeura/issues/TBD)"
         );
     }
+    let gpu_name = train_session.device_information().device_name.clone();
+    let environment = environment_json(&train_session);
 
     emit_result(
         model_name,
         compile_s,
-        forward_ms,
-        backward_ms,
+        &forward,
+        &training,
         &all_logits,
+        &[1, seq_len, vocab],
         loss,
-        latency_ms,
+        &latency,
         grad_norm,
+        &gradient_norms,
+        &gpu_name,
+        &profile_artifacts,
+        &memory,
+        &environment,
     );
 }
 
 fn bench_smolvla() {
     use meganeura::models::smolvla::{self, SmolVLAConfig};
 
+    let mut profile_artifacts = std::collections::BTreeMap::new();
+    let mut memory = MemoryCollector::default();
     let config = SmolVLAConfig::smolvla_base();
     let action_seq_len: usize = 50;
     let vlm_seq_len: usize = 16;
@@ -317,7 +586,7 @@ fn bench_smolvla() {
     eprintln!("[meganeura] compiling inference session...");
     let mut infer_session = build_inference_session(&infer_g);
 
-    let compile_s = compile_start.elapsed().as_secs_f64();
+    let mut compile_s = compile_start.elapsed().as_secs_f64();
     eprintln!("[meganeura] inference ready (compile: {compile_s:.2}s)");
 
     // --- Initialize with deterministic random values ---
@@ -348,30 +617,12 @@ fn bench_smolvla() {
     };
 
     // --- Forward (inference session) ---
-    // Warm-up: 3 runs to stabilize pipeline caches and GPU clocks.
-    for _ in 0..3 {
-        set_inputs(&mut infer_session);
-        infer_session.step();
-        infer_session.wait();
-    }
-
-    // Timed: best of 5 runs.
-    let mut best_ms = f64::MAX;
-    for _ in 0..5 {
-        set_inputs(&mut infer_session);
-        let t0 = Instant::now();
-        infer_session.step();
-        infer_session.wait();
-        let ms = t0.elapsed().as_secs_f64() * 1000.0;
-        if ms < best_ms {
-            best_ms = ms;
-        }
-    }
-    let forward_ms = best_ms;
+    let forward = bench_session(&mut infer_session, &set_inputs);
 
     let output = infer_session.read_output(action_seq_len * action_dim);
     eprintln!(
-        "[meganeura] forward: {forward_ms:.2}ms, {} outputs",
+        "[meganeura] forward: {:.2}ms, {} outputs",
+        forward.median_ms,
         output.len()
     );
 
@@ -395,153 +646,299 @@ fn bench_smolvla() {
         );
     }
     let loss: f64 = output.iter().map(|&v| (v as f64).powi(2)).sum::<f64>() / output.len() as f64;
+    if let Some(path) = capture_gap_profile(
+        "SmolVLA",
+        "inference",
+        &mut infer_session,
+        &forward,
+        &set_inputs,
+    ) {
+        profile_artifacts.insert("inference", path);
+    }
 
-    // --- Training step (forward + backward + SGD) ---
+    // --- Training step (forward + loss + backward; no optimizer update) ---
+    memory.record("inference", &infer_session);
     // Drop inference session to free GPU memory before training.
     drop(infer_session);
 
     eprintln!("[meganeura] building SmolVLA training graph...");
+    let train_compile_start = Instant::now();
     let training_g = smolvla::build_action_expert_training(&config, action_seq_len, vlm_seq_len);
     eprintln!("[meganeura] compiling training session...");
     let mut train_session = build_session(&training_g);
+    compile_s += train_compile_start.elapsed().as_secs_f64();
 
     init_params(&mut train_session);
 
     let target_actions = vec![0.0f32; action_seq_len * action_dim];
 
-    // Warm-up training steps.
-    for _ in 0..3 {
-        set_inputs(&mut train_session);
-        train_session.set_input("target_actions", &target_actions);
-        train_session.set_learning_rate(0.0);
-        train_session.step();
-        train_session.wait();
+    let training = bench_session(&mut train_session, &|session| {
+        set_inputs(session);
+        session.set_input("target_actions", &target_actions);
+    });
+    if let Some(path) = capture_gap_profile(
+        "SmolVLA",
+        "training",
+        &mut train_session,
+        &training,
+        &|session| {
+            set_inputs(session);
+            session.set_input("target_actions", &target_actions);
+        },
+    ) {
+        profile_artifacts.insert("training", path);
     }
-
-    // Timed: best of 5 runs.
-    let mut best_train = f64::MAX;
-    for _ in 0..5 {
-        set_inputs(&mut train_session);
-        train_session.set_input("target_actions", &target_actions);
-        train_session.set_learning_rate(0.0);
-        let t0 = Instant::now();
-        train_session.step();
-        train_session.wait();
-        let ms = t0.elapsed().as_secs_f64() * 1000.0;
-        if ms < best_train {
-            best_train = ms;
-        }
-    }
-    let train_ms = best_train;
-    // Approximate backward as train_step - forward.
-    let backward_ms = (train_ms - forward_ms).max(0.0);
 
     // --- Latency (single action chunk) ---
     eprintln!("[meganeura] measuring single-chunk latency...");
+    let lat_compile_start = Instant::now();
     let mut lat_g = Graph::new();
     let lat_pred = smolvla::build_action_expert(&mut lat_g, &config, 1, vlm_seq_len);
     lat_g.set_outputs(vec![lat_pred]);
     let mut lat_session = build_inference_session(&lat_g);
+    compile_s += lat_compile_start.elapsed().as_secs_f64();
     init_params(&mut lat_session);
     let lat_actions: Vec<f32> = (0..action_dim).map(|i| (i as f32 * 0.01).sin()).collect();
     let lat_timestep = &timestep;
-    lat_session.set_input("noisy_actions", &lat_actions);
-    lat_session.set_input("timestep", lat_timestep);
-    for i in 0..config.expert.num_layers {
-        if i % config.expert.self_attn_every_n_layers != 0 {
-            lat_session.set_input(&format!("vlm_kv_layer_{i}"), &vlm_kv);
-        }
-    }
-    // Warm-up.
-    for _ in 0..3 {
-        lat_session.set_input("noisy_actions", &lat_actions);
-        lat_session.set_input("timestep", lat_timestep);
+    let latency = bench_session(&mut lat_session, &|session| {
+        session.set_input("noisy_actions", &lat_actions);
+        session.set_input("timestep", lat_timestep);
         for i in 0..config.expert.num_layers {
             if i % config.expert.self_attn_every_n_layers != 0 {
-                lat_session.set_input(&format!("vlm_kv_layer_{i}"), &vlm_kv);
+                session.set_input(&format!("vlm_kv_layer_{i}"), &vlm_kv);
             }
         }
-        lat_session.step();
-        lat_session.wait();
-    }
-    // Timed: best of 5.
-    let mut best_lat = f64::MAX;
-    for _ in 0..5 {
-        lat_session.set_input("noisy_actions", &lat_actions);
-        lat_session.set_input("timestep", lat_timestep);
-        for i in 0..config.expert.num_layers {
-            if i % config.expert.self_attn_every_n_layers != 0 {
-                lat_session.set_input(&format!("vlm_kv_layer_{i}"), &vlm_kv);
+    });
+    if let Some(path) = capture_gap_profile(
+        "SmolVLA",
+        "latency",
+        &mut lat_session,
+        &latency,
+        &|session| {
+            session.set_input("noisy_actions", &lat_actions);
+            session.set_input("timestep", lat_timestep);
+            for i in 0..config.expert.num_layers {
+                if i % config.expert.self_attn_every_n_layers != 0 {
+                    session.set_input(&format!("vlm_kv_layer_{i}"), &vlm_kv);
+                }
             }
-        }
-        let t0 = Instant::now();
-        lat_session.step();
-        lat_session.wait();
-        let ms = t0.elapsed().as_secs_f64() * 1000.0;
-        if ms < best_lat {
-            best_lat = ms;
-        }
+        },
+    ) {
+        profile_artifacts.insert("latency", path);
     }
-    let latency_ms = best_lat;
 
-    let grad_norm = compute_grad_norm(&train_session);
+    memory.record("training", &train_session);
+    let (grad_norm, gradient_norms) = compute_grad_norm(&train_session);
+    let gpu_name = train_session.device_information().device_name.clone();
+    let environment = environment_json(&train_session);
 
     emit_result(
         "SmolVLA",
         compile_s,
-        forward_ms,
-        backward_ms,
+        &forward,
+        &training,
         &output,
+        &[1, action_seq_len, action_dim],
         loss,
-        latency_ms,
+        &latency,
         grad_norm,
+        &gradient_norms,
+        &gpu_name,
+        &profile_artifacts,
+        &memory,
+        &environment,
     );
+}
+
+/// Kernel release string on unix, absent elsewhere.
+fn kernel_release() -> Option<String> {
+    if !cfg!(unix) {
+        return None;
+    }
+    std::process::Command::new("uname")
+        .arg("-r")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|release| !release.is_empty())
+}
+
+/// Environment metadata the paper protocol requires for a device row.
+///
+/// Driver identity is the primary confound across a multi-vendor matrix and
+/// cannot be reconstructed once a run is archived, so it is recorded in the
+/// result itself rather than left to the operator's notes.
+fn environment_json(session: &meganeura::Session) -> serde_json::Value {
+    let information = session.device_information();
+    // Match the enumerated device against the one this context selected, so
+    // the row carries a device identifier as well as a marketing name.
+    let device_id = session
+        .context()
+        .enumerate_devices()
+        .into_iter()
+        .find(|report| report.information.device_name == information.device_name)
+        .map(|report| report.device_id);
+    serde_json::json!({
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "kernel": kernel_release(),
+        "gpu_device_name": information.device_name,
+        "gpu_driver_name": information.driver_name,
+        "gpu_driver_info": information.driver_info,
+        "gpu_software_emulated": information.is_software_emulated,
+        "gpu_device_id": device_id,
+        "gpu_device_local_budget_bytes": session
+            .device_memory_stats()
+            .map(|stats| stats.budget_bytes),
+    })
 }
 
 fn detect_backend() -> &'static str {
     if cfg!(target_os = "macos") {
         "Metal"
-    } else if cfg!(target_os = "windows") {
-        "Vulkan/DX12"
     } else {
         "Vulkan"
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_result(
     model: &str,
     compile_s: f64,
-    forward_ms: f64,
-    backward_ms: f64,
+    forward: &BenchStats,
+    training: &BenchStats,
     output: &[f32],
+    output_shape: &[usize],
     loss: f64,
-    latency_ms: f64,
+    latency: &BenchStats,
     grad_norm: f64,
+    gradient_norms: &std::collections::BTreeMap<String, f64>,
+    gpu_name: &str,
+    profile_artifacts: &std::collections::BTreeMap<&'static str, String>,
+    memory: &MemoryCollector,
+    environment: &serde_json::Value,
 ) {
+    assert_eq!(output_shape.iter().product::<usize>(), output.len());
     let hash = sha256_f32(output);
-    let sample: Vec<f64> = output.iter().take(16).map(|&v| v as f64).collect();
+    let sample = validation_sample(output, 256);
     let backend = detect_backend();
+    let (warmup_runs, measurement_runs) = benchmark_counts();
+    let strict = std::env::var("INFERENA_STRICT").as_deref() == Ok("1");
+    let accelerated = !strict;
+    let precision = if accelerated {
+        let reduced_attention_backward =
+            std::env::var("MEGANEURA_FLASH_BWD_COOP").as_deref() == Ok("1");
+        serde_json::json!({
+            "comparison_class": "reduced-input-f32-accumulate",
+            "tensor_storage": "f32",
+            "matmul_inputs": "forward: f16 for eligible cooperative-matrix kernels; f32 otherwise",
+            "attention_inputs": "forward: f16 for eligible cooperative-matrix kernels; f32 otherwise",
+            "convolution_inputs": "forward: f16 for eligible cooperative-matrix kernels; f32 otherwise",
+            "backward_matmul_inputs": "f32",
+            "backward_convolution_inputs": "f32",
+            "backward_attention_inputs": if reduced_attention_backward {
+                "experimental f16 cooperative-matrix path"
+            } else {
+                "f32"
+            },
+            "accumulation": "f32",
+            "output": "f32",
+            "reduced_precision_allowed": true,
+            "f16_cooperative_matrix_permitted": std::env::var("MEGANEURA_COOP_F16").is_ok(),
+            "persistent_f16_tensors": false,
+        })
+    } else {
+        serde_json::json!({
+            "comparison_class": "strict-f32",
+            "tensor_storage": "f32",
+            "matmul_inputs": "f32",
+            "attention_inputs": "f32",
+            "convolution_inputs": "f32",
+            "accumulation": "f32",
+            "output": "f32",
+            "reduced_precision_allowed": false,
+            "f16_cooperative_matrix_permitted": false,
+            "persistent_f16_tensors": false,
+        })
+    };
 
     let rev = std::env::var("FRAMEWORK_REV").unwrap_or_default();
+    let workload_metrics = model.starts_with("SmolLM").then(|| {
+        serde_json::json!({
+            "prefill_ms": (forward.median_ms * 1000.0).round() / 1000.0,
+            "prefill_tokens": 128,
+            "stateless_one_token_ms": (latency.median_ms * 1000.0).round() / 1000.0,
+            "has_kv_cache": false,
+            "decode_ms": serde_json::Value::Null,
+        })
+    });
 
     let result = serde_json::json!({
         "framework": "meganeura",
         "framework_rev": rev,
         "model": model,
         "device": backend,
-        "gpu_name": backend,
+        "gpu_name": gpu_name,
         "backend": backend,
-        "timings": {
-            "compile_s": (compile_s * 100.0).round() / 100.0,
-            "inference_ms": (forward_ms * 1000.0).round() / 1000.0,
-            "latency_ms": (latency_ms * 1000.0).round() / 1000.0,
-            "training_ms": (backward_ms * 1000.0).round() / 1000.0,
+        "environment": environment,
+        "protocol": {
+            "name": "inferena-paper-v1",
+            "warmup_runs": warmup_runs,
+            "measurement_runs": measurement_runs,
+            "statistic": "median",
+            "training_scope": "forward + loss + backward; no optimizer update",
+            "compile_scope": "graph construction, optimization, and GPU pipeline creation for inference, training, and latency sessions",
         },
+        "precision": precision,
+        "optimizer": {
+            "mode": std::env::var("MEGANEURA_OPTIMIZER").unwrap_or_else(|_| "greedy".to_string()),
+            "extraction_cost": std::env::var("MEGANEURA_EGRAPH_COST").unwrap_or_else(|_| "tensor-traffic".to_string()),
+        },
+        "timings": {
+            "compile_s": (compile_s * 1000.0).round() / 1000.0,
+            "inference_ms": (forward.median_ms * 1000.0).round() / 1000.0,
+            "latency_ms": (latency.median_ms * 1000.0).round() / 1000.0,
+            "training_ms": (training.median_ms * 1000.0).round() / 1000.0,
+        },
+        "timing_samples_ms": {
+            "inference": forward.samples_ms,
+            "latency": latency.samples_ms,
+            "training": training.samples_ms,
+        },
+        "timing_summary_ms": {
+            "inference": {
+                "median": forward.median_ms,
+                "p25": forward.p25_ms,
+                "p75": forward.p75_ms,
+                "min": forward.samples_ms.iter().copied().fold(f64::INFINITY, f64::min),
+                "max": forward.samples_ms.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+            },
+            "latency": {
+                "median": latency.median_ms,
+                "p25": latency.p25_ms,
+                "p75": latency.p75_ms,
+                "min": latency.samples_ms.iter().copied().fold(f64::INFINITY, f64::min),
+                "max": latency.samples_ms.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+            },
+            "training": {
+                "median": training.median_ms,
+                "p25": training.p25_ms,
+                "p75": training.p75_ms,
+                "min": training.samples_ms.iter().copied().fold(f64::INFINITY, f64::min),
+                "max": training.samples_ms.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+            },
+        },
+        "workload_metrics": workload_metrics,
+        "profile_artifacts": profile_artifacts,
+        "memory": memory.to_json(),
         "outputs": {
             "logits_hash": hash,
+            "output_shape": output_shape,
             "logits_sample": sample,
             "loss": if loss.is_nan() { -1.0 } else { (loss * 1_000_000.0).round() / 1_000_000.0 },
             "grad_norm": if grad_norm.is_nan() { -1.0 } else { (grad_norm * 1_000_000.0).round() / 1_000_000.0 },
+            "gradient_norms": gradient_norms,
         },
     });
 
@@ -551,6 +948,8 @@ fn emit_result(
 fn bench_stable_diffusion() {
     use meganeura::models::sd_unet::{self, SDUNetConfig};
 
+    let mut profile_artifacts = std::collections::BTreeMap::new();
+    let mut memory = MemoryCollector::default();
     let config = SDUNetConfig::small();
     let batch = config.batch_size;
     let in_c = config.in_channels;
@@ -564,20 +963,28 @@ fn bench_stable_diffusion() {
     infer_g.set_outputs(vec![pred]);
     let mut infer_session = build_inference_session(&infer_g);
 
-    let compile_s = compile_start.elapsed().as_secs_f64();
+    let mut compile_s = compile_start.elapsed().as_secs_f64();
     eprintln!("[meganeura] ready (compile: {compile_s:.2}s)");
 
     // --- Initialize with deterministic values ---
-    // Use name-seeded init so PyTorch's _name_seeded_init can match exactly
-    // (parameter ordering between frameworks is unstable; name seeding isn't).
+    // Use name-seeded init so PyTorch can match exactly (parameter ordering
+    // between frameworks is unstable; canonical names are not). Normalization
+    // layers use their conventional identity initialization so signals and
+    // gradients are not artificially attenuated through the deep U-Net.
     eprintln!("[meganeura] initializing parameters...");
     let init_params = |session: &mut meganeura::Session| {
         for (name, buf_ref) in session.plan().param_buffers.clone().iter() {
             let n = session.plan().buffers[buf_ref.0 as usize] / 4;
-            let seed = name_seed(name);
-            let data: Vec<f32> = (0..n)
-                .map(|j| (j as f32 * 0.01 + seed).sin() * 0.1)
-                .collect();
+            let data = if name.contains(".norm") && name.ends_with(".weight") {
+                vec![1.0; n]
+            } else if name.contains(".norm") && name.ends_with(".bias") {
+                vec![0.0; n]
+            } else {
+                let seed = name_seed(name);
+                (0..n)
+                    .map(|j| (j as f32 * 0.01 + seed).sin() * 0.02)
+                    .collect()
+            };
             session.set_parameter(name, &data);
         }
     };
@@ -586,11 +993,18 @@ fn bench_stable_diffusion() {
     // --- Prepare inputs ---
     let noisy_latent: Vec<f32> = (0..in_size).map(|i| (i as f32 * 0.01).sin()).collect();
     let noise_target: Vec<f32> = (0..in_size).map(|i| (i as f32 * 0.007).cos()).collect();
+    let timestep_embedding: Vec<f32> = (0..(batch * config.time_input_dim) as usize)
+        .map(|i| (i as f32 * 0.005).sin())
+        .collect();
+    let text_context: Vec<f32> = (0..(config.context_len * config.context_dim) as usize)
+        .map(|i| (i as f32 * 0.003).cos() * 0.1)
+        .collect();
 
     // --- Forward (inference graph: returns noise prediction) ---
-    // Warm-up + timed: 3 warmup runs + best of 5.
-    let forward_ms = bench_session(&mut infer_session, &|s| {
+    let forward = bench_session(&mut infer_session, &|s| {
         s.set_input("noisy_latent", &noisy_latent);
+        s.set_input("timestep_embedding", &timestep_embedding);
+        s.set_input("text_context", &text_context);
     });
 
     let output = infer_session.read_output(in_size);
@@ -601,68 +1015,130 @@ fn bench_stable_diffusion() {
         .map(|(&p, &t)| ((p - t) as f64).powi(2))
         .sum::<f64>()
         / output.len() as f64;
-    eprintln!("[meganeura] forward: {forward_ms:.2}ms, loss={loss_val:.6}");
+    eprintln!(
+        "[meganeura] forward: {:.2}ms, loss={loss_val:.6}",
+        forward.median_ms
+    );
+    if let Some(path) = capture_gap_profile(
+        "StableDiffusion",
+        "inference",
+        &mut infer_session,
+        &forward,
+        &|s| {
+            s.set_input("noisy_latent", &noisy_latent);
+            s.set_input("timestep_embedding", &timestep_embedding);
+            s.set_input("text_context", &text_context);
+        },
+    ) {
+        profile_artifacts.insert("inference", path);
+    }
 
-    // --- Latency (re-run forward, batch=2 is already minimal) ---
-    // Already warmed up from forward benchmarking; 3 warmup + best of 5.
-    let latency_ms = bench_session(&mut infer_session, &|s| {
-        s.set_input("noisy_latent", &noisy_latent);
+    // --- Latency (batch=1, matching the PyTorch latency workload) ---
+    let latency_compile_start = Instant::now();
+    let mut latency_config = SDUNetConfig::small();
+    latency_config.batch_size = 1;
+    let mut latency_g = Graph::new();
+    let latency_pred = sd_unet::build_unet(&mut latency_g, &latency_config);
+    latency_g.set_outputs(vec![latency_pred]);
+    let mut latency_session = build_inference_session(&latency_g);
+    compile_s += latency_compile_start.elapsed().as_secs_f64();
+    init_params(&mut latency_session);
+    let latency_input_len = (in_c * res * res) as usize;
+    let latency = bench_session(&mut latency_session, &|s| {
+        s.set_input("noisy_latent", &noisy_latent[..latency_input_len]);
+        s.set_input(
+            "timestep_embedding",
+            &timestep_embedding[..latency_config.time_input_dim as usize],
+        );
+        s.set_input("text_context", &text_context);
     });
+    if let Some(path) = capture_gap_profile(
+        "StableDiffusion",
+        "latency",
+        &mut latency_session,
+        &latency,
+        &|s| {
+            s.set_input("noisy_latent", &noisy_latent[..latency_input_len]);
+            s.set_input(
+                "timestep_embedding",
+                &timestep_embedding[..latency_config.time_input_dim as usize],
+            );
+            s.set_input("text_context", &text_context);
+        },
+    ) {
+        profile_artifacts.insert("latency", path);
+    }
+
+    memory.record("inference", &infer_session);
+    memory.record("latency", &latency_session);
 
     // Drop inference session to free GPU memory before training.
     drop(infer_session);
+    drop(latency_session);
 
-    // --- Training step (separate graph for backward timing) ---
+    // --- Training step (forward + loss + backward) ---
     eprintln!("[meganeura] building SD U-Net training graph...");
+    let train_compile_start = Instant::now();
     let mut train_g = Graph::new();
     let loss = sd_unet::build_training_graph(&mut train_g, &config);
     train_g.set_outputs(vec![loss]);
     let mut train_session = build_session(&train_g);
+    compile_s += train_compile_start.elapsed().as_secs_f64();
     init_params(&mut train_session);
 
-    // Warm-up training: 3 runs + best of 5.
-    let train_ms = bench_session(&mut train_session, &|s| {
+    let training = bench_session(&mut train_session, &|s| {
         s.set_input("noisy_latent", &noisy_latent);
+        s.set_input("timestep_embedding", &timestep_embedding);
+        s.set_input("text_context", &text_context);
         s.set_input("noise_target", &noise_target);
     });
-    let backward_ms = (train_ms - forward_ms).max(0.0);
-
-    // GPU profiling for training breakdown.
-    if std::env::var("MEGANEURA_PROFILE").is_ok() {
-        train_session.set_profiling(true);
-        train_session.set_input("noisy_latent", &noisy_latent);
-        train_session.set_input("noise_target", &noise_target);
-        train_session.step();
-        train_session.wait();
-        train_session.set_profiling(false);
-        for _ in 0..2 {
-            train_session.set_input("noisy_latent", &noisy_latent);
-            train_session.set_input("noise_target", &noise_target);
-            train_session.step();
-            train_session.wait();
-        }
-        train_session.dump_gpu_timings();
+    if let Some(path) = capture_gap_profile(
+        "StableDiffusion",
+        "training",
+        &mut train_session,
+        &training,
+        &|s| {
+            s.set_input("noisy_latent", &noisy_latent);
+            s.set_input("timestep_embedding", &timestep_embedding);
+            s.set_input("text_context", &text_context);
+            s.set_input("noise_target", &noise_target);
+        },
+    ) {
+        profile_artifacts.insert("training", path);
     }
 
-    let grad_norm = compute_grad_norm(&train_session);
+    memory.record("training", &train_session);
+    let (grad_norm, gradient_norms) = compute_grad_norm(&train_session);
+    let gpu_name = train_session.device_information().device_name.clone();
+    let environment = environment_json(&train_session);
 
     emit_result(
         "StableDiffusion",
         compile_s,
-        forward_ms,
-        backward_ms,
+        &forward,
+        &training,
         &output,
+        &[batch as usize, in_c as usize, res as usize, res as usize],
         loss_val,
-        latency_ms,
+        &latency,
         grad_norm,
+        &gradient_norms,
+        &gpu_name,
+        &profile_artifacts,
+        &memory,
+        &environment,
     );
 }
 
 fn bench_resnet() {
     use meganeura::models::resnet;
 
+    let mut profile_artifacts = std::collections::BTreeMap::new();
+    let mut memory = MemoryCollector::default();
     let batch: u32 = 4;
-    let scale: f32 = 0.01; // small scale to prevent explosion with identity BN
+    // Small enough to prevent explosion with synthetic identity BN while
+    // preserving a non-trivial residual path.
+    let scale: f32 = 0.01;
 
     eprintln!("[meganeura] building ResNet inference graph...");
     let compile_start = Instant::now();
@@ -671,29 +1147,18 @@ fn bench_resnet() {
     infer_g.set_outputs(vec![logits_node]);
     let mut infer_session = build_inference_session(&infer_g);
 
-    let compile_s = compile_start.elapsed().as_secs_f64();
+    let mut compile_s = compile_start.elapsed().as_secs_f64();
     eprintln!("[meganeura] ready (compile: {compile_s:.2}s)");
 
     // Helper to init parameters (shared between sessions).
-    // Note: matches PyTorch's _resnet_init — fused_bias=0 (BN identity),
-    // fc.weight transposed, others name-seeded sin*scale.
+    // Note: matches PyTorch's _resnet_init — fused_bias=0 (BN identity)
+    // and every Meganeura-native parameter buffer is name-seeded in its
+    // native layout. PyTorch transposes its FC storage when initializing.
     let init_params = |session: &mut meganeura::Session| {
         for (name, buf_ref) in session.plan().param_buffers.clone().iter() {
             let n = session.plan().buffers[buf_ref.0 as usize] / 4;
             let data: Vec<f32> = if name.contains("fused_bias") {
                 vec![0.0; n]
-            } else if name == "fc.weight" {
-                let in_dim = 2048usize;
-                let out_dim = 1000usize;
-                let seed = name_seed(name);
-                let mut buf = vec![0.0f32; n];
-                for i in 0..out_dim {
-                    for j in 0..in_dim {
-                        buf[j * out_dim + i] =
-                            ((i * in_dim + j) as f32 * 0.01 + seed).sin() * scale;
-                    }
-                }
-                buf
             } else {
                 let seed = name_seed(name);
                 (0..n)
@@ -715,8 +1180,7 @@ fn bench_resnet() {
     }
 
     // --- Forward (inference graph: returns logits) ---
-    // Warm-up + timed: 3 warmup runs + best of 5.
-    let forward_ms = bench_session(&mut infer_session, &|s| {
+    let forward = bench_session(&mut infer_session, &|s| {
         s.set_input("image", &images);
     });
 
@@ -732,76 +1196,105 @@ fn bench_resnet() {
         total_loss -= (row[target] - max_l) as f64 - sum_exp.ln();
     }
     let loss = total_loss / batch as f64;
-    eprintln!("[meganeura] forward: {forward_ms:.2}ms, loss={loss:.6}");
+    eprintln!(
+        "[meganeura] forward: {:.2}ms, loss={loss:.6}",
+        forward.median_ms
+    );
+    if let Some(path) = capture_gap_profile(
+        "ResNet-50",
+        "inference",
+        &mut infer_session,
+        &forward,
+        &|s| s.set_input("image", &images),
+    ) {
+        profile_artifacts.insert("inference", path);
+    }
 
     // --- Latency (single-image) ---
+    let lat_compile_start = Instant::now();
     let lat_images: Vec<f32> = vec![0.0; (3 * 224 * 224) as usize];
     let mut lat_g = Graph::new();
     let lat_logits = resnet::build_resnet50(&mut lat_g, 1);
     lat_g.set_outputs(vec![lat_logits]);
     let mut lat_session = build_inference_session(&lat_g);
+    compile_s += lat_compile_start.elapsed().as_secs_f64();
     init_params(&mut lat_session);
-    // Warm-up + timed: 3 warmup runs + best of 5.
-    let latency_ms = bench_session(&mut lat_session, &|s| {
+    let latency = bench_session(&mut lat_session, &|s| {
         s.set_input("image", &lat_images);
     });
+    if let Some(path) =
+        capture_gap_profile("ResNet-50", "latency", &mut lat_session, &latency, &|s| {
+            s.set_input("image", &lat_images)
+        })
+    {
+        profile_artifacts.insert("latency", path);
+    }
+
+    memory.record("inference", &infer_session);
+    memory.record("latency", &lat_session);
 
     // Drop inference sessions to free GPU memory before training.
     drop(infer_session);
     drop(lat_session);
 
-    // --- Training step (separate graph for backward timing) ---
+    // --- Training step (forward + loss + backward) ---
     eprintln!("[meganeura] building ResNet training graph...");
+    let train_compile_start = Instant::now();
     let training_g = resnet::build_resnet50_training(batch);
     let mut train_session = build_session(&training_g);
+    compile_s += train_compile_start.elapsed().as_secs_f64();
     init_params(&mut train_session);
 
-    // Warm-up training: 3 runs + best of 5.
-    let train_ms = bench_session(&mut train_session, &|s| {
+    let training = bench_session(&mut train_session, &|s| {
         s.set_input("image", &images);
         s.set_input("labels", &one_hot_labels);
     });
-    let backward_ms = (train_ms - forward_ms).max(0.0);
-
-    if std::env::var("MEGANEURA_PROFILE").is_ok() {
-        train_session.set_profiling(true);
-        train_session.set_input("image", &images);
-        train_session.set_input("labels", &one_hot_labels);
-        train_session.step();
-        train_session.wait();
-        train_session.set_profiling(false);
-        for _ in 0..2 {
-            train_session.set_input("image", &images);
-            train_session.set_input("labels", &one_hot_labels);
-            train_session.step();
-            train_session.wait();
-        }
-        train_session.dump_gpu_timings();
+    if let Some(path) = capture_gap_profile(
+        "ResNet-50",
+        "training",
+        &mut train_session,
+        &training,
+        &|s| {
+            s.set_input("image", &images);
+            s.set_input("labels", &one_hot_labels);
+        },
+    ) {
+        profile_artifacts.insert("training", path);
     }
 
-    let grad_norm = compute_grad_norm(&train_session);
+    memory.record("training", &train_session);
+    let (grad_norm, gradient_norms) = compute_grad_norm(&train_session);
+    let gpu_name = train_session.device_information().device_name.clone();
+    let environment = environment_json(&train_session);
 
     emit_result(
         "ResNet-50",
         compile_s,
-        forward_ms,
-        backward_ms,
+        &forward,
+        &training,
         &logits,
+        &[batch as usize, 1000],
         loss,
-        latency_ms,
+        &latency,
         grad_norm,
+        &gradient_norms,
+        &gpu_name,
+        &profile_artifacts,
+        &memory,
+        &environment,
     );
 }
 
 fn bench_whisper() {
     use meganeura::models::whisper::{self, WhisperConfig};
 
+    let mut profile_artifacts = std::collections::BTreeMap::new();
+    let mut memory = MemoryCollector::default();
     let config = WhisperConfig::whisper_tiny();
     let batch: u32 = 1;
     let mel_len: u32 = 3000;
     let d_model = config.d_model;
     let seq_len = mel_len / 2; // stride-2 in conv2
-    let num_classes: usize = 64;
 
     eprintln!("[meganeura] building Whisper encoder graph...");
     let compile_start = Instant::now();
@@ -813,9 +1306,6 @@ fn bench_whisper() {
     let mut session = build_inference_session(&infer_g);
 
     // Load weights with deterministic init matching PyTorch encoder.
-    let transposed = whisper::transposed_weight_names(&config);
-    let transposed_set: std::collections::HashSet<&str> =
-        transposed.iter().map(|s| s.as_str()).collect();
     let prefix = "model.encoder.";
     let init_params = |session: &mut meganeura::Session| {
         for (name, buf_ref) in session.plan().param_buffers.clone().iter() {
@@ -824,72 +1314,55 @@ fn bench_whisper() {
             let seed_name = seed_name.replace("fused_bias", "bias");
             let seed = name_seed(&seed_name);
 
-            let data: Vec<f32> = if name.contains("fused_bias") {
-                let channels = d_model;
-                let spatial = n / (batch as usize * channels);
-                let per_ch: Vec<f32> = (0..channels)
-                    .map(|c| (c as f32 * 0.01 + seed).sin() * 0.1)
-                    .collect();
-                let mut buf = vec![0.0f32; n];
-                for b in 0..batch as usize {
-                    for c in 0..channels {
-                        for s in 0..spatial {
-                            buf[(b * channels + c) * spatial + s] = per_ch[c];
-                        }
-                    }
-                }
-                buf
-            } else if transposed_set.contains(name.as_str()) {
-                let (in_dim, out_dim) = if name.contains("fc1.weight") {
-                    (config.d_model, config.ffn_dim)
-                } else if name.contains("fc2.weight") {
-                    (config.ffn_dim, config.d_model)
-                } else {
-                    (config.d_model, config.d_model)
-                };
-                let mut buf = vec![0.0f32; n];
-                for i in 0..out_dim {
-                    for j in 0..in_dim {
-                        buf[j * out_dim + i] = ((i * in_dim + j) as f32 * 0.01 + seed).sin() * 0.1;
-                    }
-                }
-                buf
-            } else {
-                (0..n)
-                    .map(|j| (j as f32 * 0.01 + seed).sin() * 0.1)
-                    .collect()
-            };
+            // All Meganeura buffers, including [in, out] linear weights
+            // and per-channel convolution biases, use this native-layout
+            // sequence. The PyTorch runner transposes only its [out, in]
+            // linear storage.
+            let data: Vec<f32> = (0..n)
+                .map(|j| (j as f32 * 0.01 + seed).sin() * 0.02)
+                .collect();
             session.set_parameter(name, &data);
         }
     };
     init_params(&mut session);
 
-    let compile_s = compile_start.elapsed().as_secs_f64();
+    let mut compile_s = compile_start.elapsed().as_secs_f64();
     eprintln!("[meganeura] ready (compile: {compile_s:.2}s)");
 
     // --- Forward ---
     let mel_size = (batch * config.n_mels as u32 * mel_len) as usize;
     let mel: Vec<f32> = (0..mel_size).map(|i| (i as f32 * 0.001).sin()).collect();
-    let mut one_hot_labels = vec![0.0f32; seq_len as usize * num_classes];
-    for t in 0..seq_len as usize {
-        one_hot_labels[t * num_classes + (t % num_classes)] = 1.0;
-    }
 
-    // Warm-up + timed: 3 warmup runs + best of 5.
-    let forward_ms = bench_session(&mut session, &|s| {
+    let forward = bench_session(&mut session, &|s| {
         s.set_input("mel", &mel);
     });
 
     let output = session.read_output((batch * seq_len * d_model as u32) as usize);
     // MSE loss (encoder output vs zero) — matches PyTorch ground truth.
     let loss: f64 = output.iter().map(|&v| (v as f64).powi(2)).sum::<f64>() / output.len() as f64;
-    eprintln!("[meganeura] forward: {forward_ms:.2}ms, loss={loss:.6}");
+    eprintln!(
+        "[meganeura] forward: {:.2}ms, loss={loss:.6}",
+        forward.median_ms
+    );
 
     // --- Latency ---
-    // Already warmed up from forward benchmarking; 3 warmup + best of 5.
-    let latency_ms = bench_session(&mut session, &|s| {
+    let latency = bench_session(&mut session, &|s| {
         s.set_input("mel", &mel);
     });
+    if let Some(path) =
+        capture_gap_profile("Whisper-tiny", "inference", &mut session, &forward, &|s| {
+            s.set_input("mel", &mel)
+        })
+    {
+        // Whisper's current latency workload is the same full encoder graph.
+        profile_artifacts.insert("inference", path.clone());
+        profile_artifacts.insert("latency", path);
+    }
+
+    // Whisper's latency workload is the same full encoder graph on the same
+    // session, so both phases report the same plan allocation.
+    memory.record("inference", &session);
+    memory.record("latency", &session);
 
     // Drop inference session to free GPU memory before training.
     drop(session);
@@ -898,49 +1371,45 @@ fn bench_whisper() {
     // NOTE: on AMD/RADV the backward kernels (GELU at [576000]) can cause a GPU
     // context loss; the main harness forces the NVIDIA ICD via VK_ICD_FILENAMES.
     eprintln!("[meganeura] building + compiling Whisper training graph...");
+    let train_compile_start = Instant::now();
     let train_g = whisper::build_training_graph(&config, batch, mel_len);
     let mut train_session = build_session(&train_g);
+    compile_s += train_compile_start.elapsed().as_secs_f64();
     init_params(&mut train_session);
 
-    // Warm-up training: 3 runs + best of 5.
-    let train_ms = bench_session(&mut train_session, &|s| {
+    let training = bench_session(&mut train_session, &|s| {
         s.set_input("mel", &mel);
-        s.set_input("labels", &one_hot_labels);
     });
-    let backward_ms = (train_ms - forward_ms).max(0.0);
-
-    // GPU profiling: capture per-dispatch timings to identify hotspots.
-    if std::env::var("MEGANEURA_PROFILE").is_ok() {
-        train_session.set_profiling(true);
-        let set = |s: &mut meganeura::Session| {
-            s.set_input("mel", &mel);
-            s.set_input("labels", &one_hot_labels);
-        };
-        set(&mut train_session);
-        train_session.step();
-        train_session.wait();
-        train_session.set_profiling(false);
-        // Two more steps to rotate back to the profiled buffer's timestamps.
-        set(&mut train_session);
-        train_session.step();
-        train_session.wait();
-        set(&mut train_session);
-        train_session.step();
-        train_session.wait();
-        train_session.dump_gpu_timings();
+    if let Some(path) = capture_gap_profile(
+        "Whisper-tiny",
+        "training",
+        &mut train_session,
+        &training,
+        &|s| s.set_input("mel", &mel),
+    ) {
+        profile_artifacts.insert("training", path);
     }
 
-    let grad_norm = compute_grad_norm(&train_session);
+    memory.record("training", &train_session);
+    let (grad_norm, gradient_norms) = compute_grad_norm(&train_session);
+    let gpu_name = train_session.device_information().device_name.clone();
+    let environment = environment_json(&train_session);
 
     emit_result(
         "Whisper-tiny",
         compile_s,
-        forward_ms,
-        backward_ms,
+        &forward,
+        &training,
         &output,
+        &[batch as usize, seq_len as usize, d_model],
         loss,
-        latency_ms,
+        &latency,
         grad_norm,
+        &gradient_norms,
+        &gpu_name,
+        &profile_artifacts,
+        &memory,
+        &environment,
     );
 }
 

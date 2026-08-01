@@ -49,6 +49,12 @@ def load_summaries(results_dir):
         for o in outcomes:
             if o.get("status") != "ok":
                 continue
+            validation = o.get("validation", {})
+            if (
+                validation.get("comparison_performed")
+                and validation.get("forward_valid") is not True
+            ):
+                continue
             ms = o.get("timings", {}).get("inference_ms", 0.0)
             if ms <= 0:
                 continue

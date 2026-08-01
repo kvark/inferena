@@ -9,6 +9,10 @@
 onnxruntime-gpu
 jax[cuda12]
 
+# Per-process GPU memory for the benchmark's memory report. Optional: the
+# runner falls back to `nvidia-smi`, which ships with the driver.
+nvidia-ml-py
+
 # Note: do NOT install onnxruntime (CPU) alongside onnxruntime-gpu — they conflict.
 # If you previously installed the CPU version, run:
 #   pip install onnxruntime-gpu --force-reinstall

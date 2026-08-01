@@ -5,6 +5,11 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Protocol every audited runner must report, matching the name declared in
+/// Meganeura's `docs/paper-benchmark-protocol.md`. A result carrying any
+/// other name is rejected rather than published.
+pub const PAPER_PROTOCOL: &str = "inferena-paper-v1";
+
 /// Result produced by each framework benchmark runner.
 /// Every runner must print exactly one JSON object matching this schema to stdout.
 /// Extra framework-specific fields (e.g. torch_version) are preserved in `extra`.
@@ -16,6 +21,9 @@ pub struct BenchResult {
     pub gpu_name: String,
     pub timings: Timings,
     pub outputs: Outputs,
+    /// GPU memory usage, when the runner can report it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryReport>,
     /// Framework-specific extra fields (torch_version, driver_name, etc.).
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -38,15 +46,85 @@ pub struct Timings {
 pub struct Outputs {
     /// SHA-256 hash of the full logits tensor (flattened, f32 little-endian bytes).
     pub logits_hash: String,
-    /// First 16 logit values for quick human inspection.
+    /// Canonical logical shape of the output tensor.
+    #[serde(default)]
+    pub output_shape: Vec<usize>,
+    /// Deterministic sample of output values for numerical comparison.
     pub logits_sample: Vec<f64>,
     /// Scalar loss value from the fake training step.
     pub loss: f64,
+    /// L2 norm of all parameter gradients after the measured training step.
+    #[serde(default)]
+    pub grad_norm: Option<f64>,
+    /// Per-parameter gradient L2 norms keyed by canonical parameter name.
+    #[serde(default)]
+    pub gradient_norms: std::collections::BTreeMap<String, f64>,
+}
+
+/// GPU memory usage for one framework run.
+///
+/// The two engines account for memory differently and their per-phase
+/// figures must not be placed in a single table column without their
+/// `basis` label: Meganeura reports what its execution plan allocates,
+/// while PyTorch reports a caching-allocator high-water mark.
+///
+/// `device.process_bytes` is the cross-engine comparable number. It is the
+/// driver's own per-process figure, so it includes context, pipeline, and
+/// driver overhead that neither engine's internal accounting sees, and it
+/// is not disturbed by an unrelated workload sharing the GPU.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryReport {
+    #[serde(default)]
+    pub device: Option<DeviceMemory>,
+    /// Per-phase engine accounting, keyed by `inference`/`latency`/`training`.
+    #[serde(default)]
+    pub phases: std::collections::BTreeMap<String, PhaseMemory>,
+    /// Caveats a reader needs to interpret the figures, such as residency
+    /// carried over from an earlier phase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceMemory {
+    /// Total physical device memory, in bytes, where the engine can report
+    /// it. Vulkan reports a per-process budget instead; see `budget_bytes`.
+    #[serde(default)]
+    pub total_bytes: Option<u64>,
+    /// Device-local memory this process may use, in bytes. Not the same
+    /// quantity as `total_bytes` and not interchangeable with it.
+    #[serde(default)]
+    pub budget_bytes: Option<u64>,
+    /// Device memory attributed to this process, in bytes.
+    #[serde(default)]
+    pub process_bytes: Option<u64>,
+    /// How `process_bytes` was obtained, e.g. `vulkan-memory-budget`,
+    /// `metal-current-allocated`, `nvml-per-process`. Absent when the
+    /// platform could not report a per-process figure — which is recorded
+    /// as missing rather than as zero.
+    #[serde(default)]
+    pub process_source: Option<String>,
+    /// When the sample was taken, e.g. `after-training`.
+    #[serde(default)]
+    pub sampled_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PhaseMemory {
+    /// Bytes this engine accounts for in this phase.
+    pub allocated_bytes: u64,
+    /// What `allocated_bytes` counts. Required, so that no cell can be
+    /// published without saying what it measured.
+    pub basis: String,
+    /// Engine-specific detail (plan buffer counts, reserved bytes, ...).
+    #[serde(flatten)]
+    pub detail: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Outcome for a framework: either a result or a failure reason.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status")]
+#[allow(clippy::large_enum_variant)]
 pub enum FrameworkOutcome {
     #[serde(rename = "ok")]
     Ok(BenchResult),
@@ -83,6 +161,10 @@ struct Cli {
     #[arg(long)]
     json: bool,
 
+    /// Directory for per-framework JSON artifacts.
+    #[arg(long)]
+    results_dir: Option<PathBuf>,
+
     /// Dry-run: validate framework+model support without running benchmarks.
     #[arg(long)]
     dry_run: bool,
@@ -91,6 +173,28 @@ struct Cli {
     /// integrated GPU / APU if that's what their default selection returns).
     #[arg(long)]
     allow_integrated_gpu: bool,
+
+    /// Disable reduced-input hardware paths for a controlled f32 comparison.
+    /// The practical hardware-accelerated configuration is the default.
+    #[arg(long)]
+    strict: bool,
+
+    /// Untimed executions before each measurement series.
+    #[arg(long, default_value_t = 5)]
+    warmup_runs: usize,
+
+    /// Timed executions retained for each measurement series.
+    #[arg(long, default_value_t = 20)]
+    measurement_runs: usize,
+
+    /// Collect Meganeura's structured per-dispatch GPU profile after each
+    /// normal benchmark series.
+    #[arg(long)]
+    profile: bool,
+
+    /// Retained hardware-timestamp samples per structured profile.
+    #[arg(long, default_value_t = 3)]
+    profile_samples: usize,
 }
 
 fn all_frameworks() -> Vec<&'static str> {
@@ -270,6 +374,106 @@ fn discover_discrete_gpu_pci_id() -> Option<String> {
     None
 }
 
+/// Validate the arithmetic contract reported by an instrumented runner.
+///
+/// A comparison-class label alone is insufficient evidence: a CUDA
+/// environment variable or backend flag can silently re-enable TF32. Keep
+/// this independent of numerical agreement so a close answer obtained under
+/// the wrong arithmetic policy is still rejected.
+fn precision_contract_error(result: &BenchResult, requested: &str) -> Option<String> {
+    let Some(precision) = result
+        .extra
+        .get("precision")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Some("missing precision object".to_string());
+    };
+    let text = |key: &str| precision.get(key).and_then(serde_json::Value::as_str);
+    let flag = |key: &str| precision.get(key).and_then(serde_json::Value::as_bool);
+
+    for key in ["tensor_storage", "accumulation", "output"] {
+        if text(key) != Some("f32") {
+            return Some(format!(
+                "precision.{key}={:?}; Inferena requires f32 storage, accumulation, and output",
+                text(key)
+            ));
+        }
+    }
+
+    let accelerated = requested == "accelerated-f32";
+    if flag("reduced_precision_allowed") != Some(accelerated) {
+        return Some(format!(
+            "precision.reduced_precision_allowed={:?}; expected {accelerated}",
+            flag("reduced_precision_allowed")
+        ));
+    }
+
+    let backend = result
+        .extra
+        .get("backend")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    match (result.framework.as_str(), requested) {
+        ("pytorch", "strict-f32") if backend.starts_with("CUDA") => {
+            for key in ["cuda_matmul_allow_tf32", "cudnn_allow_tf32"] {
+                if flag(key) != Some(false) {
+                    return Some(format!(
+                        "precision.{key}={:?}; strict CUDA requires false",
+                        flag(key)
+                    ));
+                }
+            }
+            if text("nvidia_tf32_override") != Some("0") {
+                return Some(format!(
+                    "precision.nvidia_tf32_override={:?}; strict CUDA requires 0",
+                    text("nvidia_tf32_override")
+                ));
+            }
+        }
+        ("pytorch", "accelerated-f32") if backend.starts_with("CUDA") => {
+            for key in ["cuda_matmul_allow_tf32", "cudnn_allow_tf32"] {
+                if flag(key) != Some(true) {
+                    return Some(format!(
+                        "precision.{key}={:?}; accelerated CUDA requires true",
+                        flag(key)
+                    ));
+                }
+            }
+            if text("nvidia_tf32_override") == Some("0") {
+                return Some(
+                    "precision.nvidia_tf32_override=0 disables the requested accelerated path"
+                        .to_string(),
+                );
+            }
+        }
+        ("meganeura", "strict-f32") if flag("f16_cooperative_matrix_permitted") != Some(false) => {
+            return Some(format!(
+                "precision.f16_cooperative_matrix_permitted={:?}; strict mode requires false",
+                flag("f16_cooperative_matrix_permitted")
+            ));
+        }
+        ("meganeura", "accelerated-f32")
+            if flag("f16_cooperative_matrix_permitted") != Some(true) =>
+        {
+            return Some(format!(
+                "precision.f16_cooperative_matrix_permitted={:?}; accelerated mode requires true",
+                flag("f16_cooperative_matrix_permitted")
+            ));
+        }
+        _ => {}
+    }
+
+    if result.framework == "meganeura" && flag("persistent_f16_tensors") != Some(false) {
+        return Some(format!(
+            "precision.persistent_f16_tensors={:?}; audited workloads require false",
+            flag("persistent_f16_tensors")
+        ));
+    }
+
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_framework(
     root: &Path,
     framework: &str,
@@ -277,7 +481,17 @@ fn run_framework(
     dry_run: bool,
     prefer_discrete_gpu: bool,
     discrete_gpu_pci_id: Option<&str>,
+    strict: bool,
+    warmup_runs: usize,
+    measurement_runs: usize,
+    profile_dir: Option<&Path>,
+    profile_samples: usize,
 ) -> FrameworkOutcome {
+    let precision = if strict {
+        "strict-f32"
+    } else {
+        "accelerated-f32"
+    };
     let fw_dir = root.join("frameworks").join(framework);
     let run_script = fw_dir.join("run.sh");
 
@@ -299,6 +513,16 @@ fn run_framework(
     // Inherits environment so WGPU_BACKEND, HSA_OVERRIDE_GFX_VERSION, etc. propagate.
     let mut cmd = Command::new("bash");
     cmd.arg(&run_script).arg(model).current_dir(&fw_dir);
+    cmd.env("INFERENA_STRICT", if strict { "1" } else { "0" })
+        .env("INFERENA_WARMUP_RUNS", warmup_runs.to_string())
+        .env("INFERENA_MEASUREMENT_RUNS", measurement_runs.to_string());
+    if framework == "meganeura"
+        && let Some(profile_dir) = profile_dir
+    {
+        cmd.env("INFERENA_PROFILE_DIR", profile_dir)
+            .env("INFERENA_PROFILE_SAMPLES", profile_samples.to_string())
+            .env("MEGANEURA_GPU_TIMING", "1");
+    }
     if dry_run {
         cmd.env("INFERENA_DRY_RUN", "1");
     }
@@ -379,7 +603,64 @@ fn run_framework(
     };
 
     match serde_json::from_str::<BenchResult>(json_str) {
-        Ok(r) => FrameworkOutcome::Ok(r),
+        Ok(r) => {
+            if matches!(framework, "pytorch" | "meganeura") {
+                let reported_protocol = r
+                    .extra
+                    .get("protocol")
+                    .and_then(|value| value.get("name"))
+                    .and_then(|value| value.as_str());
+                let expected_class = if precision == "strict-f32" {
+                    "strict-f32"
+                } else {
+                    "reduced-input-f32-accumulate"
+                };
+                let reported_class = r
+                    .extra
+                    .get("precision")
+                    .and_then(|value| value.get("comparison_class"))
+                    .and_then(|value| value.as_str());
+                if reported_protocol != Some(PAPER_PROTOCOL)
+                    || reported_class != Some(expected_class)
+                {
+                    return FrameworkOutcome::Error {
+                        framework: framework.to_string(),
+                        model: model.to_string(),
+                        error: format!(
+                            "runner reported protocol={reported_protocol:?}, \
+                             precision class={reported_class:?}; expected \
+                             {PAPER_PROTOCOL}/{expected_class}"
+                        ),
+                    };
+                }
+                if let Some(error) = precision_contract_error(&r, precision) {
+                    return FrameworkOutcome::Error {
+                        framework: framework.to_string(),
+                        model: model.to_string(),
+                        error: format!("precision contract failed: {error}"),
+                    };
+                }
+                if r.outputs.output_shape.is_empty()
+                    || r.outputs.logits_sample.len() != 256
+                    || r.outputs.grad_norm.is_none()
+                    || r.outputs.gradient_norms.is_empty()
+                {
+                    return FrameworkOutcome::Error {
+                        framework: framework.to_string(),
+                        model: model.to_string(),
+                        error: format!(
+                            "instrumented result is incomplete: output_shape={:?}, \
+                             output_samples={}, grad_norm={}, parameter_gradients={}",
+                            r.outputs.output_shape,
+                            r.outputs.logits_sample.len(),
+                            r.outputs.grad_norm.is_some(),
+                            r.outputs.gradient_norms.len()
+                        ),
+                    };
+                }
+            }
+            FrameworkOutcome::Ok(r)
+        }
         Err(e) => FrameworkOutcome::Error {
             framework: framework.to_string(),
             model: model.to_string(),
@@ -389,9 +670,8 @@ fn run_framework(
 }
 
 /// Save each framework's result as a separate JSON file in results/.
-fn save_results(root: &Path, model: &str, outcomes: &[FrameworkOutcome]) {
-    let results_dir = root.join("results");
-    std::fs::create_dir_all(&results_dir).ok();
+fn save_results(results_dir: &Path, model: &str, outcomes: &[FrameworkOutcome]) {
+    std::fs::create_dir_all(results_dir).ok();
 
     for outcome in outcomes {
         let (fw, content) = match outcome {
@@ -443,10 +723,135 @@ fn compute_errors(a: &[f64], b: &[f64]) -> (f64, f64, f64, f64) {
     let rmse = (sum_sq / n as f64).sqrt();
     let rel = if sum_ref_sq > 0.0 {
         (sum_sq / sum_ref_sq).sqrt()
+    } else if sum_sq > 0.0 {
+        f64::INFINITY
     } else {
         0.0
     };
     (max_err, mae, rmse, rel)
+}
+
+fn relative_scalar_error(reference: f64, other: f64) -> f64 {
+    (reference - other).abs() / reference.abs().max(other.abs()).max(1e-12)
+}
+
+fn compare_gradient_norms(
+    reference: &std::collections::BTreeMap<String, f64>,
+    other: &std::collections::BTreeMap<String, f64>,
+) -> f64 {
+    if reference.is_empty() && other.is_empty() {
+        return f64::NAN;
+    }
+    if reference.keys().ne(other.keys()) {
+        return f64::INFINITY;
+    }
+    let mut difference_sq = 0.0;
+    let mut reference_sq = 0.0;
+    for (name, reference_norm) in reference {
+        let difference = reference_norm - other[name];
+        difference_sq += difference * difference;
+        reference_sq += reference_norm * reference_norm;
+    }
+    if reference_sq > 0.0 {
+        (difference_sq / reference_sq).sqrt()
+    } else if difference_sq > 0.0 {
+        f64::INFINITY
+    } else {
+        0.0
+    }
+}
+
+struct ComparisonMetrics {
+    hash_match: bool,
+    output_shape_match: bool,
+    output_sample_count_match: bool,
+    loss_diff: f64,
+    loss_relative_error: f64,
+    max_error: f64,
+    mae: f64,
+    rmse: f64,
+    output_relative_l2_error: f64,
+    total_gradient_relative_error: f64,
+    parameter_gradient_relative_l2_error: f64,
+    gradients_available: bool,
+    forward_valid: bool,
+    training_valid: bool,
+    status: &'static str,
+}
+
+fn compare_result(reference: &BenchResult, other: &BenchResult) -> ComparisonMetrics {
+    let hash_match = reference.outputs.logits_hash == other.outputs.logits_hash;
+    let output_shape_match = reference.outputs.output_shape == other.outputs.output_shape;
+    let output_sample_count_match =
+        reference.outputs.logits_sample.len() == other.outputs.logits_sample.len();
+    let loss_diff = (reference.outputs.loss - other.outputs.loss).abs();
+    let loss_relative_error = relative_scalar_error(reference.outputs.loss, other.outputs.loss);
+    let (max_error, mae, rmse, output_relative_l2_error) = if output_sample_count_match {
+        compute_errors(
+            &reference.outputs.logits_sample,
+            &other.outputs.logits_sample,
+        )
+    } else {
+        (f64::INFINITY, f64::INFINITY, f64::INFINITY, f64::INFINITY)
+    };
+    let total_gradient_relative_error = match (reference.outputs.grad_norm, other.outputs.grad_norm)
+    {
+        (Some(reference_grad), Some(other_grad)) => {
+            (reference_grad - other_grad).abs() / reference_grad.abs().max(1e-12)
+        }
+        _ => f64::NAN,
+    };
+    let parameter_gradient_relative_l2_error = compare_gradient_norms(
+        &reference.outputs.gradient_norms,
+        &other.outputs.gradient_norms,
+    );
+    let gradients_available = total_gradient_relative_error.is_finite()
+        && parameter_gradient_relative_l2_error.is_finite();
+    let gradients_pass = gradients_available
+        && total_gradient_relative_error < 0.05
+        && parameter_gradient_relative_l2_error < 0.05;
+    let gradients_close = gradients_available
+        && total_gradient_relative_error < 0.10
+        && parameter_gradient_relative_l2_error < 0.10;
+    let forward_valid = output_shape_match
+        && output_sample_count_match
+        && loss_relative_error < 0.01
+        && output_relative_l2_error < 0.01;
+    let forward_close = output_shape_match
+        && output_sample_count_match
+        && loss_relative_error < 0.05
+        && output_relative_l2_error < 0.10;
+    let training_valid = forward_valid && gradients_pass;
+    let status = if hash_match && output_shape_match && loss_relative_error < 0.01 && gradients_pass
+    {
+        "EXACT MATCH"
+    } else if training_valid {
+        "PASS (<1% forward, <5% gradient)"
+    } else if forward_valid {
+        "INFERENCE PASS; TRAINING FAIL"
+    } else if forward_close && gradients_close {
+        "CLOSE"
+    } else {
+        "DIFFERENT MODEL"
+    };
+
+    ComparisonMetrics {
+        hash_match,
+        output_shape_match,
+        output_sample_count_match,
+        loss_diff,
+        loss_relative_error,
+        max_error,
+        mae,
+        rmse,
+        output_relative_l2_error,
+        total_gradient_relative_error,
+        parameter_gradient_relative_l2_error,
+        gradients_available,
+        forward_valid,
+        training_valid,
+        status,
+    }
 }
 
 fn compare_outputs(results: &[&BenchResult]) {
@@ -469,34 +874,104 @@ fn compare_outputs(results: &[&BenchResult]) {
         reference.framework
     );
     eprintln!(
-        "  {:<12} {:>12} {:>12} {:>12} {:>12} {:>12}  {}",
-        "Framework", "Loss Diff", "Max Error", "MAE", "RMSE", "Rel Error", "Status"
+        "  {:<12} {:>12} {:>12} {:>12} {:>12} {:>12} {:>12} {:>12}  {}",
+        "Framework",
+        "Loss Diff",
+        "Max Error",
+        "MAE",
+        "RMSE",
+        "Rel Error",
+        "Grad Rel",
+        "Param Grad",
+        "Status"
     );
-    eprintln!("  {}", "-".repeat(90));
-    for other in &results[1..] {
-        let hash_match = reference.outputs.logits_hash == other.outputs.logits_hash;
-        let loss_diff = (reference.outputs.loss - other.outputs.loss).abs();
-        // Normalize by reference loss: for AR-heavy models the absolute loss is
-        // larger, so we need proportionally larger absolute thresholds.
-        // max(abs, 1.0) keeps thresholds sane when the loss is near zero.
-        let norm = reference.outputs.loss.abs().max(1.0);
-        let rel_loss = loss_diff / norm;
-        let (max_err, mae, rmse, rel) = compute_errors(
-            &reference.outputs.logits_sample,
-            &other.outputs.logits_sample,
-        );
-        let status = if hash_match {
-            "EXACT MATCH"
-        } else if rel_loss < 0.01 && rel < 0.01 {
-            "PASS (<1% rel)"
-        } else if rel_loss < 0.05 || (rel_loss < 0.10 && rel < 0.1) {
-            "CLOSE"
-        } else {
-            "DIFFERENT MODEL"
-        };
+    eprintln!("  {}", "-".repeat(118));
+    for other in results
+        .iter()
+        .copied()
+        .filter(|r| r.framework != reference.framework)
+    {
+        let comparison = compare_result(reference, other);
         eprintln!(
-            "  {:<12} {:>12.6e} {:>12.6e} {:>12.6e} {:>12.6e} {:>12.6e}  {}",
-            other.framework, loss_diff, max_err, mae, rmse, rel, status
+            "  {:<12} {:>12.6e} {:>12.6e} {:>12.6e} {:>12.6e} {:>12.6e} {:>12.6e} {:>12.6e}  {}",
+            other.framework,
+            comparison.loss_diff,
+            comparison.max_error,
+            comparison.mae,
+            comparison.rmse,
+            comparison.output_relative_l2_error,
+            comparison.total_gradient_relative_error,
+            comparison.parameter_gradient_relative_l2_error,
+            comparison.status
+        );
+    }
+}
+
+fn mib(bytes: u64) -> String {
+    format!("{:.1}", bytes as f64 / (1024.0 * 1024.0))
+}
+
+/// Print GPU memory to stderr.
+///
+/// Deliberately not part of the markdown table: the per-phase figures come
+/// from different accounting in each engine, so they are shown with their
+/// `basis` label rather than as a comparable column. The JSON artifact
+/// carries the full detail.
+fn print_memory(results: &[&BenchResult]) {
+    if !results.iter().any(|r| r.memory.is_some()) {
+        return;
+    }
+    eprintln!();
+    eprintln!("=== GPU memory (MiB) ===");
+    eprintln!(
+        "  {:<12} {:>12} {:>12} {:>12} {:>12}  {}",
+        "Framework", "Inference", "Latency", "Training", "Process", "Accounting basis"
+    );
+    eprintln!("  {}", "-".repeat(94));
+    for result in results {
+        let Some(memory) = &result.memory else {
+            continue;
+        };
+        let phase = |name: &str| {
+            memory
+                .phases
+                .get(name)
+                .map(|p| mib(p.allocated_bytes))
+                .unwrap_or_else(|| "—".to_string())
+        };
+        let process = memory
+            .device
+            .as_ref()
+            .and_then(|d| d.process_bytes)
+            .map(mib)
+            .unwrap_or_else(|| "—".to_string());
+        // Every phase of one engine shares the same basis; show it once.
+        let basis = memory
+            .phases
+            .values()
+            .next()
+            .map(|p| p.basis.as_str())
+            .unwrap_or("—");
+        eprintln!(
+            "  {:<12} {:>12} {:>12} {:>12} {:>12}  {}",
+            result.framework,
+            phase("inference"),
+            phase("latency"),
+            phase("training"),
+            process,
+            basis
+        );
+    }
+    let sources: std::collections::BTreeSet<&str> = results
+        .iter()
+        .filter_map(|r| r.memory.as_ref())
+        .filter_map(|m| m.device.as_ref())
+        .filter_map(|d| d.process_source.as_deref())
+        .collect();
+    if !sources.is_empty() {
+        eprintln!(
+            "  Process column is per-process driver accounting via {}.",
+            sources.into_iter().collect::<Vec<_>>().join(", ")
         );
     }
 }
@@ -505,33 +980,125 @@ fn compare_outputs(results: &[&BenchResult]) {
 /// Returns a set of framework names that passed correctness checks.
 /// Uses PyTorch as the reference (ground truth). If PyTorch isn't present,
 /// all frameworks are considered matching (caller handles this case).
-fn matching_frameworks(successes: &[&BenchResult]) -> std::collections::HashSet<String> {
+fn matching_frameworks(
+    successes: &[&BenchResult],
+    require_gradients: bool,
+) -> std::collections::HashSet<String> {
     let mut matching = std::collections::HashSet::new();
     if successes.is_empty() {
         return matching;
     }
     // Find PyTorch as ground truth; fall back to first framework.
-    let reference = successes
+    let reference = *successes
         .iter()
         .find(|r| r.framework == "pytorch")
         .unwrap_or(&successes[0]);
     matching.insert(reference.framework.clone());
-    for other in &successes[1..] {
-        let loss_diff = (reference.outputs.loss - other.outputs.loss).abs();
-        let norm = reference.outputs.loss.abs().max(1.0);
-        let rel_loss = loss_diff / norm;
-        let (_, _, _, rel) = compute_errors(
-            &reference.outputs.logits_sample,
-            &other.outputs.logits_sample,
-        );
-        // Match if loss is close. Normalize by reference loss so that
-        // AR-heavy models (with larger absolute loss) get proportionally
-        // larger absolute thresholds.
-        if rel_loss < 0.05 || (rel_loss < 0.10 && rel < 0.1) {
+    for other in successes
+        .iter()
+        .copied()
+        .filter(|r| r.framework != reference.framework)
+    {
+        let comparison = compare_result(reference, other);
+        if comparison.forward_valid && (!require_gradients || comparison.training_valid) {
             matching.insert(other.framework.clone());
         }
     }
     matching
+}
+
+fn finite_json(value: f64) -> serde_json::Value {
+    if value.is_finite() {
+        serde_json::json!(value)
+    } else {
+        serde_json::Value::Null
+    }
+}
+
+fn git_revision(path: &Path) -> String {
+    let revision = Command::new("git")
+        .args(["rev-parse", "--short=12", "HEAD"])
+        .current_dir(path)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|revision| !revision.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    let dirty = Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=normal"])
+        .current_dir(path)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .is_some_and(|output| !output.stdout.is_empty());
+    if dirty {
+        format!("{revision}-dirty")
+    } else {
+        revision
+    }
+}
+
+fn annotate_validation(outcomes: &mut [FrameworkOutcome], benchmark_revision: &str) {
+    let reference = outcomes.iter().find_map(|outcome| match outcome {
+        FrameworkOutcome::Ok(result) if result.framework == "pytorch" => Some(result.clone()),
+        _ => None,
+    });
+
+    for outcome in outcomes {
+        let FrameworkOutcome::Ok(result) = outcome else {
+            continue;
+        };
+        result.extra.insert(
+            "benchmark_rev".to_string(),
+            serde_json::json!(benchmark_revision),
+        );
+        let validation = match &reference {
+            None => serde_json::json!({
+                "comparison_performed": false,
+                "reference_framework": null,
+                "forward_valid": null,
+                "training_valid": null,
+                "status": "NO REFERENCE",
+            }),
+            Some(reference) if result.framework == reference.framework => serde_json::json!({
+                "comparison_performed": true,
+                "reference_framework": reference.framework,
+                "forward_valid": true,
+                "training_valid": true,
+                "status": "REFERENCE",
+            }),
+            Some(reference) => {
+                let comparison = compare_result(reference, result);
+                serde_json::json!({
+                    "comparison_performed": true,
+                    "reference_framework": reference.framework,
+                    "forward_valid": comparison.forward_valid,
+                    "training_valid": comparison.training_valid,
+                    "status": comparison.status,
+                    "full_output_hash_match": comparison.hash_match,
+                    "output_shape_match": comparison.output_shape_match,
+                    "output_sample_count_match": comparison.output_sample_count_match,
+                    "gradients_available": comparison.gradients_available,
+                    "loss_absolute_error": finite_json(comparison.loss_diff),
+                    "loss_relative_error": finite_json(comparison.loss_relative_error),
+                    "output_max_absolute_error": finite_json(comparison.max_error),
+                    "output_mae": finite_json(comparison.mae),
+                    "output_rmse": finite_json(comparison.rmse),
+                    "output_relative_l2_error": finite_json(
+                        comparison.output_relative_l2_error
+                    ),
+                    "total_gradient_relative_error": finite_json(
+                        comparison.total_gradient_relative_error
+                    ),
+                    "parameter_gradient_relative_l2_error": finite_json(
+                        comparison.parameter_gradient_relative_l2_error
+                    ),
+                })
+            }
+        };
+        result.extra.insert("validation".to_string(), validation);
+    }
 }
 
 /// Heuristic: does this backend string look like a CPU backend?
@@ -540,7 +1107,7 @@ fn is_cpu_backend(backend: &str) -> bool {
     backend.to_uppercase().contains("CPU")
 }
 
-fn result_backend<'a>(r: &'a BenchResult) -> &'a str {
+fn result_backend(r: &BenchResult) -> &str {
     r.extra
         .get("backend")
         .and_then(|v| v.as_str())
@@ -566,40 +1133,57 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
         eprintln!();
     }
 
-    // Without ground truth, treat all successful frameworks as matching
-    // (no strike-through) since we have nothing to compare against.
-    let matching = if has_pytorch {
-        matching_frameworks(successes)
+    // Forward results can remain valid even when a reduced-precision
+    // backward pass fails the gradient gate. Track the two scopes
+    // independently so a training failure does not erase valid inference.
+    let matching_forward = if has_pytorch {
+        matching_frameworks(successes, false)
+    } else {
+        successes.iter().map(|r| r.framework.clone()).collect()
+    };
+    let matching_training = if has_pytorch {
+        matching_frameworks(successes, true)
     } else {
         successes.iter().map(|r| r.framework.clone()).collect()
     };
 
-    // Find best compile/inference/latency/train among matching frameworks.
+    // Find best values only among frameworks validated for each scope.
     let mut best_compile = f64::MAX;
     let mut best_inference = f64::MAX;
     let mut best_latency = f64::MAX;
     let mut best_training = f64::MAX;
     for o in outcomes {
-        if let FrameworkOutcome::Ok(r) = o
-            && matching.contains(&r.framework)
-        {
-            if r.timings.compile_s < best_compile {
+        if let FrameworkOutcome::Ok(r) = o {
+            let forward_valid = matching_forward.contains(&r.framework);
+            let training_valid = matching_training.contains(&r.framework);
+            if forward_valid && r.timings.compile_s < best_compile {
                 best_compile = r.timings.compile_s;
             }
-            if r.timings.inference_ms < best_inference {
+            if forward_valid && r.timings.inference_ms < best_inference {
                 best_inference = r.timings.inference_ms;
             }
-            if r.timings.latency_ms > 0.0 && r.timings.latency_ms < best_latency {
+            if forward_valid && r.timings.latency_ms > 0.0 && r.timings.latency_ms < best_latency {
                 best_latency = r.timings.latency_ms;
             }
-            if r.timings.training_ms > 0.0 && r.timings.training_ms < best_training {
+            if training_valid
+                && r.timings.training_ms > 0.0
+                && r.timings.training_ms < best_training
+            {
                 best_training = r.timings.training_ms;
             }
         }
     }
 
+    let causal_lm = successes
+        .iter()
+        .any(|result| result.model.starts_with("SmolLM"));
+    let (forward_heading, latency_heading) = if causal_lm {
+        ("Prefill (ms)", "Stateless 1-token (ms)")
+    } else {
+        ("Inference (ms)", "Latency (ms)")
+    };
     println!(
-        "| Platform | Framework | Compile (s) | Inference (ms) | Latency (ms) | Training (ms) | Loss |"
+        "| Platform | Framework | Compile (s) | {forward_heading} | {latency_heading} | Training (ms) | Loss |"
     );
     println!(
         "|----------|-----------|:-----------:|:--------------:|:------------:|:-------------:|:----:|"
@@ -634,9 +1218,10 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
         match outcome {
             FrameworkOutcome::Ok(r) => {
                 let link = framework_md_link(&r.framework, &r.extra);
-                let is_matching = matching.contains(&r.framework);
+                let forward_valid = matching_forward.contains(&r.framework);
+                let training_valid = matching_training.contains(&r.framework);
 
-                let fmt_val = |val: f64, best: f64, is_time: bool| -> String {
+                let fmt_val = |val: f64, best: f64, is_time: bool, valid: bool| -> String {
                     let s = if is_time && val == 0.0 {
                         "—".to_string()
                     } else if is_time && val < 10.0 {
@@ -649,7 +1234,7 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
                     } else {
                         format!("{:.2}", val)
                     };
-                    if !is_matching {
+                    if !valid {
                         format!("~~{s}~~")
                     } else if val > 0.0 && (val - best).abs() < 0.01 {
                         format!("**{s}**")
@@ -658,11 +1243,12 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
                     }
                 };
 
-                let compile = fmt_val(r.timings.compile_s, best_compile, false);
-                let inference = fmt_val(r.timings.inference_ms, best_inference, true);
-                let latency = fmt_val(r.timings.latency_ms, best_latency, true);
-                let training = fmt_val(r.timings.training_ms, best_training, true);
-                let loss = if is_matching {
+                let compile = fmt_val(r.timings.compile_s, best_compile, false, forward_valid);
+                let inference =
+                    fmt_val(r.timings.inference_ms, best_inference, true, forward_valid);
+                let latency = fmt_val(r.timings.latency_ms, best_latency, true, forward_valid);
+                let training = fmt_val(r.timings.training_ms, best_training, true, training_valid);
+                let loss = if forward_valid {
                     format!("{:.2}", r.outputs.loss)
                 } else {
                     format!("~~{:.2}~~", r.outputs.loss)
@@ -696,7 +1282,29 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
 
 fn main() {
     let cli = Cli::parse();
+    if cli.measurement_runs == 0 {
+        eprintln!("--measurement-runs must be at least 1");
+        std::process::exit(2);
+    }
+    if cli.profile && cli.profile_samples == 0 {
+        eprintln!("--profile-samples must be at least 1");
+        std::process::exit(2);
+    }
     let root = project_root(cli.root.as_deref());
+    let results_dir = cli
+        .results_dir
+        .clone()
+        .unwrap_or_else(|| root.join("results"));
+    let profile_dir = cli.profile.then(|| {
+        let directory = results_dir.join("profiles");
+        if directory.is_absolute() {
+            directory
+        } else {
+            std::env::current_dir()
+                .expect("resolve current directory for profile output")
+                .join(directory)
+        }
+    });
 
     let frameworks: Vec<&str> = match &cli.frameworks {
         Some(list) => list.iter().map(String::as_str).collect(),
@@ -721,8 +1329,15 @@ fn main() {
             cli.dry_run,
             prefer_discrete_gpu,
             discrete_gpu_pci_id.as_deref(),
+            cli.strict,
+            cli.warmup_runs,
+            cli.measurement_runs,
+            profile_dir.as_deref(),
+            cli.profile_samples,
         ));
     }
+    let benchmark_revision = git_revision(&root);
+    annotate_validation(&mut outcomes, &benchmark_revision);
 
     // Collect successful results for comparison.
     let successes: Vec<&BenchResult> = outcomes
@@ -789,7 +1404,7 @@ fn main() {
 
     // Save results even when everything fails — the per-framework JSON captures
     // the stderr excerpt, which is often the only record of what went wrong.
-    save_results(&root, &cli.model, &outcomes);
+    save_results(&results_dir, &cli.model, &outcomes);
 
     if successes.is_empty() {
         eprintln!("No successful benchmark results.");
@@ -797,4 +1412,182 @@ fn main() {
     }
 
     compare_outputs(&successes);
+    print_memory(&successes);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BenchResult, MemoryReport, Outputs, Timings, compare_gradient_norms, compare_result,
+        precision_contract_error, relative_scalar_error,
+    };
+    use std::collections::BTreeMap;
+
+    /// Archived results predate the memory report and must stay readable —
+    /// the paper's analysis reads them alongside new runs.
+    #[test]
+    fn result_without_memory_still_parses() {
+        let json = serde_json::json!({
+            "framework": "meganeura",
+            "model": "ResNet-50",
+            "device": "Vulkan",
+            "gpu_name": "gpu",
+            "timings": {
+                "compile_s": 0.671, "inference_ms": 5.271,
+                "latency_ms": 3.657, "training_ms": 31.935,
+            },
+            "outputs": {
+                "logits_hash": "sha256:0", "output_shape": [4, 1000],
+                "logits_sample": [0.0], "loss": 6.9,
+            },
+        });
+        let parsed: BenchResult = serde_json::from_value(json).unwrap();
+        assert!(parsed.memory.is_none());
+        // An absent report must not be serialized back as a null field.
+        let reserialized = serde_json::to_value(&parsed).unwrap();
+        assert!(!reserialized.as_object().unwrap().contains_key("memory"));
+    }
+
+    #[test]
+    fn memory_report_keeps_basis_and_engine_detail() {
+        let json = serde_json::json!({
+            "device": {
+                "total_bytes": 17_170_956_288u64,
+                "process_bytes": 1_234_567u64,
+                "process_source": "vulkan-memory-budget",
+                "sampled_at": "after-training",
+            },
+            "phases": {
+                "training": {
+                    "allocated_bytes": 900u64,
+                    "basis": "execution-plan physical allocation after lifetime aliasing",
+                    "plan_logical_bytes": 1500u64,
+                },
+            },
+        });
+        let report: MemoryReport = serde_json::from_value(json).unwrap();
+        let training = &report.phases["training"];
+        assert_eq!(training.allocated_bytes, 900);
+        assert!(training.basis.contains("aliasing"));
+        // Engine-specific keys survive the round trip through `detail`.
+        assert_eq!(training.detail["plan_logical_bytes"], 1500);
+        assert_eq!(
+            report.device.unwrap().process_source.unwrap(),
+            "vulkan-memory-budget"
+        );
+    }
+
+    /// A phase figure is meaningless without knowing what it counted, so
+    /// `basis` is required rather than defaulted.
+    #[test]
+    fn phase_memory_requires_a_basis() {
+        let json = serde_json::json!({
+            "phases": { "inference": { "allocated_bytes": 100u64 } },
+        });
+        assert!(serde_json::from_value::<MemoryReport>(json).is_err());
+    }
+
+    fn result(shape: Vec<usize>, gradients: bool) -> BenchResult {
+        BenchResult {
+            framework: "test".to_string(),
+            model: "model".to_string(),
+            device: "device".to_string(),
+            gpu_name: "gpu".to_string(),
+            timings: Timings {
+                compile_s: 0.0,
+                inference_ms: 0.0,
+                latency_ms: 0.0,
+                training_ms: 0.0,
+            },
+            outputs: Outputs {
+                logits_hash: "hash".to_string(),
+                output_shape: shape,
+                logits_sample: vec![1.0; 256],
+                loss: 1.0,
+                grad_norm: gradients.then_some(1.0),
+                gradient_norms: if gradients {
+                    BTreeMap::from([("weight".to_string(), 1.0)])
+                } else {
+                    BTreeMap::new()
+                },
+            },
+            memory: None,
+            extra: serde_json::Map::new(),
+        }
+    }
+
+    #[test]
+    fn relative_loss_error_is_not_diluted_for_small_losses() {
+        assert!((relative_scalar_error(0.0003, 0.0006) - 0.5).abs() < 1e-12);
+        assert_eq!(relative_scalar_error(0.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn gradient_comparison_rejects_different_parameter_sets() {
+        let reference = BTreeMap::from([("weight".to_string(), 1.0)]);
+        let other = BTreeMap::from([("bias".to_string(), 1.0)]);
+        assert_eq!(compare_gradient_norms(&reference, &other), f64::INFINITY);
+    }
+
+    #[test]
+    fn comparison_rejects_shape_mismatch() {
+        let reference = result(vec![1, 256], true);
+        let other = result(vec![2, 128], true);
+        let comparison = compare_result(&reference, &other);
+        assert!(!comparison.forward_valid);
+        assert!(!comparison.training_valid);
+    }
+
+    #[test]
+    fn comparison_requires_gradients_only_for_training() {
+        let reference = result(vec![1, 256], true);
+        let other = result(vec![1, 256], false);
+        let comparison = compare_result(&reference, &other);
+        assert!(comparison.forward_valid);
+        assert!(!comparison.training_valid);
+    }
+
+    #[test]
+    fn strict_cuda_contract_rejects_tf32_even_when_labeled_strict() {
+        let mut candidate = result(vec![1, 256], true);
+        candidate.framework = "pytorch".to_string();
+        candidate
+            .extra
+            .insert("backend".to_string(), serde_json::json!("CUDA 13.0"));
+        candidate.extra.insert(
+            "precision".to_string(),
+            serde_json::json!({
+                "tensor_storage": "f32",
+                "accumulation": "f32",
+                "output": "f32",
+                "reduced_precision_allowed": false,
+                "cuda_matmul_allow_tf32": true,
+                "cudnn_allow_tf32": false,
+                "nvidia_tf32_override": "0",
+            }),
+        );
+        assert!(precision_contract_error(&candidate, "strict-f32").is_some());
+    }
+
+    #[test]
+    fn strict_cuda_contract_accepts_explicit_f32_controls() {
+        let mut candidate = result(vec![1, 256], true);
+        candidate.framework = "pytorch".to_string();
+        candidate
+            .extra
+            .insert("backend".to_string(), serde_json::json!("CUDA 13.0"));
+        candidate.extra.insert(
+            "precision".to_string(),
+            serde_json::json!({
+                "tensor_storage": "f32",
+                "accumulation": "f32",
+                "output": "f32",
+                "reduced_precision_allowed": false,
+                "cuda_matmul_allow_tf32": false,
+                "cudnn_allow_tf32": false,
+                "nvidia_tf32_override": "0",
+            }),
+        );
+        assert_eq!(precision_contract_error(&candidate, "strict-f32"), None);
+    }
 }

@@ -521,7 +521,7 @@ dependencies = [
 [[package]]
 name = "blade-graphics"
 version = "0.8.4"
-source = "git+https://github.com/kvark/blade?rev=ba0fb5a6f2b5462c3e5796f8ce06b3b3d580adac#ba0fb5a6f2b5462c3e5796f8ce06b3b3d580adac"
+source = "git+https://github.com/kvark/blade?rev=60c2eeb8d6180ff2db5167e304d55b78a18dfee2#60c2eeb8d6180ff2db5167e304d55b78a18dfee2"
 dependencies = [
  "ash",
  "ash-window",
@@ -5232,7 +5232,7 @@ checksum = "7ebb8d8732c6a6df3d8f032a82911cfc747e00efb95cc46e8d0acd5b5b88570c"
 [[package]]
 name = "meganeura"
 version = "0.2.0"
-source = "git+https://github.com/kvark/meganeura?rev=e2e4e51ecb1bfa416fad733895d844834a505e2a#e2e4e51ecb1bfa416fad733895d844834a505e2a"
+source = "git+https://github.com/kvark/meganeura?rev=7561a64ec5a7e4bcdcd2c719aaaffe5912ed5e85#7561a64ec5a7e4bcdcd2c719aaaffe5912ed5e85"
 dependencies = [
  "blade-graphics",
  "blade-macros",

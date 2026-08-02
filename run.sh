@@ -552,8 +552,11 @@ fi
 # --- Create results directory ---
 mkdir -p "$RESULTS_DIR"
 
-# --- Build all Rust crates (harness + framework runners) at once ---
-echo "Building all Rust crates..." >&2
+# --- Build the Rust crates this run actually needs ---
+# Building the whole workspace compiles every framework runner regardless of
+# --frameworks. That wastes time on a two-engine run, and it is how the inferi
+# shader toolchain reaches builds that never asked for it.
+echo "Building Rust crates..." >&2
 WORKSPACE_CARGO_ARGS=(
     build
     --release
@@ -582,12 +585,47 @@ if [ -n "${INFERENA_MEGANEURA_PATH:-}" ]; then
         "patch.\"https://github.com/kvark/meganeura\".meganeura.path=\"$INFERENA_MEGANEURA_PATH\""
     )
 fi
-if cargo gpu --version &>/dev/null; then
-    cargo "${WORKSPACE_CARGO_ARGS[@]}" --workspace >&2
-else
-    echo "  (cargo-gpu not found — skipping inferi; install via: cargo install cargo-gpu --git https://github.com/Rust-GPU/cargo-gpu)" >&2
-    cargo "${WORKSPACE_CARGO_ARGS[@]}" --workspace --exclude inferena-inferi >&2
+# An empty --frameworks means "all".
+want_framework() {
+    [ -z "$FRAMEWORKS" ] && return 0
+    case ",$FRAMEWORKS," in
+        *",$1,"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# The harness itself is always required. Python-based runners (pytorch, ggml,
+# onnxruntime, max, jax, mlx) have no crate in this workspace.
+WORKSPACE_CARGO_ARGS+=(-p inferena-harness)
+if want_framework meganeura; then WORKSPACE_CARGO_ARGS+=(-p inferena-meganeura); fi
+if want_framework burn; then WORKSPACE_CARGO_ARGS+=(-p inferena-burn); fi
+if want_framework candle; then WORKSPACE_CARGO_ARGS+=(-p inferena-candle); fi
+if want_framework luminal; then WORKSPACE_CARGO_ARGS+=(-p inferena-luminal); fi
+
+# Inferi is opt-in even when requested. It pulls khal -> khal-builder -> vortx,
+# whose build script installs the rust-gpu toolchain and prompts for consent on
+# a missing one. Build scripts have no TTY, so that prompt fails the build
+# rather than asking. The consent bypass is a cargo-gpu CLI flag
+# (--auto-install-rust-toolchain), not an environment variable, so it cannot be
+# supplied from out here: the toolchain has to already be installed.
+# `cargo gpu --version` is not a sufficient check, because installing the
+# binary and installing the toolchain are separate steps.
+if want_framework inferi; then
+    if [ "${INFERENA_ENABLE_INFERI:-0}" = "1" ]; then
+        if ! cargo gpu --version &>/dev/null; then
+            echo "INFERENA_ENABLE_INFERI=1 but cargo-gpu is not on PATH." >&2
+            echo "  cargo install cargo-gpu --version 0.10.0-alpha.1 && cargo gpu install" >&2
+            exit 2
+        fi
+        WORKSPACE_CARGO_ARGS+=(-p inferena-inferi)
+    else
+        echo "  (skipping inferi: needs the rust-gpu toolchain; run" >&2
+        echo "   'cargo install cargo-gpu --version 0.10.0-alpha.1 && cargo gpu install'," >&2
+        echo "   then set INFERENA_ENABLE_INFERI=1)" >&2
+    fi
 fi
+
+cargo "${WORKSPACE_CARGO_ARGS[@]}" >&2
 restore_workspace_lockfile
 trap - EXIT
 

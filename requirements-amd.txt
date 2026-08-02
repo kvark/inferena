@@ -1,29 +1,67 @@
-# Pull ROCm-enabled torch wheels. PyPI's default `torch` is now the CUDA
-# build (its metadata pulls in nvidia-cudnn-cu13, cuda-toolkit, etc.), and
-# its base version outranks rocm's local-versioned wheel — so `--extra-index-url`
-# alone isn't enough, we also pin exact versions from the ROCm channel.
-# Users on a different ROCm: swap `rocm7.1` and the pins to match your toolkit.
---extra-index-url https://download.pytorch.org/whl/rocm7.1
-
-# AMD's manylinux index hosts onnxruntime-migraphx (ONNX Runtime with the
-# MIGraphXExecutionProvider). Plain `onnxruntime` from PyPI is CPU-only.
---find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.1/
+# Pull ROCm-enabled torch wheels from AMD's multi-arch index. PyPI's default
+# `torch` is the CUDA build (its metadata pulls in nvidia-cudnn-cu13,
+# cuda-toolkit, etc.), and its base version outranks rocm's local-versioned
+# wheel — so the index alone isn't enough, we also pin exact versions.
+#
+# This is AMD's own index, which is what publishes ROCm 7.14 wheels. It is NOT
+# download.pytorch.org/whl/rocmX.Y (that channel exists only for the ROCm
+# releases AMD ships there, e.g. rocm7.1 / rocm7.2 — there is no rocm7.14 path)
+# and NOT repo.radeon.com/rocm/manylinux/ (no rocm-rel-7.14 directory).
+#
+# Users on a different ROCm: browse https://repo.amd.com/rocm/whl-multi-arch/
+# and swap the `+rocm7.14.0` local versions below to match your toolkit.
+--extra-index-url https://repo.amd.com/rocm/whl-multi-arch/
 
 -r requirements-common.txt
 
-# AMD ROCm
-torch==2.10.0+rocm7.1
-torchvision==0.25.0+rocm7.1
-# Pinned explicitly: when migrating a venv from the CUDA `torch` to the ROCm
-# one, pip's uninstall of the transitive nvidia `triton` removes files that
-# also belong to `triton-rocm`, leaving a half-empty `triton/` package.
-# Listing it here makes `pip install -r ... --force-reinstall --no-deps triton-rocm`
-# a one-liner if `import triton` ever misbehaves.
-triton-rocm
-# onnxruntime-migraphx conflicts with plain `onnxruntime` (both own the
-# `onnxruntime` module). If you previously installed CPU onnxruntime into
-# this venv, uninstall it before running pip install -r.
+# AMD ROCm.
+#
+# These wheels ship no GPU code themselves — the compiled kernels live in
+# separate `amd-torch-device-gfx*` packages selected by extra. `device-all`
+# covers every supported arch (gfx908 through gfx1201) and keeps this file
+# portable across machines, at the cost of a large download (~11 GB). To slim
+# it down, replace `[device-all]` with just your GPU, e.g.
+# `torch[device-gfx1103]` (`rocminfo | grep gfx` prints the installed arch).
+#
+# They also pull the `rocm-sdk-*` runtime libraries, so a host ROCm install is
+# not required for torch itself.
+#
+# Unlike the download.pytorch.org wheels, these carry real gfx1103 code and a
+# matching rocBLAS Tensile library, so Radeon 780M / Phoenix APUs work natively
+# and must NOT set HSA_OVERRIDE_GFX_VERSION — there is no gfx1100 code object
+# here, so the override causes hipErrorInvalidImage.
+torch[device-all]==2.12.0+rocm7.14.0
+torchvision[device-all]==0.27.0+rocm7.14.0
+
+# NOTE: `triton-rocm` is deliberately NOT listed. These torch builds depend on
+# their own ROCm-flavoured `triton` (3.7.1+git….rocm7.14.0, from the index
+# above). Adding `triton-rocm` here would pull the stale PyPI 3.0.0rc1 and
+# fight with it over the `triton/` package.
+
+# ONNX Runtime with the MIGraphXExecutionProvider. Published on PyPI, so the
+# old `--find-links https://repo.radeon.com/rocm/manylinux/…` is gone.
+#
+# CAVEAT 1: `faster-whisper` (via requirements-common.txt) hard-requires plain
+# `onnxruntime`, and the CPU and MIGraphX distributions both own the same
+# `onnxruntime/` module — 619 overlapping files. pip installs both and the
+# loser is silently overwritten. Whichever you want must be installed last:
+#
+#   pip install --force-reinstall --no-deps onnxruntime-migraphx
+#
+# CAVEAT 2: winning that fight is necessary but NOT sufficient. The provider
+# lib dynamically links `libmigraphx_c.so.3` and `libamdhip64.so.7`, which come
+# from a *host* ROCm install; the `rocm-sdk-*` packages above ship HIP but not
+# MIGraphX, and their lib dir is not on the loader path. Without a system ROCm
+# (`/opt/rocm` + `sudo apt install migraphx`) the .so silently fails to load
+# and you get CPU execution with no error. Check with:
+#
+#   python -c "import onnxruntime; print(onnxruntime.get_available_providers())"
+#   ldd .venv/lib/python3*/site-packages/onnxruntime/capi/libonnxruntime_providers_migraphx.so | grep 'not found'
+#
+# Without a host ROCm, leave the CPU `onnxruntime` as the winner instead —
+# MIGraphX cannot load there regardless.
 onnxruntime-migraphx
+
 # JAX ROCm: the old `jax[rocm]` extra was replaced by a versioned plugin.
 # `rocm7-local` uses the host ROCm install rather than bundling libraries.
 # NOTE: the plugin hard-links against rocprofiler-sdk/roctracer libs that

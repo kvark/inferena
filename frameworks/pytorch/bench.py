@@ -1149,6 +1149,146 @@ def _nvidia_smi_process_bytes():
     return None
 
 
+_MEMORY_UNIT_BYTES = {
+    "B": 1, "BYTE": 1, "BYTES": 1,
+    "KB": 1024, "KIB": 1024,
+    "MB": 1024 ** 2, "MIB": 1024 ** 2,
+    "GB": 1024 ** 3, "GIB": 1024 ** 3,
+    "TB": 1024 ** 4, "TIB": 1024 ** 4,
+}
+
+
+def _to_bytes(value, unit):
+    """Convert an amd-smi {value, unit} pair to bytes.
+
+    amd-smi reports each memory field in its own unit -- VRAM in GB, GTT in
+    MB, CPU in B -- so the unit travels with the value and cannot be assumed.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    scale = _MEMORY_UNIT_BYTES.get(str(unit).strip().upper())
+    return int(number * scale) if scale else None
+
+
+def _vram_bytes_in(node):
+    """Find a VRAM-keyed memory value anywhere in a subtree.
+
+    Used only after the subtree has been identified as this process's, so it
+    deliberately does not re-check the PID: amd-smi nests the figure inside a
+    `memory_usage` object that carries no PID of its own.
+    """
+    if isinstance(node, list):
+        for item in node:
+            found = _vram_bytes_in(item)
+            if found is not None:
+                return found
+        return None
+    if not isinstance(node, dict):
+        return None
+    for key, value in node.items():
+        if "vram" not in str(key).lower():
+            continue
+        if isinstance(value, dict):
+            found = _to_bytes(value.get("value"), value.get("unit"))
+        else:
+            # rocm-smi writes a bare count, with the unit in the key.
+            found = _to_bytes(value, "B")
+        if found is not None:
+            return found
+    for value in node.values():
+        found = _vram_bytes_in(value)
+        if found is not None:
+            return found
+    return None
+
+
+def _node_pid(node):
+    value = None
+    for key in ("pid", "process_id"):
+        for actual, candidate in node.items():
+            if str(actual).lower() == key:
+                value = candidate
+                break
+        if value is not None:
+            break
+    if isinstance(value, dict):
+        value = value.get("value")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _key_is_pid(key, pid):
+    """Whether a dict key names this PID, as rocm-smi's `PID1234` entries do."""
+    text = str(key).strip().upper().replace(" ", "").replace("_", "")
+    return text in (str(pid), f"PID{pid}")
+
+
+def _find_pid_vram_bytes(node, pid):
+    """Recursively find this process's VRAM figure in an SMI JSON document.
+
+    The schema differs across amd-smi and rocm-smi versions, so rather than
+    hard-coding a nesting that would silently return nothing on a version we
+    did not anticipate, this locates the subtree belonging to our PID --
+    carried as a field by amd-smi and as a key by rocm-smi -- and then reads
+    whatever VRAM figure that subtree holds.
+    """
+    if isinstance(node, list):
+        for item in node:
+            found = _find_pid_vram_bytes(item, pid)
+            if found is not None:
+                return found
+        return None
+    if not isinstance(node, dict):
+        return None
+
+    if _node_pid(node) == pid:
+        found = _vram_bytes_in(node)
+        if found is not None:
+            return found
+    for key, value in node.items():
+        if _key_is_pid(key, pid):
+            found = _vram_bytes_in(value)
+            if found is not None:
+                return found
+    for value in node.values():
+        found = _find_pid_vram_bytes(value, pid)
+        if found is not None:
+            return found
+    return None
+
+
+def _amd_smi_process_bytes():
+    """Per-process VRAM through `amd-smi`, the current ROCm tool."""
+    return _smi_process_bytes(
+        ["amd-smi", "process", "--json", "--pid", str(os.getpid())], "amd-smi"
+    )
+
+
+def _rocm_smi_process_bytes():
+    """Per-process VRAM through `rocm-smi`, which amd-smi supersedes."""
+    return _smi_process_bytes(["rocm-smi", "--showpids", "--json"], "rocm-smi")
+
+
+def _smi_process_bytes(command, tool):
+    if shutil.which(command[0]) is None:
+        return None
+    import subprocess
+
+    try:
+        output = subprocess.run(
+            command, capture_output=True, text=True, timeout=20, check=True
+        ).stdout
+        document = json.loads(output)
+    except Exception as exc:
+        print(f"[pytorch] {tool} per-process memory unavailable: {exc}", file=sys.stderr)
+        return None
+    return _find_pid_vram_bytes(document, os.getpid())
+
+
 def _process_device_memory(dev: str):
     """Device memory attributed to this process.
 
@@ -1161,6 +1301,16 @@ def _process_device_memory(dev: str):
         # Metal's driver-allocated size is already process-scoped.
         return int(torch.mps.driver_allocated_memory()), "metal-driver-allocated"
     if not dev.startswith("cuda"):
+        return None, None
+    # A ROCm build reports device strings as "cuda" but has no NVML; route it
+    # to the AMD tools instead of failing two NVIDIA probes first.
+    if getattr(torch.version, "hip", None):
+        process_bytes = _amd_smi_process_bytes()
+        if process_bytes is not None:
+            return process_bytes, "amd-smi-per-process"
+        process_bytes = _rocm_smi_process_bytes()
+        if process_bytes is not None:
+            return process_bytes, "rocm-smi-per-process"
         return None, None
     process_bytes = _nvml_process_bytes()
     if process_bytes is not None:

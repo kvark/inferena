@@ -21,7 +21,7 @@ links in the results tables always point to the exact revision tested.
 | [PyTorch](https://pytorch.org/) | Python | CUDA / ROCm / XPU / MPS |
 | [Candle](https://github.com/huggingface/candle) | Rust | CUDA / Metal / CPU |
 | [Burn](https://github.com/tracel-ai/burn) | Rust | wgpu (Vulkan / Metal / DX12) |
-| [Luminal](https://github.com/luminal-ai/luminal) | Rust | CUDA / Metal / CPU |
+| [Luminal](https://github.com/luminal-ai/luminal) | Rust | CUDA / Metal |
 | [Meganeura](https://github.com/kvark/meganeura) | Rust | blade (Vulkan / Metal) |
 | [Inferi](https://github.com/dimforge/inferi)[^inferi] | Rust | wgpu (Vulkan / Metal) / CUDA |
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) | C++ | CUDA / Metal / Vulkan / CPU |
@@ -48,7 +48,7 @@ links in the results tables always point to the exact revision tested.
 | MAX | CUDA, CPU | CPU | — |
 | Candle | CUDA, CPU | Metal, CPU | CPU |
 | Burn | Vulkan, CPU | Metal, CPU | — |
-| Luminal | CUDA, CPU | Metal, CPU | — |
+| Luminal | CUDA | Metal | — |
 | Meganeura | Vulkan | Metal | Vulkan |
 | Inferi | CUDA, Vulkan | Metal | CUDA, Vulkan |
 | llama.cpp | CUDA, Vulkan, CPU | Metal, CPU | CUDA, Vulkan, CPU |

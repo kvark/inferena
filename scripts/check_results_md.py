@@ -34,6 +34,17 @@ EXPECTED_HEADER_CELLS = [
     "Training (ms)",
     "Loss",
 ]
+MODEL_HEADER_CELLS = {
+    "SmolLM2-135M.md": [
+        "Platform",
+        "Framework",
+        "Compile (s)",
+        "Prefill (ms)",
+        "Stateless 1-token (ms)",
+        "Training (ms)",
+        "Loss",
+    ],
+}
 COLUMNS = len(EXPECTED_HEADER_CELLS)
 
 
@@ -58,9 +69,13 @@ def check_md(path):
         return [f"{path}: no results table found"]
     _, header, _, rows, _ = parsed
     header_cells = split_row(header)
-    if header_cells != EXPECTED_HEADER_CELLS:
+    expected_header_cells = MODEL_HEADER_CELLS.get(
+        os.path.basename(path), EXPECTED_HEADER_CELLS
+    )
+    if header_cells != expected_header_cells:
         errors.append(
-            f"{path}: header mismatch\n  got:      {header_cells}\n  expected: {EXPECTED_HEADER_CELLS}"
+            f"{path}: header mismatch\n  got:      {header_cells}\n"
+            f"  expected: {expected_header_cells}"
         )
     for i, row in enumerate(rows):
         cells = split_row(row)

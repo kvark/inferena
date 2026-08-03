@@ -19,9 +19,15 @@ down/up paths, GroupNorm, and U-Net skip connections.
 ## Results
 
 The previous table measured the superseded 5.29M-parameter convolution-only
-workload and has been removed to prevent accidental comparison. Freeze one
-Meganeura revision and rerun both practical-default and strict configurations
-on every platform before publishing a new table:
+workload and has been removed to prevent accidental comparison. This empty
+table preserves the validated results schema and insertion point for the next
+frozen run.
+
+| Platform | Framework | Compile (s) | Inference (ms) | Latency (ms) | Training (ms) | Loss |
+|----------|-----------|:-----------:|:--------------:|:------------:|:-------------:|:----:|
+
+Freeze one Meganeura revision and rerun both practical-default and strict
+configurations on every platform before publishing new results:
 
 ```bash
 ./run.sh -m StableDiffusion -f pytorch,meganeura

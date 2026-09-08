@@ -71,10 +71,19 @@ validation contract. Do not mix these new records into the submitted matrix.
 Use a dedicated environment with `requirements-p3hpc.txt` and the appropriate
 vendor wheel index; it contains only this comparison's Python dependencies.
 For NVIDIA, install using `--extra-index-url https://download.pytorch.org/whl/cu130`.
-The collector checks the exact installed torch version including its vendor
-suffix. Use the same release across machines where available; a vendor channel
-requiring another release is a separately labelled availability cohort, not a
-controlled cross-backend comparison. Do not upgrade packages during a campaign.
+The v2 campaign collector requires PyTorch 2.13.0 and reported source commit
+`cf30153c4c131c8164ee7798e5022d810682e2cb` on **every** platform. It checks
+both before collection and in every paired result; unknown/different commits
+fail closed. `--torch-version` still declares the exact platform wheel suffix.
+The campaign and PyTorch records retain the commit and `torch.__config__.show()`.
+This fixes the earlier release-only check; old v1 campaigns did not enforce a
+common source commit and must not be relabelled retroactively.
+
+This is a common **reported upstream source**, not identical binaries or
+vendor libraries, and not an attestation of an unmodified build. CUDA, ROCm,
+Metal and CPU builds necessarily differ. A vendor fork requiring another
+commit/release needs its own labelled source ref and availability cohort,
+not an override inside this controlled cohort. Do not upgrade during collection.
 
 For SmolLM2, prepare `models/SmolLM2-135M/config.json` and `model.safetensors`
 from a declared immutable Hugging Face revision before running. Both engines
@@ -117,7 +126,7 @@ first pair and later wrapper checks use the locked dependency resolution.
 | CPU | declared eager availability reference, separate from GPU comparisons |
 
 Every pair must retain both engines, pass forward **and** backward validation,
-and match the declared revision, torch version, backend, GPU and execution
+and match the declared revisions, torch build version, backend, GPU and execution
 mode. A successful harness exit alone is insufficient. Invalid or missing
 records stop the campaign; logs and `campaign.json` mark it incomplete. Do not
 retry until favorable: diagnose, record the reason, and use a new source ref
@@ -126,6 +135,7 @@ pairs need an explicit scientific disposition, not an automatic exclusion.
 
 `campaign.json` records the complete source SHA, pinned Meganeura dependency,
 Python package versions, input hashes, device-selection overrides and run order.
+It also records the common PyTorch source and platform-specific build settings.
 The per-engine records retain driver/device, preparation, memory, execution and
 validation details. Do not run two collectors on the same device concurrently.
 
@@ -150,6 +160,61 @@ the device tracing runtime; MPS currently yields CPU traces only and requires
 Metal tooling for its GPU timeline. Missing GPU events are not zero GPU cost.
 For compiler diagnosis, use `TORCH_LOGS=graph_breaks,recompiles,perf_hints` in a
 separate run. The publication collector rejects profiling/debug overrides.
+
+Use `scripts/profile_report.py <meganeura-sidecar.json>` to rank families and
+dispatches, or pass two sidecars for a revision comparison. The report prints
+the timestamp contract: Meganeura's Vulkan pass intervals include inter-pass
+barriers, and one-pass-per-dispatch capture changes the normal grouped schedule.
+Its Perfetto GPU slices are durations laid out at a host submission timestamp,
+**not calibrated device start/end times**. Do not infer queue gaps or overlap
+from that synthetic alignment. The Inferena wrapper currently captures GPU
+sidecars, not Meganeura CPU spans; a `profiler`-enabled caller can collect those
+separately. Vendor timelines are needed for correlated host/device attribution.
+
+### Bounded gap-analysis plan
+
+| Quantity | Instrument | Interpretation / remaining work |
+|---|---|---|
+| End-to-end latency | Ordinary paired process samples | The primary comparison; no profiling enabled |
+| Host encode/submit/wait | CPU spans plus OS/vendor timeline | Elapsed wait is not busy CPU time; current Meganeura spans need finer encode/submit boundaries |
+| Kernel/family cost | Meganeura dispatch sidecars; PyTorch device events | Different instrumentation contracts; compare ranks and variants, not an additive cross-engine decomposition |
+| Queue gaps and overlap | Correlated vendor CPU/GPU timeline | Not recoverable from Meganeura's reconstructed Perfetto GPU track |
+| Barrier overpayment | Validated, interleaved legal-schedule A/B | **Unmeasured on the current paired cohort**; counts and pass intervals alone do not establish removable cost |
+| Memory and preparation | Resident/allocator counters; build/capture timers | Keep their scopes and instrumentation overhead visible |
+
+Start with ResNet-50 training, Whisper training and SmolLM2 minimal forward:
+they cover convolution derivatives, attention and short-dispatch latency.
+Localize the largest families, then inspect only their register/spill,
+occupancy and memory counters with the applicable vendor tool. Retain generated
+shaders and traces outside Git, identified by source/configuration in a short
+results summary. The existing NVIDIA shell helper is Windows-path-specific;
+do not mistake it for a qualified Linux profiling entry point.
+
+For barriers, first capture the **production** grouped schedule with Blade 0.9.
+Normal steps already use inline compute-to-compute barriers; the old broad
+inter-pass barrier experiment is not a current application overhead estimate.
+Any challenger must preserve RAW/WAR/WAW ordering, physical aliases, external
+buffer visibility and full output/gradient correctness. Compare the same kernels,
+geometry, data and precision with interleaved unprofiled trials; report the
+paired latency delta and uncertainty, including a null result. Never disable
+all barriers on a dependent graph or multiply a no-op barrier cost by its count.
+
+For scaling, extend the matched SmolLM2 family from 135M to 360M and 1.7B before
+introducing another architecture; the latter two still need native-runner and
+collector wiring and qualification. Hold batch/context/precision fixed, then
+vary batch and context separately. Separate prefill, KV-cache decode and F+L+B;
+the current minimal forward is **not** cached autoregressive decode. More weights
+can amortize fixed costs, but deeper networks also add dependencies, and memory
+bandwidth, cache and matrix efficiency can widen the gap. Two different model
+sizes/architectures do not justify extrapolating a scaling law.
+
+Gemma 4's large dense model is 31B, not 32B; it is not a current Meganeura builder
+or Inferena workload. F32 weights alone are about 124 GB, and F32 weights plus
+gradients about 248 GB before activations/workspace. Google's approximate BF16
+loading budget is 69.9 GB, also before context-dependent KV storage. Reduced
+weights, quantization, offload or a new training method require their own matched
+protocol, not comparison with the existing f32 cells.
+[Model sizes and memory planning](https://ai.google.dev/gemma/docs/core).
 
 ## Collection plan (not yet a new paper matrix)
 

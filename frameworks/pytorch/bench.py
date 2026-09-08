@@ -1530,6 +1530,8 @@ def bench(model_name: str, spec: dict):
         "python_version": platform.python_version(),
         "platform": platform.platform(),
         "torch_version": torch.__version__,
+        "torch_git_version": torch.version.git_version,
+        "torch_build_config": torch.__config__.show(),
         "cuda_version": torch.version.cuda,
         "hip_version": torch.version.hip,
         "cudnn_version": torch.backends.cudnn.version(),

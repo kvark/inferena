@@ -15,6 +15,15 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 MODELS = ("SmolLM2-135M", "SmolVLA", "StableDiffusion", "ResNet-50", "Whisper-tiny")
 PHASES = ("inference", "latency", "training")
+TORCH_VERSION = "2.13.0"
+TORCH_REVISION = "cf30153c4c131c8164ee7798e5022d810682e2cb"
+
+
+def check_torch_identity(version, revision, declared_version):
+    if version != declared_version or version.split("+")[0] != TORCH_VERSION:
+        raise ValueError(f"PyTorch must be {TORCH_VERSION} with the declared vendor suffix")
+    if revision != TORCH_REVISION:
+        raise ValueError(f"PyTorch source must be {TORCH_REVISION}, got {revision!r}")
 
 
 def conditions(backend):
@@ -46,8 +55,7 @@ def check_pair(records, args, mode, graphs, count, revision):
             if len(samples) != count or any(not math.isfinite(x) or x <= 0 for x in samples):
                 raise ValueError(f"{engine} has invalid {phase} samples")
     pt, mg = by_engine["pytorch"], by_engine["meganeura"]
-    if pt["torch_version"] != args.torch_version:
-        raise ValueError("PyTorch version differs from the declared version")
+    check_torch_identity(pt["torch_version"], pt["environment"].get("torch_git_version"), args.torch_version)
     if pt["backend"].split()[0].lower() != args.backend:
         raise ValueError(f"unexpected reference backend: {pt['backend']}")
     if args.gpu.casefold() not in mg["gpu_name"].casefold():
@@ -96,6 +104,11 @@ def main():
     packages = {d.metadata["Name"]: d.version for d in importlib.metadata.distributions()}
     if importlib.metadata.version("torch") != args.torch_version:
         parser.error("this Python interpreter has a different PyTorch version")
+    import torch
+    try:
+        check_torch_identity(torch.__version__, torch.version.git_version, args.torch_version)
+    except ValueError as error:
+        parser.error(str(error))
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     lockfile = ROOT / "Cargo.lock"
     model_files = []
@@ -113,8 +126,10 @@ def main():
                INFERENA_REQUIRE_LOCAL_WEIGHTS="1")
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v1", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v2", "source": revision,
         "meganeura": dependency, "python": sys.version, "packages": packages,
+        "torch": {"version": torch.__version__, "git_version": torch.version.git_version,
+                  "build_config": torch.__config__.show()},
         "args": {**vars(args), "results_dir": str(destination)}, "sha256": hashes,
         "device_selection": {key: env[key] for key in (
             "CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "VK_ICD_FILENAMES",

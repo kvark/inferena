@@ -1,14 +1,36 @@
-"""One broad CUDA replay regression; no benchmark or retained artifacts."""
+"""Campaign identity and broad CUDA replay checks; no retained artifacts."""
 
 import copy
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 
 import torch
 
 from execution import capture_phase, profile_phase
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+from p3hpc import TORCH_REVISION, TORCH_VERSION, check_torch_identity
+
+
+class CampaignTest(unittest.TestCase):
+    def test_common_source_with_platform_specific_builds(self):
+        pin = next(line for line in (
+            Path(__file__).resolve().parents[2] / "requirements-p3hpc.txt"
+        ).read_text().splitlines() if line.startswith("torch=="))
+        self.assertEqual(pin, f"torch=={TORCH_VERSION}")
+        for suffix in ("", "+cu130", "+rocm7.2"):
+            version = TORCH_VERSION + suffix
+            check_torch_identity(version, TORCH_REVISION, version)
+            for revision in (None, "unknown", "0" * 40):
+                with self.assertRaises(ValueError):
+                    check_torch_identity(version, revision, version)
+        with self.assertRaises(ValueError):
+            check_torch_identity(TORCH_VERSION, TORCH_REVISION, TORCH_VERSION + "+cu130")
+        with self.assertRaises(ValueError):
+            check_torch_identity("2.12.0", TORCH_REVISION, "2.12.0")
 
 
 @unittest.skipUnless(torch.cuda.is_available() and torch.version.cuda, "NVIDIA CUDA required")

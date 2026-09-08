@@ -39,8 +39,10 @@ def summarize(path: Path, artifact: dict[str, Any], profile: dict[str, Any], top
     ratio_text = f"{ratio:.2f}x" if ratio is not None else "n/a"
     print(
         f"normal={baseline_text}; profiled={measurement['profiled_wall_median_ms']:.3f} ms; "
-        f"GPU sum={measurement['gpu_total_median_ms']:.3f} ms; instrumentation={ratio_text}"
+        f"GPU pass intervals={measurement['gpu_total_median_ms']:.3f} ms; instrumentation={ratio_text}"
     )
+    print(f"Timing contract: {profile.get('timing_contract', 'unspecified in this artifact')}")
+    print("Pass intervals are not kernel-only time; wall minus their sum is not CPU overhead.")
     print(
         f"dispatches={plan.get('dispatch_count', '?')} "
         f"(forward={plan.get('forward_dispatch_count', '?')}, "

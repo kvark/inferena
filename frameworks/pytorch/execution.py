@@ -5,6 +5,19 @@ import time
 import torch
 
 
+class CapturedPhase:
+    def __init__(self, fn, model, graph, outputs):
+        # The callable may be the sole owner of captured inputs/parameters.
+        self.fn = fn
+        self.model = model
+        self.graph = graph
+        self.outputs = outputs
+
+    def __call__(self):
+        self.graph.replay()
+        return self.outputs
+
+
 def capture_phase(fn, model=None):
     """Return a replay callable retaining its graph, outputs and gradient storage.
 
@@ -42,10 +55,7 @@ def capture_phase(fn, model=None):
     with torch.cuda.graph(graph, stream=stream):
         outputs = fn()
 
-    def replay():
-        graph.replay()
-        return outputs
-
+    replay = CapturedPhase(fn, model, graph, outputs)
     capture_s = time.perf_counter() - start
     validation_start = time.perf_counter()
 

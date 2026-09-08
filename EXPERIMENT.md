@@ -12,6 +12,8 @@ The `paper-arxiv-1` runner's normal `bench_v2` path uses default
 `torch.compile(model)` and never calls the explicit CUDA Graph helpers.
 Those helpers exist only in the legacy path, and there only when compilation
 is unavailable. A compile request is not evidence of CUDA Graph replay.
+The unused legacy benchmark and its duplicate capture helpers have now been
+removed from this branch. Reproduce that historical path at `paper-arxiv-1`.
 
 This branch adds a generic whole-phase capture wrapper, not model-specific
 kernels. Each inference, minimal-shape and forward/loss/backward phase gets its
@@ -102,3 +104,40 @@ on NVIDIA does not establish ROCm, Metal or CPU behavior.
 
 See [PyTorch CUDA Graph semantics](https://docs.pytorch.org/docs/main/notes/cuda.html#cuda-graphs)
 and [compiler modes](https://docs.pytorch.org/docs/stable/generated/torch.compile).
+
+## September 8 pilot result
+
+Measured source: `experiment/p3hpc-cuda-graphs-pilot-2026-09-08` (`d1bd3e6`).
+RTX 5070, driver 595.71.05, PyTorch 2.13.0+cu130, Python 3.14; strict f32.
+Both declared processes succeeded; no retries. CUDA Graph qualification passed
+for all three phases, including all elements of 108 training-gradient tensors
+on two consecutive replays. The final full inference hashes agree across the
+two processes. The reported parameter-norm vectors differ by relative L2
+`1.43e-8`; they are not claimed bit-identical or full cross-process gradients.
+
+| ResNet-50 phase | Default compile, no graph | Default compile, whole-phase graph |
+|---|---:|---:|
+| Inference, batch 4 | 8.044 ms | 7.886 ms |
+| Minimal forward, batch 1 | 4.877 ms | 4.721 ms |
+| Forward + loss + backward | 16.239 ms | 16.006 ms |
+
+These are medians of 20 synchronized calls in **one process per condition in
+fixed order**, not a replicated speedup estimate. There is no paired Meganeura
+result and nothing here replaces a paper cell. Compiler preparation was about
+14 seconds per process; a short local Rust build overlapped control process
+startup, so these are not controlled compile-cost measurements.
+
+Additional graph preparation plus qualification totalled about 0.397 s across
+the three phases. Here `capture_s` includes warmup, the reference snapshot and
+capture; `validation_s` includes replay, readback and CPU comparisons. It is
+not a measurement of GPU capture or CPU comparison alone. Final per-process
+NVML residency was 888 MiB without graphs and 1,946 MiB with graphs. Both
+allocator reservation and driver residency must accompany performance results;
+the smaller live-allocation counter alone would obscure this cost.
+
+Local records/logs are outside Git at
+`/mnt/data/inferena-cuda-pilot.kK9H06/`. Reproduce the procedure from the tagged
+source with the documented mode switches; binaries are not retained in Git.
+The branch subsequently removed the unused legacy runner and made the replay
+object explicitly own its callable/model as well as its graph/output storage.
+Max-autotune and the full replicated campaign remain unmeasured.

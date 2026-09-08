@@ -3,6 +3,12 @@
 [![CI](https://github.com/kvark/inferena/actions/workflows/ci.yml/badge.svg)](https://github.com/kvark/inferena/actions/workflows/ci.yml)
 
 Single-GPU ML systems benchmark for matched inference and training workloads.
+
+This experiment branch adds validated whole-phase CUDA Graph replay to the
+PyTorch comparison and pins Meganeura to merged main. See the
+[protocol, controls and pilot conclusions](EXPERIMENT.md). Generated records
+stay outside Git; submitted results remain reproducible at `paper-arxiv-1`.
+
 PyTorch and Meganeura currently report the complete timing, precision,
 environment, output, and gradient metadata used for strict cross-engine
 validation. Other runners remain available while their reporting is brought

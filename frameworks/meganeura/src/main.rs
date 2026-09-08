@@ -4,9 +4,17 @@
 //! using the meganeura crate (e-graph optimized NN on blade-graphics).
 
 use meganeura::data::safetensors::SafeTensorsModel;
-use meganeura::{Graph, build_inference_session, build_session};
+use meganeura::{Graph, Session, SessionConfig};
 use sha2::{Digest, Sha256};
 use std::time::Instant;
+
+fn build_inference_session(graph: &Graph) -> Session {
+    meganeura::build(graph, SessionConfig::inference_from_env()).0
+}
+
+fn build_session(graph: &Graph) -> Session {
+    meganeura::build(graph, SessionConfig::from_env()).0
+}
 
 fn find_local_model(model_name: &str) -> Option<std::path::PathBuf> {
     // Search up from exe location.

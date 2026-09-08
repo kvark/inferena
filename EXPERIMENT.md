@@ -15,6 +15,12 @@ is unavailable. A compile request is not evidence of CUDA Graph replay.
 The unused legacy benchmark and its duplicate capture helpers have now been
 removed from this branch. Reproduce that historical path at `paper-arxiv-1`.
 
+The September 8 profile handoff also exposed a Meganeura API migration:
+convenience builders now use pure defaults, so the runner must opt into
+`SessionConfig::from_env` / `inference_from_env`. This applies the declared
+precision switches and enables timestamp contexts. Earlier pilot records on
+this branch do not qualify that corrected Meganeura precision configuration.
+
 This branch adds a generic whole-phase capture wrapper, not model-specific
 kernels. Each inference, minimal-shape and forward/loss/backward phase gets its
 own `torch.cuda.CUDAGraph`. The replay callable retains static output storage;

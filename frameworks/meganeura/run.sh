@@ -63,7 +63,7 @@ trap - EXIT
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) EXE=.exe ;; *) EXE= ;; esac
 PREFIX=()
 if [ -n "${INFERENA_NSYS:-}" ]; then
-    PREFIX=("$INFERENA_NSYS" profile --trace=vulkan,nvtx,osrt --vulkan-gpu-workload=individual
+    PREFIX=("$INFERENA_NSYS" profile --trace=vulkan,nvtx --vulkan-gpu-workload=individual
         --sample=none --cpuctxsw=none "--output=${INFERENA_NSYS_DIR:?}/meganeura")
     printf '%q ' "${PREFIX[@]}" "$ROOT_DIR/target/release/inferena-meganeura${EXE}" "$MODEL" >&2
     echo >&2

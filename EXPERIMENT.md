@@ -254,7 +254,10 @@ It records the exact command, tool version and input hashes, plus compiler
 diagnostics, a `.nsys-rep` and queryable SQLite export **per engine**. Only the
 engine process is profiled, with CUDA tracing for PyTorch and Vulkan tracing
 for Meganeura; builds and wrapper/device-discovery processes stay outside.
-This also avoids the failures observed with mixed-API process-tree injection.
+The Vulkan capture omits OSRT interposition: adding it reproduced a crash
+during training-session creation on this host; Vulkan API calls and NVTX still
+provide the host timeline. CUDA retains OSRT. These are explicit profiler
+limitations, not ignored engine failures.
 Missing GPU events
 fail capture qualification. All artifacts stay outside Git.
 

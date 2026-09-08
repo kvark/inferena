@@ -82,9 +82,20 @@ def main():
                 tables = [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")]
                 counts = {name: connection.execute(f'SELECT count(*) FROM "{name}"').fetchone()[0]
                           for name in tables if name.startswith(("CUPTI_ACTIVITY_KIND_", "VULKAN_", "NVTX_"))}
-            manifest["event_counts"][engine] = counts
-            if not counts.get(gpu_table) or not counts.get("NVTX_EVENTS"):
-                raise ValueError(f"{engine}: missing GPU events or host markers; API-only capture is insufficient")
+                manifest["event_counts"][engine] = counts
+                if not counts.get(gpu_table) or not counts.get("NVTX_EVENTS"):
+                    raise ValueError(f"{engine}: missing GPU events or host markers; API-only capture is insufficient")
+                for phase in ("inference", "latency") if args.inference_only else ("inference", "latency", "training"):
+                    ranges = connection.execute(
+                        "SELECT start, end FROM NVTX_EVENTS LEFT JOIN StringIds ON textId=StringIds.id "
+                        "WHERE coalesce(text, value)=?", (f"{engine}/{phase}/measure",),
+                    ).fetchall()
+                    if len(ranges) != 1 or ranges[0][1] is None:
+                        raise ValueError(f"{engine}/{phase}: missing or incomplete host measurement range")
+                    events = connection.execute(f'SELECT count(*) FROM "{gpu_table}" WHERE start>=? AND end<=?', ranges[0]).fetchone()[0]
+                    if not events:
+                        raise ValueError(f"{engine}/{phase}: no GPU events in the measurement range")
+                    counts[f"{phase}_gpu_events"] = events
         manifest["status"] = "complete"
     except (Exception, KeyboardInterrupt) as error:
         manifest["status"] = "incomplete"

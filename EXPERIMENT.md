@@ -211,3 +211,21 @@ source with the documented mode switches; binaries are not retained in Git.
 The branch subsequently removed the unused legacy runner and made the replay
 object explicitly own its callable/model as well as its graph/output storage.
 Max-autotune and the full replicated campaign remain unmeasured.
+
+## Collection-handoff qualification
+
+Source `experiment/p3hpc-methodology-2026-09-08` (`ed77335`) includes the
+corrected typed Meganeura configuration. ResNet-50 passes all six paired
+qualification conditions: both precision classes, each with default/no-graph,
+default/graph and max-autotune/graph. Each phase retains one qualification call,
+not a publication timing sample. The separate strict max-autotune profile also
+passes both cross-engine gates and emits all three Meganeura GPU sidecars plus
+PyTorch traces containing GPU kernels and `cudaGraphLaunch` events. The broad
+compiled replay/profile regression and nine harness checks pass.
+
+Records remain outside Git at `/mnt/data/inferena-methodology.fEQO0q/resnet`
+and `/mnt/data/inferena-profile-handoff.bzLgOQ`. Earlier handoff attempts are
+retained thereabouts as diagnostics, not pooled with these checks. No full
+matrix, independent performance replication or other-platform qualification is
+claimed. Next: prepare the immutable SmolLM2 files, qualify the remaining models,
+then run the declared `--collect` campaign on each available machine.

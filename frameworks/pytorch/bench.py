@@ -15,14 +15,16 @@ import hashlib
 import json
 import os
 import platform
-import shutil
 import struct
 import sys
+import tempfile
 import time
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from execution import capture_phase
 
 
 # --- Conditioned latent-diffusion U-Net (matches meganeura::models::sd_unet) ---
@@ -461,18 +463,12 @@ def sha256_f32_tensor(t: torch.Tensor) -> str:
 
 
 def clear_compile_cache():
-    """Clear torch inductor cache so we measure real compilation time."""
+    """Own an empty cache for this run; never delete the developer's cache."""
     torch._dynamo.reset()
-    for d in [
-        os.environ.get("TORCHINDUCTOR_CACHE_DIR"),
-        os.path.join(
-            os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")),
-            "torch", "inductor",
-        ),
-    ]:
-        if d and os.path.isdir(d):
-            print(f"  clearing compile cache: {d}", file=sys.stderr)
-            shutil.rmtree(d, ignore_errors=True)
+    cache = tempfile.TemporaryDirectory(prefix="inferena-inductor-")
+    os.environ["TORCHINDUCTOR_CACHE_DIR"] = cache.name
+    os.environ["TRITON_CACHE_DIR"] = os.path.join(cache.name, "triton")
+    return cache
 
 
 def capture_cuda_graph(fn, warmup: int = 3):
@@ -956,6 +952,8 @@ def _benchmark_forward(model_type: str, model, inputs: dict):
 
 
 def _benchmark_logits(model_type: str, outputs):
+    if isinstance(outputs, torch.Tensor):
+        return outputs
     if model_type == "whisper":
         return outputs.last_hidden_state
     if model_type == "causal_lm":
@@ -1367,9 +1365,25 @@ def bench_v2(model_name: str, spec: dict):
     if warmup_runs < 0 or measurement_runs < 1:
         raise ValueError("warmups must be >= 0 and measurement runs must be >= 1")
     precision = _configure_benchmark_precision(dev, strict)
+    mode = os.environ.get("INFERENA_TORCH_MODE", "default")
+    modes = torch._inductor.list_mode_options()
+    if mode != "eager" and mode not in modes:
+        raise ValueError(f"unknown INFERENA_TORCH_MODE: {mode}")
+    native_cuda = dev.startswith("cuda") and torch.version.cuda is not None
+    graph_setting = os.environ.get("INFERENA_CUDA_GRAPHS", "1" if native_cuda else "0")
+    if graph_setting not in ("0", "1"):
+        raise ValueError("INFERENA_CUDA_GRAPHS must be 0 or 1")
+    use_graphs = graph_setting == "1"
+    if use_graphs and not native_cuda:
+        raise ValueError("this experiment's explicit graph path requires NVIDIA CUDA")
+    execution = {
+        "requested_mode": mode,
+        "compiled": False,
+        "cuda_graphs": {"requested": use_graphs, "phases": {}},
+    }
 
     print(
-        f"[pytorch] inferena-paper-v1: {precision_mode}, {warmup_runs} warmups, "
+        f"[pytorch] inferena-cuda-graphs-v2: {precision_mode}, {warmup_runs} warmups, "
         f"{measurement_runs} samples",
         file=sys.stderr,
     )
@@ -1391,11 +1405,17 @@ def bench_v2(model_name: str, spec: dict):
 
     model = eager_model
     compile_s = 0.0
-    if dev != "mps" and sys.platform != "win32":
-        clear_compile_cache()
+    if mode != "eager" and dev != "mps" and sys.platform != "win32":
+        compile_cache = clear_compile_cache()
         compile_start = time.perf_counter()
         try:
-            candidate = torch.compile(eager_model)
+            options = dict(modes[mode])
+            if use_graphs:
+                # Capture the entire measured phase once, including loss and
+                # backward. Do not nest Inductor's partial CUDA Graph Trees.
+                options["triton.cudagraphs"] = False
+            execution["compiler_options"] = options
+            candidate = torch.compile(eager_model, options=options)
             compile_inputs = prepare_inputs(model_type, candidate, dev)
 
             candidate.zero_grad(set_to_none=True)
@@ -1412,23 +1432,33 @@ def bench_v2(model_name: str, spec: dict):
             sync()
             compile_s = time.perf_counter() - compile_start
             model = candidate
+            execution["compiled"] = True
+            del train_outputs, compile_inputs
         except Exception as exc:
-            message = str(exc).split("\n")[0][:200]
-            print(
-                f"[pytorch] torch.compile failed ({message}); using eager mode",
-                file=sys.stderr,
-            )
-            torch._dynamo.reset()
-            model = eager_model
-            compile_s = 0.0
+            raise RuntimeError(
+                f"requested PyTorch mode {mode!r} failed; no eager timing substituted"
+            ) from exc
+    else:
+        execution["compile_skipped"] = (
+            "explicit eager mode" if mode == "eager" else "unsupported platform"
+        )
 
     inputs = prepare_inputs(model_type, model, dev)
 
     def inference_call():
         with torch.no_grad():
-            return _benchmark_forward(model_type, model, inputs)
+            return _benchmark_logits(model_type, _benchmark_forward(model_type, model, inputs))
+
+    def prepare_phase(name, fn, training_model=None):
+        if use_graphs:
+            fn, report = capture_phase(fn, training_model)
+        else:
+            report = {"status": "not-requested"}
+        execution["cuda_graphs"]["phases"][name] = report
+        return fn
 
     phase_memory = {}
+    inference_call = prepare_phase("inference", inference_call)
     _reset_peak_memory(dev)
     inference_outputs, inference_samples = _measure_call(
         inference_call, warmup_runs, measurement_runs
@@ -1441,14 +1471,15 @@ def bench_v2(model_name: str, spec: dict):
         outputs = _benchmark_forward(model_type, model, inputs)
         step_loss = _benchmark_loss(model_type, outputs, inputs)
         step_loss.backward()
-        return outputs, step_loss
+        return _benchmark_logits(model_type, outputs), step_loss
 
+    train_call = prepare_phase("training", train_call, model)
     _reset_peak_memory(dev)
     _, training_samples = _measure_call(
         train_call,
         warmup_runs,
         measurement_runs,
-        before=lambda: model.zero_grad(set_to_none=True),
+        before=None if use_graphs else lambda: model.zero_grad(set_to_none=True),
     )
     phase_memory["training"] = _phase_memory(dev)
     grad_norm_sq = 0.0
@@ -1483,8 +1514,9 @@ def bench_v2(model_name: str, spec: dict):
 
     def no_grad_latency():
         with torch.no_grad():
-            return latency_call()
+            return _benchmark_logits(model_type, latency_call())
 
+    no_grad_latency = prepare_phase("latency", no_grad_latency)
     _reset_peak_memory(dev)
     _, latency_samples = _measure_call(
         no_grad_latency, warmup_runs, measurement_runs
@@ -1573,12 +1605,19 @@ def bench_v2(model_name: str, spec: dict):
         "torch_version": torch.__version__,
         "backend": backend,
         "environment": environment,
+        "execution": execution,
         "protocol": {
-            "name": "inferena-paper-v1",
+            "name": "inferena-cuda-graphs-v2",
             "warmup_runs": warmup_runs,
             "measurement_runs": measurement_runs,
             "statistic": "median",
             "training_scope": "forward + loss + backward; no optimizer update",
+            "timing_scope": "synchronized host wall time; resident inputs; no readback",
+            "gradient_reset": (
+                "captured backward overwrites stable gradient buffers"
+                if use_graphs else "set_to_none outside timed region"
+            ),
+            "capture_scope": "per-phase preparation and qualification, outside timing",
             "compile_scope": (
                 "torch.compile plus first training, inference, and latency "
                 "specializations"
@@ -1661,7 +1700,7 @@ def bench(model_name: str, spec: dict):
         print("[pytorch] skipping torch.compile on Windows (Triton unsupported)", file=sys.stderr)
     else:
         print("[pytorch] compiling with torch.compile()...", file=sys.stderr)
-        clear_compile_cache()
+        compile_cache = clear_compile_cache()
         compile_t0 = time.perf_counter()
         try:
             compiled = torch.compile(model)

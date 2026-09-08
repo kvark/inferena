@@ -5,9 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Protocol every audited runner must report, matching the name declared in
-/// Meganeura's `docs/paper-benchmark-protocol.md`. A result carrying any
-/// other name is rejected rather than published.
+/// Frozen workload/validation contract; this branch explicitly versions the
+/// PyTorch execution experiment below without relabelling Meganeura's runner.
 pub const PAPER_PROTOCOL: &str = "inferena-paper-v1";
 
 /// Result produced by each framework benchmark runner.
@@ -605,6 +604,11 @@ fn run_framework(
     match serde_json::from_str::<BenchResult>(json_str) {
         Ok(r) => {
             if matches!(framework, "pytorch" | "meganeura") {
+                let expected_protocol = if framework == "pytorch" {
+                    "inferena-cuda-graphs-v2"
+                } else {
+                    PAPER_PROTOCOL
+                };
                 let reported_protocol = r
                     .extra
                     .get("protocol")
@@ -620,7 +624,7 @@ fn run_framework(
                     .get("precision")
                     .and_then(|value| value.get("comparison_class"))
                     .and_then(|value| value.as_str());
-                if reported_protocol != Some(PAPER_PROTOCOL)
+                if reported_protocol != Some(expected_protocol)
                     || reported_class != Some(expected_class)
                 {
                     return FrameworkOutcome::Error {
@@ -629,7 +633,7 @@ fn run_framework(
                         error: format!(
                             "runner reported protocol={reported_protocol:?}, \
                              precision class={reported_class:?}; expected \
-                             {PAPER_PROTOCOL}/{expected_class}"
+                             {expected_protocol}/{expected_class}"
                         ),
                     };
                 }
@@ -1446,6 +1450,16 @@ mod tests {
         // An absent report must not be serialized back as a null field.
         let reserialized = serde_json::to_value(&parsed).unwrap();
         assert!(!reserialized.as_object().unwrap().contains_key("memory"));
+        let mut with_execution = reserialized;
+        with_execution["execution"] = serde_json::json!({
+            "compiled": true,
+            "cuda_graphs": {"phases": {"training": {"status": "captured-and-validated"}}}
+        });
+        let parsed: BenchResult = serde_json::from_value(with_execution.clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(parsed).unwrap()["execution"],
+            with_execution["execution"]
+        );
     }
 
     #[test]

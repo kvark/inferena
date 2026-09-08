@@ -520,25 +520,26 @@ dependencies = [
 
 [[package]]
 name = "blade-graphics"
-version = "0.8.4"
-source = "git+https://github.com/kvark/blade?rev=60c2eeb8d6180ff2db5167e304d55b78a18dfee2#60c2eeb8d6180ff2db5167e304d55b78a18dfee2"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f50161de1b828487e321d0df36cba06666e624a6a943293485f0dd0e97ef6ea"
 dependencies = [
  "ash",
  "ash-window",
  "bitflags 2.13.1",
  "bytemuck",
  "codespan-reporting",
- "glow 0.16.0",
+ "glow",
  "gpu-alloc",
  "gpu-alloc-ash",
  "hidden-trait",
  "js-sys",
  "khronos-egl",
  "libc",
- "libloading 0.8.9",
+ "libloading 0.9.0",
  "log",
  "mint",
- "naga 29.0.0",
+ "naga 30.0.0",
  "objc2",
  "objc2-app-kit",
  "objc2-core-foundation",
@@ -2621,8 +2622,6 @@ version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3b2e053dcef2cd92b0dee0acfad08d83a98c1c1e55b4c55b8eefa2c0e3f4d055"
 dependencies = [
- "chrono",
- "clap",
  "csv",
  "dyn-clone",
  "egglog-add-primitive 2.0.0",
@@ -2632,12 +2631,10 @@ dependencies = [
  "egglog-numeric-id 2.0.0",
  "egglog-reports 2.0.0",
  "egraph-serialize",
- "env_logger",
  "hashbrown 0.16.1",
  "im-rc",
  "indexmap",
  "log",
- "mimalloc",
  "num",
  "ordered-float",
  "rayon",
@@ -3874,18 +3871,6 @@ dependencies = [
  "futures-core",
  "js-sys",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "glow"
-version = "0.16.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5e5ea60d70410161c8bf5da3fdfeaa1c72ed2c15f8bbb9d19fe3a4fad085f08"
-dependencies = [
- "js-sys",
- "slotmap",
- "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]
@@ -5232,27 +5217,24 @@ checksum = "7ebb8d8732c6a6df3d8f032a82911cfc747e00efb95cc46e8d0acd5b5b88570c"
 [[package]]
 name = "meganeura"
 version = "0.2.0"
-source = "git+https://github.com/kvark/meganeura?rev=7561a64ec5a7e4bcdcd2c719aaaffe5912ed5e85#7561a64ec5a7e4bcdcd2c719aaaffe5912ed5e85"
+source = "git+https://github.com/kvark/meganeura?rev=43b606ff45b99d23e7e57b5f120f5fc347039082#43b606ff45b99d23e7e57b5f120f5fc347039082"
 dependencies = [
  "blade-graphics",
  "blade-macros",
  "bytemuck",
  "egglog 2.0.0",
- "env_logger",
  "flate2",
  "half",
  "hf-hub",
  "log",
- "naga 29.0.0",
+ "naga 30.0.0",
  "oxionnx-core",
  "oxionnx-proto",
  "ron",
  "safetensors 0.4.5",
  "serde",
  "serde_json",
- "tokenizers 0.21.4",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -5392,30 +5374,6 @@ name = "mutants"
 version = "0.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc0287524726960e07b119cebd01678f852f147742ae0d925e6a520dca956126"
-
-[[package]]
-name = "naga"
-version = "29.0.0"
-source = "git+https://github.com/gfx-rs/wgpu?rev=78b4dfd0cb1ef5ed208fefe80ae2f855db3609bb#78b4dfd0cb1ef5ed208fefe80ae2f855db3609bb"
-dependencies = [
- "arrayvec",
- "bit-set 0.10.0",
- "bitflags 2.13.1",
- "cfg-if",
- "cfg_aliases",
- "codespan-reporting",
- "half",
- "hashbrown 0.16.1",
- "indexmap",
- "libm",
- "log",
- "num-traits",
- "once_cell",
- "rustc-hash 1.1.0",
- "spirv",
- "thiserror 2.0.19",
- "unicode-ident",
-]
 
 [[package]]
 name = "naga"
@@ -6033,21 +5991,21 @@ dependencies = [
 
 [[package]]
 name = "openxr"
-version = "0.19.0"
+version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a2d6934d2508f94fd4cbda6c2a326f111f60ce59fd9136df6d478564397dd40"
+checksum = "2c2f814a47d257c79c762bc64042859661b6aa2f57cfa1f0ad4d778f419aeb0e"
 dependencies = [
  "libc",
- "libloading 0.8.9",
+ "libloading 0.9.0",
  "ndk-context",
  "openxr-sys",
 ]
 
 [[package]]
 name = "openxr-sys"
-version = "0.11.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f10e7e38c47f2175fc39363713b656db899fa0b4a14341029702cbdfa6f44d05"
+checksum = "4b8d66081de28c2fa40216182a37292fe38aeea20bc184612504d5e64daf5359"
 dependencies = [
  "libc",
 ]
@@ -8952,7 +8910,7 @@ dependencies = [
  "bytemuck",
  "cfg-if",
  "cfg_aliases",
- "glow 0.17.0",
+ "glow",
  "glutin_wgl_sys",
  "gpu-allocator",
  "gpu-descriptor",
@@ -9006,7 +8964,7 @@ dependencies = [
  "bytemuck",
  "cfg-if",
  "cfg_aliases",
- "glow 0.17.0",
+ "glow",
  "glutin_wgl_sys",
  "gpu-allocator",
  "hashbrown 0.17.1",

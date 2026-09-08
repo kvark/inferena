@@ -14,7 +14,10 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS = ("SmolLM2-135M", "SmolVLA", "StableDiffusion", "ResNet-50", "Whisper-tiny")
+SMOLLM2_REVISIONS = json.loads((ROOT / "models/smollm2-revisions.json").read_text())
+SUPPORTED_MODELS = (*MODELS, "SmolLM2-360M", "SmolLM2-1.7B")
 PHASES = ("inference", "latency", "training")
+PYTHON_VERSION = (ROOT / ".python-version").read_text().strip()
 TORCH_VERSION = "2.13.0"
 TORCH_REVISION = "cf30153c4c131c8164ee7798e5022d810682e2cb"
 
@@ -29,12 +32,13 @@ def check_torch_identity(version, revision, declared_version):
 def conditions(backend):
     if backend == "cuda":
         return [("default", False), ("default", True), ("max-autotune", True)]
-    if backend == "rocm":
+    if backend in ("rocm", "xpu"):
         return [("default", False), ("max-autotune", False)]
     return [("eager", False)]
 
 
-def check_pair(records, args, mode, graphs, count, revision):
+def check_pair(records, args, mode, graphs, count, revision, diagnostic=False):
+    phases = PHASES[:2] if args.inference_only else PHASES
     by_engine = {record["framework"]: record for record in records}
     if len(records) != 2 or set(by_engine) != {"pytorch", "meganeura"}:
         raise ValueError("both engine records are required")
@@ -42,32 +46,41 @@ def check_pair(records, args, mode, graphs, count, revision):
         if record["status"] != "ok":
             raise ValueError(f"{engine} failed: {record.get('error', record.get('reason'))}")
         validation = record["validation"]
-        if not all(validation.get(key) is True for key in (
-            "comparison_performed", "forward_valid", "training_valid",
-        )) or validation.get("reference_framework") != "pytorch":
-            raise ValueError(f"{engine} failed the matched forward/backward gate: {validation}")
+        gates = ("comparison_performed", "forward_valid")
+        if not args.inference_only:
+            gates += ("training_valid",)
+        if not all(validation.get(key) is True for key in gates) or validation.get("reference_framework") != "pytorch":
+            raise ValueError(f"{engine} failed the requested numerical gates: {validation}")
+        if record["protocol"]["training_requested"] != (not args.inference_only):
+            raise ValueError("unexpected training scope")
+        if args.inference_only and (validation.get("training_valid") is not None or record["timings"].get("training_ms") is not None):
+            raise ValueError("inference-only run claims training results")
+        if record["protocol"].get("diagnostic") is not diagnostic:
+            raise ValueError("diagnostic and benchmark samples must not be mixed")
         if not revision.startswith(record["benchmark_rev"]):
             raise ValueError("source changed during collection")
         if record["protocol"]["warmup_runs"] != 5:
             raise ValueError("unexpected warmup count")
-        for phase in PHASES:
+        for phase in phases:
             samples = record["timing_samples_ms"][phase]
             if len(samples) != count or any(not math.isfinite(x) or x <= 0 for x in samples):
                 raise ValueError(f"{engine} has invalid {phase} samples")
     pt, mg = by_engine["pytorch"], by_engine["meganeura"]
     check_torch_identity(pt["torch_version"], pt["environment"].get("torch_git_version"), args.torch_version)
+    if pt["environment"]["python_version"] != PYTHON_VERSION:
+        raise ValueError(f"use the campaign's Python {PYTHON_VERSION}")
     if pt["backend"].split()[0].lower() != args.backend:
         raise ValueError(f"unexpected reference backend: {pt['backend']}")
     if args.gpu.casefold() not in mg["gpu_name"].casefold():
         raise ValueError(f"unexpected Meganeura GPU: {mg['gpu_name']}")
-    if args.backend in ("cuda", "rocm") and args.gpu.casefold() not in pt["gpu_name"].casefold():
+    if args.backend in ("cuda", "rocm", "xpu") and args.gpu.casefold() not in pt["gpu_name"].casefold():
         raise ValueError(f"unexpected PyTorch GPU: {pt['gpu_name']}")
     execution = pt["execution"]
     if execution["requested_mode"] != mode or execution["compiled"] != (mode != "eager"):
         raise ValueError("requested compiler mode did not execute")
     if execution["cuda_graphs"]["requested"] != graphs:
         raise ValueError("unexpected graph configuration")
-    for phase in PHASES:
+    for phase in phases:
         report = execution["cuda_graphs"]["phases"][phase]
         expected = "captured-and-validated" if graphs else "not-requested"
         if report["status"] != expected:
@@ -75,17 +88,43 @@ def check_pair(records, args, mode, graphs, count, revision):
     return by_engine
 
 
+def input_hashes(models):
+    """Refuse unpinned checkpoints, including accidentally mixed base/Instruct files."""
+    hashes = {"Cargo.lock": hashlib.sha256((ROOT / "Cargo.lock").read_bytes()).hexdigest()}
+    for model in models:
+        if model not in SMOLLM2_REVISIONS:
+            continue
+        directory = ROOT / "models" / model
+        source = json.loads((directory / "source.json").read_text())
+        if source["repo"] != f"HuggingFaceTB/{model}" or source["revision"] != SMOLLM2_REVISIONS[model]:
+            raise ValueError(f"{model}: use scripts/prepare_models.py for the pinned checkpoint")
+        for name in ("config.json", "model.safetensors"):
+            path = directory / name
+            with path.open("rb") as data:
+                digest = hashlib.file_digest(data, "sha256").hexdigest()
+            if source["sha256"][name] != digest:
+                raise ValueError(f"{model}/{name}: checkpoint changed since preparation")
+            hashes[str(path.relative_to(ROOT))] = digest
+    return hashes
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results-dir", type=Path, required=True)
-    parser.add_argument("--backend", choices=("cuda", "rocm", "mps", "cpu"), required=True)
+    parser.add_argument("--backend", choices=("cuda", "rocm", "xpu", "mps", "cpu"), required=True)
     parser.add_argument("--gpu", required=True, help="expected GPU-name substring")
     parser.add_argument("--torch-version", required=True, help="exact version including vendor suffix")
-    parser.add_argument("--models", nargs="+", choices=MODELS, default=list(MODELS))
+    parser.add_argument("--models", nargs="+", choices=SUPPORTED_MODELS, default=list(MODELS))
+    parser.add_argument("--inference-only", action="store_true", help="prefill and stateless one-token SmolLM2; no training")
+    parser.add_argument("--allow-integrated-gpu", action="store_true")
     parser.add_argument("--precisions", nargs="+", choices=("strict", "accelerated"), default=["strict", "accelerated"])
     parser.add_argument("--replicates", type=int, default=3)
     parser.add_argument("--collect", action="store_true", help="measure only after all requested qualification pairs pass")
     args = parser.parse_args()
+    if ".".join(map(str, sys.version_info[:3])) != PYTHON_VERSION:
+        parser.error(f"use Python {PYTHON_VERSION}: bash scripts/setup.sh <wheel-backend>")
+    if args.inference_only and any(model not in SMOLLM2_REVISIONS for model in args.models):
+        parser.error("--inference-only currently supports SmolLM2 workloads")
     if args.replicates < 3:
         parser.error("collection requires at least three fresh processes per condition")
     if len(set(args.models)) != len(args.models) or len(set(args.precisions)) != len(args.precisions):
@@ -93,7 +132,7 @@ def main():
     if subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT).strip():
         parser.error("commit source changes before qualification/collection")
     overrides = [key for key in os.environ if key.startswith("MEGANEURA_") or key in (
-        "INFERENA_MEGANEURA_PATH", "INFERENA_PROFILE_DIR", "INFERENA_DRY_RUN",
+        "INFERENA_MEGANEURA_PATH", "INFERENA_PROFILE_DIR", "INFERENA_DRY_RUN", "INFERENA_NSYS",
         "TORCH_LOGS", "TORCH_TRACE", "CARGO_TARGET_DIR",
     )]
     if overrides:
@@ -110,23 +149,18 @@ def main():
     except ValueError as error:
         parser.error(str(error))
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    lockfile = ROOT / "Cargo.lock"
-    model_files = []
-    if "SmolLM2-135M" in args.models:
-        model_files = [ROOT / "models/SmolLM2-135M" / name for name in ("config.json", "model.safetensors")]
-        if not all(path.is_file() for path in model_files):
-            parser.error("prepare local SmolLM2-135M config.json/model.safetensors before collection")
-    hashes = {}
-    for path in [lockfile, *model_files]:
-        with path.open("rb") as source:
-            hashes[str(path.relative_to(ROOT))] = hashlib.file_digest(source, "sha256").hexdigest()
+    try:
+        hashes = input_hashes(args.models)
+    except (OSError, ValueError, KeyError) as error:
+        parser.error(f"prepare local pinned models first: {error}")
     dependency = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["dependencies"]["meganeura"]
     destination.mkdir(parents=True, exist_ok=False)
     env = dict(os.environ, PYTHON=sys.executable, HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
-               INFERENA_REQUIRE_LOCAL_WEIGHTS="1")
+               INFERENA_REQUIRE_LOCAL_WEIGHTS="1", INFERENA_TORCH_BACKEND=args.backend)
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v2", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v3", "source": revision,
+        "model_revisions": {name: SMOLLM2_REVISIONS[name] for name in args.models if name in SMOLLM2_REVISIONS},
         "meganeura": dependency, "python": sys.version, "packages": packages,
         "torch": {"version": torch.__version__, "git_version": torch.version.git_version,
                   "build_config": torch.__config__.show()},
@@ -134,6 +168,7 @@ def main():
         "device_selection": {key: env[key] for key in (
             "CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "VK_ICD_FILENAMES",
             "MESA_VK_DEVICE_SELECT", "HSA_OVERRIDE_GFX_VERSION",
+            "ONEAPI_DEVICE_SELECTOR", "ZE_AFFINITY_MASK", "SYCL_CACHE_PERSISTENT",
         ) if key in env},
         "runs": [], "status": "in-progress",
     }
@@ -168,6 +203,10 @@ def main():
                                        "--results-dir", str(folder)]
                             if precision == "strict":
                                 command.append("--strict")
+                            if args.inference_only:
+                                command.append("--inference-only")
+                            if args.allow_integrated_gpu:
+                                command.append("--allow-integrated-gpu")
                             run = {"path": str(folder.relative_to(destination)), "command": command,
                                    "mode": mode, "graphs": graphs, "status": "running"}
                             manifest["runs"].append(run)
@@ -185,10 +224,8 @@ def main():
                                 raise ValueError("Meganeura dependency revision changed")
                             run["status"] = "valid"
                             save()
-        for path in [lockfile, *model_files]:
-            with path.open("rb") as source:
-                if hashlib.file_digest(source, "sha256").hexdigest() != hashes[str(path.relative_to(ROOT))]:
-                    raise ValueError(f"input changed during collection: {path}")
+        if input_hashes(args.models) != hashes:
+            raise ValueError("input changed during collection")
         manifest["status"] = "complete"
     except (Exception, KeyboardInterrupt) as error:
         manifest["status"] = "incomplete"

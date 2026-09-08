@@ -298,23 +298,50 @@ impl MemoryCollector {
     }
 }
 
+struct NsysRange;
+
+impl Drop for NsysRange {
+    fn drop(&mut self) {
+        nvtx::range_pop!();
+    }
+}
+
+fn nsys_range(name: &str) -> Option<NsysRange> {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    ENABLED
+        .get_or_init(|| std::env::var_os("INFERENA_NSYS").is_some())
+        .then(|| {
+            nvtx::range_push!("{name}");
+            NsysRange
+        })
+}
+
 /// Warm up a session, retain every timed sample, and summarize by median.
 fn bench_session(
+    phase: &str,
     session: &mut meganeura::Session,
     set_inputs: &dyn Fn(&mut meganeura::Session),
 ) -> BenchStats {
     let (warmups, samples) = benchmark_counts();
+    let warmup_range = nsys_range(&format!("meganeura/{phase}/warmup"));
     for _ in 0..warmups {
         set_inputs(session);
         session.step();
         session.wait();
     }
+    drop(warmup_range);
+    let _measure_range = nsys_range(&format!("meganeura/{phase}/measure"));
     let mut samples_ms = Vec::with_capacity(samples);
     for _ in 0..samples {
+        let _sample_range = nsys_range("meganeura/sample");
         set_inputs(session);
         let t0 = Instant::now();
+        let step_range = nsys_range("meganeura/step");
         session.step();
+        drop(step_range);
+        let wait_range = nsys_range("meganeura/wait");
         session.wait();
+        drop(wait_range);
         samples_ms.push(t0.elapsed().as_secs_f64() * 1000.0);
     }
     BenchStats::from_samples(samples_ms)
@@ -419,25 +446,40 @@ fn bench_smollm2(model_name: &str) {
 
     let mut profile_artifacts = std::collections::BTreeMap::new();
     let mut memory = MemoryCollector::default();
-    let (repo_id, config) = match model_name {
-        "SmolLM2-135M" => ("HuggingFaceTB/SmolLM2-135M", SmolLM2Config::smollm2_135m()),
-        _ => {
-            eprintln!("Unknown SmolLM model: {model_name}");
-            std::process::exit(1);
-        }
+    let path = find_local_model(model_name)
+        .expect("prepare pinned weights first: python scripts/prepare_models.py <model>");
+    let source: serde_json::Value = serde_json::from_reader(
+        std::fs::File::open(path.with_file_name("config.json")).expect("model config missing"),
+    )
+    .expect("invalid model config");
+    assert_eq!(source["model_type"], "llama");
+    assert_eq!(source["hidden_act"], "silu");
+    assert_eq!(source["attention_bias"], false);
+    assert!(
+        source["rope_scaling"].is_null(),
+        "scaled RoPE is unsupported"
+    );
+    assert!(source["mlp_bias"].is_null() || source["mlp_bias"] == false);
+    let size = |name: &str| usize::try_from(source[name].as_u64().expect(name)).unwrap();
+    let scalar = |name: &str| source[name].as_f64().expect(name) as f32;
+    let config = SmolLM2Config {
+        vocab_size: size("vocab_size"),
+        hidden_size: size("hidden_size"),
+        num_hidden_layers: size("num_hidden_layers"),
+        num_attention_heads: size("num_attention_heads").try_into().unwrap(),
+        num_key_value_heads: size("num_key_value_heads").try_into().unwrap(),
+        intermediate_size: size("intermediate_size"),
+        rms_norm_eps: scalar("rms_norm_eps"),
+        rope_theta: scalar("rope_theta"),
+        tie_word_embeddings: source["tie_word_embeddings"].as_bool().unwrap(),
     };
 
     let seq_len: usize = 128;
     let vocab = config.vocab_size;
 
     // --- Load weights ---
-    eprintln!("[meganeura] loading model {repo_id}...");
-    let model = if let Some(path) = find_local_model(model_name) {
-        eprintln!("[meganeura] loading from {}", path.display());
-        SafeTensorsModel::load(path).expect("local model load failed")
-    } else {
-        SafeTensorsModel::download(repo_id).expect("model download/load failed")
-    };
+    eprintln!("[meganeura] loading from {}", path.display());
+    let model = SafeTensorsModel::load(path).expect("local model load failed");
 
     // --- Build & compile ---
     eprintln!("[meganeura] building graph...");
@@ -464,8 +506,8 @@ fn bench_smollm2(model_name: &str) {
         .map(|i| (i + 1) % vocab as u32)
         .collect();
 
-    // Warm-up + timed: 3 warmup runs + best of 5.
-    let forward = bench_session(&mut session, &|s| {
+    // Identical warmup/sample counts to the reference engine.
+    let forward = bench_session("inference", &mut session, &|s| {
         s.set_input_u32("token_ids", &input_ids);
     });
     if let Some(path) = capture_gap_profile(model_name, "inference", &mut session, &forward, &|s| {
@@ -493,6 +535,12 @@ fn bench_smollm2(model_name: &str) {
     }
     let loss = total_loss / seq_len as f64;
 
+    let gpu_name = session.device_information().device_name.clone();
+    let environment = environment_json(&session);
+    memory.record("inference", &session);
+    // The next shape gets its own plan, but never a second resident copy of weights.
+    drop(session);
+
     // --- Latency (single-token forward) ---
     // Build a separate seq_len=1 inference graph.
     eprintln!("[meganeura] measuring single-token latency...");
@@ -502,9 +550,9 @@ fn bench_smollm2(model_name: &str) {
     lat_g.set_outputs(vec![lat_logits]);
     let mut lat_session = build_inference_session(&lat_g);
     compile_s += lat_compile_start.elapsed().as_secs_f64();
-    // Copy weights from main session.
+    // Load the same checkpoint for the single-token shape.
     load_weights(&mut lat_session, &model, &transposed_set);
-    let latency = bench_session(&mut lat_session, &|s| {
+    let latency = bench_session("latency", &mut lat_session, &|s| {
         s.set_input_u32("token_ids", &[0u32]);
     });
     if let Some(path) =
@@ -517,12 +565,29 @@ fn bench_smollm2(model_name: &str) {
 
     // Record memory while the plans are still resident — dropping a session
     // releases the allocation this measures.
-    memory.record("inference", &session);
     memory.record("latency", &lat_session);
 
-    // Drop inference sessions to free GPU memory before training.
-    drop(session);
     drop(lat_session);
+
+    if std::env::var("INFERENA_INFERENCE_ONLY").as_deref() == Ok("1") {
+        emit_result(
+            model_name,
+            compile_s,
+            &forward,
+            None,
+            &all_logits,
+            &[1, seq_len, vocab],
+            loss,
+            &latency,
+            f64::NAN,
+            &std::collections::BTreeMap::new(),
+            &gpu_name,
+            &profile_artifacts,
+            &memory,
+            &environment,
+        );
+        return;
+    }
 
     // --- Training step (forward + backward) ---
     eprintln!("[meganeura] building training graph...");
@@ -542,7 +607,7 @@ fn bench_smollm2(model_name: &str) {
         one_hot_labels[pos * vocab + target] = 1.0;
     }
 
-    let training = bench_session(&mut train_session, &|s| {
+    let training = bench_session("training", &mut train_session, &|s| {
         s.set_input_u32("token_ids", &input_ids);
         s.set_input("labels", &one_hot_labels);
     });
@@ -574,7 +639,7 @@ fn bench_smollm2(model_name: &str) {
         model_name,
         compile_s,
         &forward,
-        &training,
+        Some(&training),
         &all_logits,
         &[1, seq_len, vocab],
         loss,
@@ -640,7 +705,7 @@ fn bench_smolvla() {
     };
 
     // --- Forward (inference session) ---
-    let forward = bench_session(&mut infer_session, &set_inputs);
+    let forward = bench_session("inference", &mut infer_session, &set_inputs);
 
     let output = infer_session.read_output(action_seq_len * action_dim);
     eprintln!(
@@ -695,7 +760,7 @@ fn bench_smolvla() {
 
     let target_actions = vec![0.0f32; action_seq_len * action_dim];
 
-    let training = bench_session(&mut train_session, &|session| {
+    let training = bench_session("training", &mut train_session, &|session| {
         set_inputs(session);
         session.set_input("target_actions", &target_actions);
     });
@@ -723,7 +788,7 @@ fn bench_smolvla() {
     init_params(&mut lat_session);
     let lat_actions: Vec<f32> = (0..action_dim).map(|i| (i as f32 * 0.01).sin()).collect();
     let lat_timestep = &timestep;
-    let latency = bench_session(&mut lat_session, &|session| {
+    let latency = bench_session("latency", &mut lat_session, &|session| {
         session.set_input("noisy_actions", &lat_actions);
         session.set_input("timestep", lat_timestep);
         for i in 0..config.expert.num_layers {
@@ -759,7 +824,7 @@ fn bench_smolvla() {
         "SmolVLA",
         compile_s,
         &forward,
-        &training,
+        Some(&training),
         &output,
         &[1, action_seq_len, action_dim],
         loss,
@@ -830,7 +895,7 @@ fn emit_result(
     model: &str,
     compile_s: f64,
     forward: &BenchStats,
-    training: &BenchStats,
+    training: Option<&BenchStats>,
     output: &[f32],
     output_shape: &[usize],
     loss: f64,
@@ -906,24 +971,27 @@ fn emit_result(
             "warmup_runs": warmup_runs,
             "measurement_runs": measurement_runs,
             "statistic": "median",
-            "training_scope": "forward + loss + backward; no optimizer update",
-            "compile_scope": "graph construction, optimization, and GPU pipeline creation for inference, training, and latency sessions",
+            "training_requested": training.is_some(),
+            "training_scope": training.map(|_| "forward + loss + backward; no optimizer update"),
+            "compile_scope": "graph construction, optimization, and GPU pipeline creation for requested sessions",
+            "diagnostic": std::env::var_os("INFERENA_NSYS").is_some(),
         },
         "precision": precision,
         "optimizer": {
             "mode": std::env::var("MEGANEURA_OPTIMIZER").unwrap_or_else(|_| "greedy".to_string()),
             "extraction_cost": std::env::var("MEGANEURA_EGRAPH_COST").unwrap_or_else(|_| "tensor-traffic".to_string()),
+            "measured_kernel_search": session_config().tune,
         },
         "timings": {
             "compile_s": (compile_s * 1000.0).round() / 1000.0,
             "inference_ms": (forward.median_ms * 1000.0).round() / 1000.0,
             "latency_ms": (latency.median_ms * 1000.0).round() / 1000.0,
-            "training_ms": (training.median_ms * 1000.0).round() / 1000.0,
+            "training_ms": training.map(|stats| (stats.median_ms * 1000.0).round() / 1000.0),
         },
         "timing_samples_ms": {
             "inference": forward.samples_ms,
             "latency": latency.samples_ms,
-            "training": training.samples_ms,
+            "training": training.map(|stats| &stats.samples_ms),
         },
         "timing_summary_ms": {
             "inference": {
@@ -940,13 +1008,13 @@ fn emit_result(
                 "min": latency.samples_ms.iter().copied().fold(f64::INFINITY, f64::min),
                 "max": latency.samples_ms.iter().copied().fold(f64::NEG_INFINITY, f64::max),
             },
-            "training": {
+            "training": training.map(|training| serde_json::json!({
                 "median": training.median_ms,
                 "p25": training.p25_ms,
                 "p75": training.p75_ms,
                 "min": training.samples_ms.iter().copied().fold(f64::INFINITY, f64::min),
                 "max": training.samples_ms.iter().copied().fold(f64::NEG_INFINITY, f64::max),
-            },
+            })),
         },
         "workload_metrics": workload_metrics,
         "profile_artifacts": profile_artifacts,
@@ -956,7 +1024,7 @@ fn emit_result(
             "output_shape": output_shape,
             "logits_sample": sample,
             "loss": if loss.is_nan() { -1.0 } else { (loss * 1_000_000.0).round() / 1_000_000.0 },
-            "grad_norm": if grad_norm.is_nan() { -1.0 } else { (grad_norm * 1_000_000.0).round() / 1_000_000.0 },
+            "grad_norm": training.map(|_| if grad_norm.is_nan() { -1.0 } else { (grad_norm * 1_000_000.0).round() / 1_000_000.0 }),
             "gradient_norms": gradient_norms,
         },
     });
@@ -1020,7 +1088,7 @@ fn bench_stable_diffusion() {
         .collect();
 
     // --- Forward (inference graph: returns noise prediction) ---
-    let forward = bench_session(&mut infer_session, &|s| {
+    let forward = bench_session("inference", &mut infer_session, &|s| {
         s.set_input("noisy_latent", &noisy_latent);
         s.set_input("timestep_embedding", &timestep_embedding);
         s.set_input("text_context", &text_context);
@@ -1063,7 +1131,7 @@ fn bench_stable_diffusion() {
     compile_s += latency_compile_start.elapsed().as_secs_f64();
     init_params(&mut latency_session);
     let latency_input_len = (in_c * res * res) as usize;
-    let latency = bench_session(&mut latency_session, &|s| {
+    let latency = bench_session("latency", &mut latency_session, &|s| {
         s.set_input("noisy_latent", &noisy_latent[..latency_input_len]);
         s.set_input(
             "timestep_embedding",
@@ -1105,7 +1173,7 @@ fn bench_stable_diffusion() {
     compile_s += train_compile_start.elapsed().as_secs_f64();
     init_params(&mut train_session);
 
-    let training = bench_session(&mut train_session, &|s| {
+    let training = bench_session("training", &mut train_session, &|s| {
         s.set_input("noisy_latent", &noisy_latent);
         s.set_input("timestep_embedding", &timestep_embedding);
         s.set_input("text_context", &text_context);
@@ -1135,7 +1203,7 @@ fn bench_stable_diffusion() {
         "StableDiffusion",
         compile_s,
         &forward,
-        &training,
+        Some(&training),
         &output,
         &[batch as usize, in_c as usize, res as usize, res as usize],
         loss_val,
@@ -1199,7 +1267,7 @@ fn bench_resnet() {
     }
 
     // --- Forward (inference graph: returns logits) ---
-    let forward = bench_session(&mut infer_session, &|s| {
+    let forward = bench_session("inference", &mut infer_session, &|s| {
         s.set_input("image", &images);
     });
 
@@ -1238,7 +1306,7 @@ fn bench_resnet() {
     let mut lat_session = build_inference_session(&lat_g);
     compile_s += lat_compile_start.elapsed().as_secs_f64();
     init_params(&mut lat_session);
-    let latency = bench_session(&mut lat_session, &|s| {
+    let latency = bench_session("latency", &mut lat_session, &|s| {
         s.set_input("image", &lat_images);
     });
     if let Some(path) =
@@ -1264,7 +1332,7 @@ fn bench_resnet() {
     compile_s += train_compile_start.elapsed().as_secs_f64();
     init_params(&mut train_session);
 
-    let training = bench_session(&mut train_session, &|s| {
+    let training = bench_session("training", &mut train_session, &|s| {
         s.set_input("image", &images);
         s.set_input("labels", &one_hot_labels);
     });
@@ -1290,7 +1358,7 @@ fn bench_resnet() {
         "ResNet-50",
         compile_s,
         &forward,
-        &training,
+        Some(&training),
         &logits,
         &[batch as usize, 1000],
         loss,
@@ -1352,7 +1420,7 @@ fn bench_whisper() {
     let mel_size = (batch * config.n_mels as u32 * mel_len) as usize;
     let mel: Vec<f32> = (0..mel_size).map(|i| (i as f32 * 0.001).sin()).collect();
 
-    let forward = bench_session(&mut session, &|s| {
+    let forward = bench_session("inference", &mut session, &|s| {
         s.set_input("mel", &mel);
     });
 
@@ -1365,7 +1433,7 @@ fn bench_whisper() {
     );
 
     // --- Latency ---
-    let latency = bench_session(&mut session, &|s| {
+    let latency = bench_session("latency", &mut session, &|s| {
         s.set_input("mel", &mel);
     });
     if let Some(path) =
@@ -1396,7 +1464,7 @@ fn bench_whisper() {
     compile_s += train_compile_start.elapsed().as_secs_f64();
     init_params(&mut train_session);
 
-    let training = bench_session(&mut train_session, &|s| {
+    let training = bench_session("training", &mut train_session, &|s| {
         s.set_input("mel", &mel);
     });
     if let Some(path) = capture_gap_profile(
@@ -1418,7 +1486,7 @@ fn bench_whisper() {
         "Whisper-tiny",
         compile_s,
         &forward,
-        &training,
+        Some(&training),
         &output,
         &[batch as usize, seq_len as usize, d_model],
         loss,
@@ -1438,6 +1506,8 @@ fn main() {
     let model_name = std::env::args().nth(1).unwrap_or("SmolLM2-135M".into());
     let all_models = [
         "SmolLM2-135M",
+        "SmolLM2-360M",
+        "SmolLM2-1.7B",
         "SmolVLA",
         "StableDiffusion",
         "ResNet-50",
@@ -1457,27 +1527,14 @@ fn main() {
         return;
     }
 
-    // Pipeline-stats-driven auto-tune: spin up a temporary GPU context,
-    // measure register counts for each flash kernel × candidate EPT,
-    // measure fused-op register costs the e-graph cost model uses,
-    // and probe cooperative_matrix support so the conv backward path
-    // can pick Conv2dGradInputGemmCoop3x3. Skip-able via
-    // INFERENA_MEGANEURA_SKIP_AUTOTUNE=1.
-    if std::env::var("INFERENA_MEGANEURA_SKIP_AUTOTUNE").as_deref() != Ok("1") {
-        let gpu = meganeura::runtime::init_gpu_context()
-            .expect("[meganeura] failed to init GPU for auto-tune");
-        let auto_start = Instant::now();
-        let result = meganeura::runtime::auto_tune(&gpu, 64);
-        eprintln!(
-            "[meganeura] auto-tune ({:.2}s): coop_matrix={}",
-            auto_start.elapsed().as_secs_f64(),
-            result.coop_caps.is_supported(),
-        );
-        meganeura::runtime::install_auto_tune(result);
-    }
+    assert!(
+        std::env::var("INFERENA_INFERENCE_ONLY").as_deref() != Ok("1")
+            || model_name.starts_with("SmolLM2-"),
+        "inference-only currently supports SmolLM2 workloads"
+    );
 
     match model_name.as_str() {
-        "SmolLM2-135M" => bench_smollm2(&model_name),
+        "SmolLM2-135M" | "SmolLM2-360M" | "SmolLM2-1.7B" => bench_smollm2(&model_name),
         "SmolVLA" => bench_smolvla(),
         "StableDiffusion" => bench_stable_diffusion(),
         "ResNet-50" => bench_resnet(),

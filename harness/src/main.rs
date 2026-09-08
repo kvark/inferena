@@ -37,8 +37,9 @@ pub struct Timings {
     /// Single-token / minimal-input latency (milliseconds).
     #[serde(default)]
     pub latency_ms: f64,
-    /// Training backward pass time (milliseconds).
-    pub training_ms: f64,
+    /// Forward/loss/backward time, absent when training was not requested.
+    #[serde(default)]
+    pub training_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,6 +178,10 @@ struct Cli {
     /// The practical hardware-accelerated configuration is the default.
     #[arg(long)]
     strict: bool,
+
+    /// Run only forward workloads (currently the paired SmolLM2 family).
+    #[arg(long)]
+    inference_only: bool,
 
     /// Untimed executions before each measurement series.
     #[arg(long, default_value_t = 5)]
@@ -481,6 +486,7 @@ fn run_framework(
     prefer_discrete_gpu: bool,
     discrete_gpu_pci_id: Option<&str>,
     strict: bool,
+    inference_only: bool,
     warmup_runs: usize,
     measurement_runs: usize,
     profile_dir: Option<&Path>,
@@ -513,6 +519,10 @@ fn run_framework(
     let mut cmd = Command::new("bash");
     cmd.arg(&run_script).arg(model).current_dir(&fw_dir);
     cmd.env("INFERENA_STRICT", if strict { "1" } else { "0" })
+        .env(
+            "INFERENA_INFERENCE_ONLY",
+            if inference_only { "1" } else { "0" },
+        )
         .env("INFERENA_WARMUP_RUNS", warmup_runs.to_string())
         .env("INFERENA_MEASUREMENT_RUNS", measurement_runs.to_string());
     if let Some(profile_dir) = profile_dir {
@@ -646,8 +656,17 @@ fn run_framework(
                 }
                 if r.outputs.output_shape.is_empty()
                     || r.outputs.logits_sample.len() != 256
-                    || r.outputs.grad_norm.is_none()
-                    || r.outputs.gradient_norms.is_empty()
+                    || !r.outputs.loss.is_finite()
+                    || r.outputs
+                        .logits_sample
+                        .iter()
+                        .any(|value| !value.is_finite())
+                    || r.extra["protocol"]["training_requested"].as_bool() != Some(!inference_only)
+                    || r.timings.training_ms.is_some() == inference_only
+                    || (!inference_only
+                        && (r.outputs.grad_norm.is_none() || r.outputs.gradient_norms.is_empty()))
+                    || (inference_only
+                        && (r.outputs.grad_norm.is_some() || !r.outputs.gradient_norms.is_empty()))
                 {
                     return FrameworkOutcome::Error {
                         framework: framework.to_string(),
@@ -831,6 +850,11 @@ fn compare_result(reference: &BenchResult, other: &BenchResult) -> ComparisonMet
         "EXACT MATCH"
     } else if training_valid {
         "PASS (<1% forward, <5% gradient)"
+    } else if forward_valid
+        && reference.timings.training_ms.is_none()
+        && other.timings.training_ms.is_none()
+    {
+        "INFERENCE PASS; TRAINING NOT REQUESTED"
     } else if forward_valid {
         "INFERENCE PASS; TRAINING FAIL"
     } else if forward_close && gradients_close {
@@ -1069,7 +1093,7 @@ fn annotate_validation(outcomes: &mut [FrameworkOutcome], benchmark_revision: &s
                 "comparison_performed": true,
                 "reference_framework": reference.framework,
                 "forward_valid": true,
-                "training_valid": true,
+                "training_valid": result.timings.training_ms.map(|_| true),
                 "status": "REFERENCE",
             }),
             Some(reference) => {
@@ -1078,7 +1102,7 @@ fn annotate_validation(outcomes: &mut [FrameworkOutcome], benchmark_revision: &s
                     "comparison_performed": true,
                     "reference_framework": reference.framework,
                     "forward_valid": comparison.forward_valid,
-                    "training_valid": comparison.training_valid,
+                    "training_valid": result.timings.training_ms.map(|_| comparison.training_valid),
                     "status": comparison.status,
                     "full_output_hash_match": comparison.hash_match,
                     "output_shape_match": comparison.output_shape_match,
@@ -1170,10 +1194,11 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
                 best_latency = r.timings.latency_ms;
             }
             if training_valid
-                && r.timings.training_ms > 0.0
-                && r.timings.training_ms < best_training
+                && r.timings
+                    .training_ms
+                    .is_some_and(|ms| ms > 0.0 && ms < best_training)
             {
-                best_training = r.timings.training_ms;
+                best_training = r.timings.training_ms.unwrap();
             }
         }
     }
@@ -1251,7 +1276,10 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
                 let inference =
                     fmt_val(r.timings.inference_ms, best_inference, true, forward_valid);
                 let latency = fmt_val(r.timings.latency_ms, best_latency, true, forward_valid);
-                let training = fmt_val(r.timings.training_ms, best_training, true, training_valid);
+                let training = r.timings.training_ms.map_or_else(
+                    || "not requested".to_string(),
+                    |ms| fmt_val(ms, best_training, true, training_valid),
+                );
                 let loss = if forward_valid {
                     format!("{:.2}", r.outputs.loss)
                 } else {
@@ -1314,6 +1342,15 @@ fn main() {
         Some(list) => list.iter().map(String::as_str).collect(),
         None => all_frameworks(),
     };
+    if cli.inference_only
+        && (!cli.model.starts_with("SmolLM2-")
+            || frameworks
+                .iter()
+                .any(|fw| !matches!(*fw, "pytorch" | "meganeura")))
+    {
+        eprintln!("--inference-only requires SmolLM2 and -f pytorch,meganeura (or either engine)");
+        std::process::exit(2);
+    }
 
     let prefer_discrete_gpu = !cli.allow_integrated_gpu;
     let discrete_gpu_pci_id = if prefer_discrete_gpu && cfg!(target_os = "linux") {
@@ -1334,6 +1371,7 @@ fn main() {
             prefer_discrete_gpu,
             discrete_gpu_pci_id.as_deref(),
             cli.strict,
+            cli.inference_only,
             cli.warmup_runs,
             cli.measurement_runs,
             profile_dir.as_deref(),
@@ -1422,8 +1460,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        BenchResult, MemoryReport, Outputs, Timings, compare_gradient_norms, compare_result,
-        precision_contract_error, relative_scalar_error,
+        BenchResult, FrameworkOutcome, MemoryReport, Outputs, Timings, annotate_validation,
+        compare_gradient_norms, compare_result, precision_contract_error, relative_scalar_error,
     };
     use std::collections::BTreeMap;
 
@@ -1511,7 +1549,7 @@ mod tests {
                 compile_s: 0.0,
                 inference_ms: 0.0,
                 latency_ms: 0.0,
-                training_ms: 0.0,
+                training_ms: Some(0.0),
             },
             outputs: Outputs {
                 logits_hash: "hash".to_string(),
@@ -1559,6 +1597,21 @@ mod tests {
         let comparison = compare_result(&reference, &other);
         assert!(comparison.forward_valid);
         assert!(!comparison.training_valid);
+        let mut reference = result(vec![1, 256], false);
+        reference.framework = "pytorch".to_string();
+        reference.timings.training_ms = None;
+        let mut other = reference.clone();
+        other.framework = "meganeura".to_string();
+        let mut outcomes = [FrameworkOutcome::Ok(reference), FrameworkOutcome::Ok(other)];
+        annotate_validation(&mut outcomes, "test-revision");
+        for outcome in outcomes {
+            let FrameworkOutcome::Ok(result) = outcome else {
+                unreachable!()
+            };
+            assert_eq!(result.extra["validation"]["forward_valid"], true);
+            assert!(result.extra["validation"]["training_valid"].is_null());
+            assert!(serde_json::to_value(result).unwrap()["timings"]["training_ms"].is_null());
+        }
     }
 
     #[test]

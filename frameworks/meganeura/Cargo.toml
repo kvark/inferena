@@ -18,3 +18,5 @@ serde_json = { workspace = true }
 sha2 = "0.10"
 hex = "0.4"
 env_logger = "0.11"
+# Host phase markers only; no CUDA SDK or tracing-subscriber dependency.
+nvtx = "1.3"

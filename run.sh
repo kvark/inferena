@@ -19,12 +19,12 @@ else
 fi
 
 # --- Pick a Python interpreter ---
-# 1. Honor $VIRTUAL_ENV if set (user activated a venv).
-# 2. Prefer this repository's .venv when present.
+# 1. Honor explicit $PYTHON, then an activated $VIRTUAL_ENV.
+# 2. Prefer the paper environment, then the legacy .venv.
 # 3. On Windows, prefer `python` — venvs don't ship a `python3` shim, so
 #    `python3` falls through to the Store shim, which has none of our packages.
 # 4. On Linux/macOS, prefer `python3`.
-if [ -n "${VIRTUAL_ENV:-}" ]; then
+if [ -z "${PYTHON:-}" ] && [ -n "${VIRTUAL_ENV:-}" ]; then
     if [ -x "$VIRTUAL_ENV/bin/python" ]; then
         PYTHON="$VIRTUAL_ENV/bin/python"
     elif [ -x "$VIRTUAL_ENV/Scripts/python.exe" ]; then
@@ -32,7 +32,11 @@ if [ -n "${VIRTUAL_ENV:-}" ]; then
     fi
 fi
 if [ -z "${PYTHON:-}" ]; then
-    if [ -x "$ROOT_DIR/.venv/bin/python" ]; then
+    if [ -x "$ROOT_DIR/.venv-p3hpc/bin/python" ]; then
+        PYTHON="$ROOT_DIR/.venv-p3hpc/bin/python"
+    elif [ -x "$ROOT_DIR/.venv-p3hpc/Scripts/python.exe" ]; then
+        PYTHON="$ROOT_DIR/.venv-p3hpc/Scripts/python.exe"
+    elif [ -x "$ROOT_DIR/.venv/bin/python" ]; then
         PYTHON="$ROOT_DIR/.venv/bin/python"
     elif [ -x "$ROOT_DIR/.venv/Scripts/python.exe" ]; then
         PYTHON="$ROOT_DIR/.venv/Scripts/python.exe"
@@ -78,7 +82,7 @@ for d in site.getsitepackages():
 fi
 
 # --- Prefer discrete NVIDIA GPU over integrated GPU for Vulkan ---
-if [ -z "${VK_ICD_FILENAMES:-}" ]; then
+if [ -z "${VK_ICD_FILENAMES:-}" ] && [[ "${INFERENA_TORCH_BACKEND:-cuda}" == cuda ]]; then
     NVIDIA_ICD=$(find /usr/share/vulkan/icd.d /etc/vulkan/icd.d -name '*nvidia*' 2>/dev/null | head -1 || true)
     if [ -n "$NVIDIA_ICD" ]; then
         export VK_ICD_FILENAMES="$NVIDIA_ICD"
@@ -86,6 +90,7 @@ if [ -z "${VK_ICD_FILENAMES:-}" ]; then
 fi
 
 ALL_MODELS="SmolLM2-135M SmolVLA StableDiffusion ResNet-50 Whisper-tiny"
+SUPPORTED_MODELS="$ALL_MODELS SmolLM2-360M SmolLM2-1.7B"
 
 # --- Parse arguments ---
 MODELS=""
@@ -97,6 +102,8 @@ DRY_RUN=false
 UPDATE=false
 PLATFORM_OVERRIDE=""
 STRICT=false
+INFERENCE_ONLY=false
+ALLOW_INTEGRATED_GPU=false
 WARMUP_RUNS=5
 MEASUREMENT_RUNS=20
 PROFILE=false
@@ -149,6 +156,16 @@ while [[ $# -gt 0 ]]; do
             HAS_ARGS=true
             shift
             ;;
+        --inference-only)
+            INFERENCE_ONLY=true
+            HAS_ARGS=true
+            shift
+            ;;
+        --allow-integrated-gpu)
+            ALLOW_INTEGRATED_GPU=true
+            HAS_ARGS=true
+            shift
+            ;;
         --warmup-runs)
             WARMUP_RUNS="$2"
             HAS_ARGS=true
@@ -189,6 +206,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --update                  Update models/*.md with results after benchmarking"
             echo "  --platform <name>         Override auto-detected platform name (with --update)"
             echo "  --strict                  Disable reduced-input fast paths for an f32 control run"
+            echo "  --inference-only          Forward-only paired SmolLM2 workloads; no training allocation"
+            echo "  --allow-integrated-gpu    Do not prefer a discrete GPU on hybrid systems"
             echo "  --warmup-runs <n>         Untimed runs per measurement (default: 5)"
             echo "  --measurement-runs <n>    Timed samples per measurement (default: 20)"
             echo "  --profile                 Collect separate Meganeura/PyTorch diagnostic profiles"
@@ -196,7 +215,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --results-dir <path>      JSON/chart artifact directory (default: results/)"
             echo "  -h, --help                Show this help"
             echo ""
-            echo "Models: $ALL_MODELS"
+            echo "Models: $SUPPORTED_MODELS (larger SmolLM2 sizes are opt-in)"
             echo "Frameworks: pytorch, candle, burn, inferi, luminal, meganeura, ggml, onnxruntime, max, jax, mlx"
             exit 0
             ;;
@@ -656,6 +675,12 @@ for MODEL in $MODELS; do
 
     if [ "$STRICT" = true ]; then
         ARGS+=("--strict")
+    fi
+    if [ "$INFERENCE_ONLY" = true ]; then
+        ARGS+=("--inference-only")
+    fi
+    if [ "$ALLOW_INTEGRATED_GPU" = true ]; then
+        ARGS+=("--allow-integrated-gpu")
     fi
 
     if [ "$PROFILE" = true ]; then

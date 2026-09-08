@@ -1,32 +1,43 @@
 """Whole-phase CUDA replay with untimed, full-tensor qualification."""
 
 import time
+import os
+from contextlib import nullcontext
 from pathlib import Path
 
 import torch
 
 
-def profile_phase(fn, path, samples, before=None):
+def nsys_range(name):
+    return torch.cuda.nvtx.range(name) if "INFERENA_NSYS" in os.environ else nullcontext()
+
+
+def synchronize(device):
+    backend = torch.device(device).type
+    if backend in ("cuda", "xpu", "mps"):
+        getattr(torch, backend).synchronize()
+
+
+def profile_phase(fn, path, samples, before=None, device="cuda"):
     """Separate diagnostic timeline; these durations are never benchmark samples."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     activities = [torch.profiler.ProfilerActivity.CPU]
-    if torch.cuda.is_available():
+    backend = torch.device(device).type
+    if backend == "cuda":
         activities.append(torch.profiler.ProfilerActivity.CUDA)
+    elif backend == "xpu":
+        activities.append(torch.profiler.ProfilerActivity.XPU)
     wall_ms = []
     with torch.profiler.profile(activities=activities) as trace:
         for _ in range(samples):
             if before is not None:
                 before()
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
+            synchronize(device)
             with torch.profiler.record_function("inferena.phase"):
                 start = time.perf_counter()
                 fn()
-                if torch.cuda.is_available():
-                    torch.cuda.synchronize()
-                elif torch.backends.mps.is_available():
-                    torch.mps.synchronize()
+                synchronize(device)
                 wall_ms.append((time.perf_counter() - start) * 1000)
     trace.export_chrome_trace(str(path))
     return {

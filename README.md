@@ -48,7 +48,7 @@ links in the results tables always point to the exact revision tested.
 
 | Framework | Linux | macOS | Windows |
 |-----------|:-----:|:-----:|:-------:|
-| PyTorch | CUDA, ROCm, XPU, CPU | MPS, CPU | CUDA, CPU |
+| PyTorch | CUDA, ROCm, XPU, CPU | MPS, CPU | CUDA, XPU, CPU |
 | ONNX Runtime | CUDA, TensorRT, CPU | CoreML, CPU | DirectML, CPU |
 | JAX | CUDA, TPU, CPU | CPU | CPU |
 | MAX | CUDA, CPU | CPU | — |
@@ -66,6 +66,11 @@ Frameworks that can't run on a given platform are reported as `✗` in the resul
 
 Each model has its own page with architecture details, benchmark caveats,
 and results tables.
+
+The paired runners also support pinned **SmolLM2-360M and SmolLM2-1.7B** base
+checkpoints. These opt-in scaling workloads are not part of the historical
+results table. Use `--inference-only` for the same forward-only protocol across
+sizes when f32 training does not fit; absent training is not a validated result.
 
 | Model | Type | Params | Results |
 |-------|------|-------:|---------|
@@ -113,7 +118,7 @@ are not numerically equivalent.
 ## Prerequisites
 
 - **Rust** toolchain (for Candle, Burn, Luminal, Meganeura)
-- **Python 3** (3.12 recommended — best pre-built GPU wheel coverage)
+- **uv** for automatic installation of the Python version in `.python-version`
 - **GPU drivers** for your hardware
 
 ### Ubuntu/Debian system packages
@@ -146,7 +151,7 @@ sudo apt install nvidia-cuda-toolkit        # nvcc — needed for Candle, Lumina
 
 # Enable torch.compile on CPU (Inductor needs Python headers + g++):
 # sudo apt install python3-dev g++
-# Without these, the pytorch runner falls back to eager mode.
+# Requested compilation fails explicitly if these are missing; no eager fallback.
 ```
 
 Run `./run.sh --check` after setup to verify what's working and get
@@ -154,13 +159,31 @@ install hints for anything missing.
 
 ## Quick start
 
+For the paired P3HPC campaign, install [uv](https://docs.astral.sh/uv/getting-started/installation/)
+once, then let the setup script install Python and the pinned requirements:
+
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements-nvidia.txt       # NVIDIA CUDA
-# pip install -r requirements-amd.txt        # AMD ROCm
-# pip install -r requirements-intel.txt      # Intel XPU (Arc / Xe iGPU)
-# pip install -r requirements-apple.txt      # Apple Metal
-# pip install -r requirements-cpu.txt        # CPU only
+bash scripts/setup.sh cu130                 # new .venv-p3hpc; Python downloaded automatically
+# Other wheel backends: xpu, rocm7.2, cpu; mps uses the macOS PyPI wheel.
+.venv-p3hpc/bin/python scripts/prepare_models.py SmolLM2-135M SmolLM2-360M SmolLM2-1.7B
+.venv-p3hpc/bin/python scripts/p3hpc.py --backend cuda --gpu 'RTX 5070' \
+  --torch-version 2.13.0+cu130 --models SmolLM2-135M SmolLM2-360M SmolLM2-1.7B \
+  --inference-only --precisions strict --collect --results-dir ../smollm-scaling
+```
+
+On Windows use Git Bash and `.venv-p3hpc/Scripts/python.exe`. Existing
+environments are never replaced; pass a second argument to choose a new path.
+The script verifies the common PyTorch source pin; the collector additionally
+checks the requested device and actual execution. GPU drivers remain a system
+prerequisite. See [collection, XPU and Nsight instructions](EXPERIMENT.md).
+
+Requirements files cannot select/install an interpreter by themselves. For
+the broader, non-paper runner dependencies, `uv venv .venv` also reads
+`.python-version` and downloads Python, then install the desired requirements:
+
+```bash
+uv venv .venv && source .venv/bin/activate
+uv pip install -r requirements-nvidia.txt    # NVIDIA CUDA; other vendor files are separate cohorts
 ./run.sh                                     # practical defaults, all models/frameworks
 ./run.sh -m SmolLM2-135M                     # single model
 ./run.sh -m SmolLM2-135M -f pytorch          # single model + framework

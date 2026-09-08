@@ -15,7 +15,7 @@ import hashlib
 import json
 import os
 import platform
-import struct
+import shutil
 import sys
 import tempfile
 import time
@@ -24,7 +24,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from execution import capture_phase, profile_phase
+from execution import capture_phase, profile_phase, synchronize, nsys_range
 
 
 # --- Conditioned latent-diffusion U-Net (matches meganeura::models::sd_unet) ---
@@ -391,29 +391,36 @@ def _replace_resnet_batch_norm(module):
             _replace_resnet_batch_norm(child)
 
 
-def sync():
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-    elif hasattr(torch, "xpu") and torch.xpu.is_available():
-        torch.xpu.synchronize()
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        torch.mps.synchronize()
-
-
 def _xpu_actually_works() -> bool:
     """XPU may report available but fail at kernel-launch time on older Intel
     iGPUs (Gen12 Raptor/Alder Lake UHD) — JIT compilation aborts with
     "program was built for 1 devices". Probe with a trivial matmul."""
     try:
-        x = torch.ones(4, 4, device="xpu")
-        _ = (x @ x.t()).cpu()
+        x = torch.ones(4, 4, device="xpu", requires_grad=True)
+        output = x @ x.t()
+        output.sum().backward()
+        torch.testing.assert_close(output.cpu(), torch.full((4, 4), 4.0))
+        torch.testing.assert_close(x.grad.cpu(), torch.full((4, 4), 8.0))
         return True
     except Exception as e:
-        print(f"[pytorch] XPU present but compute probe failed ({e}); falling back", file=sys.stderr)
+        print(f"[pytorch] XPU compute probe failed: {e}", file=sys.stderr)
         return False
 
 
 def detect_device() -> str:
+    requested = os.environ.get("INFERENA_TORCH_BACKEND")
+    if requested:
+        if requested == "cpu":
+            return "cpu"
+        if requested in ("cuda", "rocm") and torch.cuda.is_available():
+            actual = "rocm" if torch.version.hip else "cuda"
+            if actual == requested:
+                return "cuda:0"
+        if requested == "xpu" and torch.xpu.is_available() and _xpu_actually_works():
+            return "xpu:0"
+        if requested == "mps" and torch.backends.mps.is_available():
+            return "mps"
+        raise RuntimeError(f"requested {requested} backend is unavailable or failed its probe; no fallback")
     if torch.cuda.is_available():
         return "cuda:0"
     if hasattr(torch, "xpu") and torch.xpu.is_available() and _xpu_actually_works():
@@ -458,7 +465,7 @@ def torch_release_url(version: str) -> str:
 
 def sha256_f32_tensor(t: torch.Tensor) -> str:
     flat = t.detach().float().cpu().contiguous().flatten()
-    raw = struct.pack(f"<{flat.numel()}f", *flat.tolist())
+    raw = flat.numpy().astype("<f4", copy=False).tobytes()
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
@@ -479,7 +486,7 @@ MODEL_REGISTRY = {
         "type": "causal_lm",
     },
     "SmolLM2-360M": {
-        "hf_id": "HuggingFaceTB/SmolLM2-360M-Instruct",
+        "hf_id": "HuggingFaceTB/SmolLM2-360M",
         "type": "causal_lm",
     },
     "SmolLM2-1.7B": {
@@ -969,23 +976,22 @@ def _timing_summary(samples):
     }
 
 
-def _measure_call(fn, warmup_runs: int, measurement_runs: int, before=None):
+def _measure_call(fn, warmup_runs: int, measurement_runs: int, device, phase, before=None):
     last = None
-    for _ in range(warmup_runs):
-        if before is not None:
-            before()
-        last = fn()
-        sync()
-
     samples = []
-    for _ in range(measurement_runs):
-        if before is not None:
-            before()
-        sync()
-        start = time.perf_counter()
-        last = fn()
-        sync()
-        samples.append((time.perf_counter() - start) * 1000.0)
+    for stage, count in (("warmup", warmup_runs), ("measure", measurement_runs)):
+        with nsys_range(f"pytorch/{phase}/{stage}"):
+            for _ in range(count):
+                if before is not None:
+                    before()
+                synchronize(device)
+                with nsys_range("pytorch/sample"):
+                    start = time.perf_counter()
+                    last = fn()
+                    synchronize(device)
+                    elapsed = (time.perf_counter() - start) * 1000.0
+                if stage == "measure":
+                    samples.append(elapsed)
     return last, samples
 
 
@@ -1305,6 +1311,9 @@ def bench(model_name: str, spec: dict):
     dev_name = device_name(dev)
     backend = backend_name(dev)
     model_type = spec["type"]
+    training_requested = os.environ.get("INFERENA_INFERENCE_ONLY", "0") != "1"
+    if not training_requested and model_type != "causal_lm":
+        raise ValueError("inference-only currently supports SmolLM2 workloads")
     strict = os.environ.get("INFERENA_STRICT", "0") == "1"
     precision_mode = "strict-f32" if strict else "accelerated-f32"
     warmup_runs = int(os.environ.get("INFERENA_WARMUP_RUNS", "5"))
@@ -1347,12 +1356,12 @@ def bench(model_name: str, spec: dict):
         eager_model.eval()
     else:
         eager_model.train()
-    sync()
+    synchronize(dev)
     load_s = time.perf_counter() - load_start
 
     model = eager_model
     compile_s = 0.0
-    if mode != "eager" and dev != "mps" and sys.platform != "win32":
+    if mode != "eager" and dev != "mps":
         compile_cache = clear_compile_cache()
         compile_start = time.perf_counter()
         try:
@@ -1364,22 +1373,24 @@ def bench(model_name: str, spec: dict):
             candidate = torch.compile(eager_model, options=options)
             compile_inputs = prepare_inputs(model_type, candidate, dev)
 
-            candidate.zero_grad(set_to_none=True)
-            train_outputs = _benchmark_forward(model_type, candidate, compile_inputs)
-            _benchmark_loss(model_type, train_outputs, compile_inputs).backward()
-            sync()
-            candidate.zero_grad(set_to_none=True)
+            if training_requested:
+                candidate.zero_grad(set_to_none=True)
+                train_outputs = _benchmark_forward(model_type, candidate, compile_inputs)
+                _benchmark_loss(model_type, train_outputs, compile_inputs).backward()
+                synchronize(dev)
+                candidate.zero_grad(set_to_none=True)
+                del train_outputs
 
             with torch.no_grad():
                 _benchmark_forward(model_type, candidate, compile_inputs)
                 _benchmark_latency_call(
                     model_type, candidate, compile_inputs, dev
                 )()
-            sync()
+            synchronize(dev)
             compile_s = time.perf_counter() - compile_start
             model = candidate
             execution["compiled"] = True
-            del train_outputs, compile_inputs
+            del compile_inputs
         except Exception as exc:
             raise RuntimeError(
                 f"requested PyTorch mode {mode!r} failed; no eager timing substituted"
@@ -1407,7 +1418,7 @@ def bench(model_name: str, spec: dict):
     inference_call = prepare_phase("inference", inference_call)
     _reset_peak_memory(dev)
     inference_outputs, inference_samples = _measure_call(
-        inference_call, warmup_runs, measurement_runs
+        inference_call, warmup_runs, measurement_runs, dev, "inference"
     )
     phase_memory["inference"] = _phase_memory(dev)
     logits = _benchmark_logits(model_type, inference_outputs)
@@ -1419,15 +1430,15 @@ def bench(model_name: str, spec: dict):
         step_loss.backward()
         return _benchmark_logits(model_type, outputs), step_loss
 
-    train_call = prepare_phase("training", train_call, model)
-    _reset_peak_memory(dev)
-    _, training_samples = _measure_call(
-        train_call,
-        warmup_runs,
-        measurement_runs,
-        before=None if use_graphs else lambda: model.zero_grad(set_to_none=True),
-    )
-    phase_memory["training"] = _phase_memory(dev)
+    training_samples = None
+    if training_requested:
+        train_call = prepare_phase("training", train_call, model)
+        _reset_peak_memory(dev)
+        _, training_samples = _measure_call(
+            train_call, warmup_runs, measurement_runs, dev, "training",
+            before=None if use_graphs else lambda: model.zero_grad(set_to_none=True),
+        )
+        phase_memory["training"] = _phase_memory(dev)
     grad_norm_sq = 0.0
     gradient_norms = {}
     for name, parameter in model.named_parameters():
@@ -1454,7 +1465,7 @@ def bench(model_name: str, spec: dict):
             gradient_norms.pop(gate_name) ** 2
             + gradient_norms.pop(up_name) ** 2
         ) ** 0.5
-    grad_norm = grad_norm_sq ** 0.5
+    grad_norm = grad_norm_sq ** 0.5 if training_requested else None
 
     latency_call = _benchmark_latency_call(model_type, model, inputs, dev)
 
@@ -1465,12 +1476,12 @@ def bench(model_name: str, spec: dict):
     no_grad_latency = prepare_phase("latency", no_grad_latency)
     _reset_peak_memory(dev)
     _, latency_samples = _measure_call(
-        no_grad_latency, warmup_runs, measurement_runs
+        no_grad_latency, warmup_runs, measurement_runs, dev, "latency"
     )
     phase_memory["latency"] = _phase_memory(dev)
 
     inference_summary = _timing_summary(inference_samples)
-    training_summary = _timing_summary(training_samples)
+    training_summary = _timing_summary(training_samples) if training_requested else None
     latency_summary = _timing_summary(latency_samples)
     precision["torch_float32_matmul_precision"] = (
         torch.get_float32_matmul_precision()
@@ -1491,6 +1502,8 @@ def bench(model_name: str, spec: dict):
     device_total_bytes = None
     if dev.startswith("cuda"):
         device_total_bytes = int(torch.cuda.get_device_properties(0).total_memory)
+    elif dev.startswith("xpu"):
+        device_total_bytes = int(torch.xpu.get_device_properties(dev).total_memory)
     memory_report = {
         "device": {
             "total_bytes": device_total_bytes,
@@ -1534,6 +1547,7 @@ def bench(model_name: str, spec: dict):
         "torch_build_config": torch.__config__.show(),
         "cuda_version": torch.version.cuda,
         "hip_version": torch.version.hip,
+        "xpu_version": getattr(torch.version, "xpu", None),
         "cudnn_version": torch.backends.cudnn.version(),
     }
     if dev.startswith("cuda"):
@@ -1544,6 +1558,12 @@ def bench(model_name: str, spec: dict):
             "device_multiprocessor_count": properties.multi_processor_count,
             "device_uuid": str(properties.uuid),
         })
+    elif dev.startswith("xpu"):
+        properties = torch.xpu.get_device_properties(dev)
+        environment.update({
+            "device_total_memory_bytes": properties.total_memory,
+            "device_properties": str(properties),
+        })
     profiles = {}
     if profile_dir := os.environ.get("INFERENA_PROFILE_DIR"):
         samples = int(os.environ.get("INFERENA_PROFILE_SAMPLES", "3"))
@@ -1553,11 +1573,13 @@ def bench(model_name: str, spec: dict):
             ("inference", inference_call), ("training", train_call),
             ("latency", no_grad_latency),
         ):
+            if name == "training" and not training_requested:
+                continue
             before = (
                 lambda: model.zero_grad(set_to_none=True)
             ) if name == "training" and not use_graphs else None
             path = os.path.join(profile_dir, f"{model_name}_pytorch_{name}.json")
-            profiles[name] = profile_phase(fn, path, samples, before)
+            profiles[name] = profile_phase(fn, path, samples, before, device=dev)
 
     result = {
         "framework": "pytorch",
@@ -1575,7 +1597,9 @@ def bench(model_name: str, spec: dict):
             "warmup_runs": warmup_runs,
             "measurement_runs": measurement_runs,
             "statistic": "median",
-            "training_scope": "forward + loss + backward; no optimizer update",
+            "training_requested": training_requested,
+            "training_scope": "forward + loss + backward; no optimizer update" if training_requested else None,
+            "diagnostic": "INFERENA_NSYS" in os.environ,
             "timing_scope": "synchronized host wall time; resident inputs; no readback",
             "gradient_reset": (
                 "captured backward overwrites stable gradient buffers"
@@ -1583,8 +1607,7 @@ def bench(model_name: str, spec: dict):
             ),
             "capture_scope": "per-phase preparation and qualification, outside timing",
             "compile_scope": (
-                "torch.compile plus first training, inference, and latency "
-                "specializations"
+                "torch.compile plus first specializations of requested phases"
             ),
         },
         "precision": precision,
@@ -1592,7 +1615,7 @@ def bench(model_name: str, spec: dict):
             "compile_s": round(compile_s, 3),
             "inference_ms": round(inference_summary["median"], 3),
             "latency_ms": round(latency_summary["median"], 3),
-            "training_ms": round(training_summary["median"], 3),
+            "training_ms": round(training_summary["median"], 3) if training_requested else None,
         },
         "timing_samples_ms": {
             "inference": inference_samples,
@@ -1610,7 +1633,7 @@ def bench(model_name: str, spec: dict):
             "output_shape": list(logits.shape),
             "logits_sample": [round(v, 6) for v in logits_sample],
             "loss": round(float(loss.item()), 6),
-            "grad_norm": round(grad_norm, 6),
+            "grad_norm": round(grad_norm, 6) if training_requested else None,
             "gradient_norms": {
                 name: round(value, 9)
                 for name, value in sorted(gradient_norms.items())

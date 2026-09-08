@@ -68,16 +68,20 @@ validation contract. Do not mix these new records into the submitted matrix.
 
 ## Collect a new cohort
 
-Use a dedicated environment with `requirements-p3hpc.txt` and the appropriate
-vendor wheel index; it contains only this comparison's Python dependencies.
-For NVIDIA, install using `--extra-index-url https://download.pytorch.org/whl/cu130`.
-The v2 campaign collector requires PyTorch 2.13.0 and reported source commit
+Run `bash scripts/setup.sh cu130` (NVIDIA), `xpu` (Intel), `rocm7.2`, `cpu`, or
+`mps`. With [uv](https://docs.astral.sh/uv/pip/environments/) installed, this
+downloads managed Python **3.13.13** and installs `requirements-p3hpc.txt` in a
+new `.venv-p3hpc`; pass a second argument for a different new directory. No
+existing venv is overwritten. Use `.venv-p3hpc/bin/python` below; on Windows
+use Git Bash and `.venv-p3hpc/Scripts/python.exe`.
+
+The v3 campaign collector requires that Python version, PyTorch 2.13.0 and reported source commit
 `cf30153c4c131c8164ee7798e5022d810682e2cb` on **every** platform. It checks
 both before collection and in every paired result; unknown/different commits
 fail closed. `--torch-version` still declares the exact platform wheel suffix.
 The campaign and PyTorch records retain the commit and `torch.__config__.show()`.
 This fixes the earlier release-only check; old v1 campaigns did not enforce a
-common source commit and must not be relabelled retroactively.
+common source commit; v2 did not pin Python. Neither may be relabelled retroactively.
 
 This is a common **reported upstream source**, not identical binaries or
 vendor libraries, and not an attestation of an unmodified build. CUDA, ROCm,
@@ -85,26 +89,29 @@ Metal and CPU builds necessarily differ. A vendor fork requiring another
 commit/release needs its own labelled source ref and availability cohort,
 not an override inside this controlled cohort. Do not upgrade during collection.
 
-For SmolLM2, prepare `models/SmolLM2-135M/config.json` and `model.safetensors`
-from a declared immutable Hugging Face revision before running. Both engines
-must use those files. The collector hashes them and Cargo.lock before/after
-the campaign and disables downloads/random-weight fallback. The other four
-workloads use the unchanged deterministic initialization in source.
+For SmolLM2, run `python scripts/prepare_models.py SmolLM2-135M SmolLM2-360M SmolLM2-1.7B`
+with this environment (or select only the sizes you need). All are **base**
+checkpoints, pinned in `models/smollm2-revisions.json`. This writes ignored
+weights/configs and a source/hash receipt; it refuses to replace an existing
+model directory. Both engines read those files, including the actual 1.7B
+RoPE configuration. The collector verifies receipts and hashes inputs and
+Cargo.lock before/after the offline campaign. The other four workloads use
+the unchanged deterministic initialization in source.
 
 Use an idle device with no concurrent builds, profiles or experiments, a clean
 source revision, and a **new directory outside the checkout**:
 
 ```sh
 # A correctness check, not a benchmark.
-.venv/bin/python -m unittest discover -s frameworks/pytorch -p test_execution.py -v
+.venv-p3hpc/bin/python -m unittest discover -s frameworks/pytorch -p test_execution.py -v
 
 # Short paired qualification. No publication performance samples.
-.venv/bin/python scripts/p3hpc.py --backend cuda --gpu 'RTX 5070' \
+.venv-p3hpc/bin/python scripts/p3hpc.py --backend cuda --gpu 'RTX 5070' \
   --torch-version 2.13.0+cu130 --models ResNet-50 --precisions strict \
   --results-dir /mnt/data/p3hpc-resnet-qualification
 
 # All five models, both precision classes; qualify ALL pairs, then measure.
-.venv/bin/python scripts/p3hpc.py --backend cuda --gpu 'RTX 5070' \
+.venv-p3hpc/bin/python scripts/p3hpc.py --backend cuda --gpu 'RTX 5070' \
   --torch-version 2.13.0+cu130 --collect --replicates 3 \
   --results-dir /mnt/data/p3hpc-nvidia-campaign
 ```
@@ -122,10 +129,11 @@ first pair and later wrapper checks use the locked dependency resolution.
 |---|---|
 | CUDA | default/no-graph, default/whole-phase-graph, max-autotune/whole-phase-graph |
 | ROCm | default/no-graph, max-autotune/no-graph; explicit capture still unqualified |
+| XPU | default/no-graph, max-autotune/no-graph; no claim of whole-phase replay |
 | MPS | declared eager reference |
 | CPU | declared eager availability reference, separate from GPU comparisons |
 
-Every pair must retain both engines, pass forward **and** backward validation,
+Every pair must retain both engines, pass the requested forward/backward gates,
 and match the declared revisions, torch build version, backend, GPU and execution
 mode. A successful harness exit alone is insufficient. Invalid or missing
 records stop the campaign; logs and `campaign.json` mark it incomplete. Do not
@@ -138,6 +146,58 @@ Python package versions, input hashes, device-selection overrides and run order.
 It also records the common PyTorch source and platform-specific build settings.
 The per-engine records retain driver/device, preparation, memory, execution and
 validation details. Do not run two collectors on the same device concurrently.
+
+### Intel, including mobile GPUs
+
+A discrete GPU is **not required**. For the pinned PyTorch 2.13 build, supported
+mobile targets include Core Ultra Meteor Lake-H and Series 2 Lunar Lake /
+Arrow Lake-H; Series 3 Panther Lake has additional OS-version requirements.
+Arc A/B discrete GPUs are also useful. Older Intel UHD/Xe branding alone does
+not establish support. Follow Intel's [2.13 OS/driver matrix](https://www.intel.com/content/www/us/en/developer/articles/tool/pytorch-prerequisites-for-intel-gpu/2-13.html);
+Windows compilation additionally needs the Level Zero SDK. Install a Vulkan
+driver for Meganeura as well as the XPU prerequisites.
+
+```sh
+bash scripts/setup.sh xpu
+.venv-p3hpc/bin/python scripts/p3hpc.py --backend xpu --gpu 'Intel' \
+  --torch-version 2.13.0+xpu --allow-integrated-gpu \
+  --models ResNet-50 --precisions strict --results-dir ../intel-qualification
+```
+
+Use the actual wheel suffix printed by setup and a specific GPU substring.
+An explicit XPU request performs a numerical matmul/backward probe and fails
+without CPU fallback; requested compilation failures likewise stop collection.
+The harness synchronizes XPU, reports its device/allocator metadata, and selects
+XPU activity for diagnostic PyTorch profiles. Hardware qualification remains
+required: successful wheel resolution or a mocked test is not an Intel result.
+On hybrid machines select the same device using `ONEAPI_DEVICE_SELECTOR` /
+`ZE_AFFINITY_MASK` and Vulkan loader selection (`VK_ICD_FILENAMES` or
+`MESA_VK_DEVICE_SELECT`); both reported names are checked. Record laptop power
+mode, AC power and shared-memory capacity; do not treat memory budget as VRAM.
+
+ROCm's official wheel index and AMD's APU-specific requirements may offer
+different source builds or supported devices. Setup does not promise every
+APU can execute the common-source cohort: an incompatible vendor build needs
+a separately labelled availability experiment, not a relaxed source check.
+
+### Matched SmolLM2 scaling
+
+```sh
+.venv-p3hpc/bin/python scripts/p3hpc.py --backend cuda --gpu 'RTX 5070' \
+  --torch-version 2.13.0+cu130 --models SmolLM2-135M SmolLM2-360M SmolLM2-1.7B \
+  --inference-only --precisions strict --collect --results-dir ../smollm-scaling
+```
+
+All sizes use batch 1, 128-token prefill and stateless one-token forward, with
+f32 persistent weights. `--inference-only` creates no training graph/gradients
+and reports training as absent, not zero or validated. It currently applies
+only to the paired SmolLM2 runners. The same forward and CUDA replay gates
+remain in force. Meganeura drops each shape's session before creating the
+next, avoiding duplicate resident weights. Omit the flag for a **separate**
+F+L+B cohort on sizes that fit; do not silently quantize/offload/shrink workloads.
+1.7B f32 weights plus gradients alone exceed this machine's 12 GB device.
+Depth, width and grouped-query attention differ across the family, so this is
+an observed family scaling curve, not a parameter-count-only law.
 
 ## Diagnose host and device costs separately
 
@@ -154,7 +214,7 @@ INFERENA_TORCH_MODE=max-autotune INFERENA_CUDA_GRAPHS=1 \
 `inferena.phase` regions, alongside Meganeura's per-dispatch GPU sidecars.
 Inspect `cudaGraphLaunch`, kernels, launch gaps and waits in the timeline;
 compare instrumented wall durations with ordinary samples to disclose overhead.
-Do not call `wall minus sum(kernel medians)` CPU time: overlap, gaps and
+Do not call `wall minus sum(kernel medians)` CPU time **or barrier cost**: overlap, gaps and
 instrumentation defeat that decomposition. CUDA/ROCm profiler activity needs
 the device tracing runtime; MPS currently yields CPU traces only and requires
 Metal tooling for its GPU timeline. Missing GPU events are not zero GPU cost.
@@ -170,6 +230,44 @@ Its Perfetto GPU slices are durations laid out at a host submission timestamp,
 from that synthetic alignment. The Inferena wrapper currently captures GPU
 sidecars, not Meganeura CPU spans; a `profiler`-enabled caller can collect those
 separately. Vendor timelines are needed for correlated host/device attribution.
+
+### NVIDIA paper-analysis captures
+
+```sh
+.venv-p3hpc/bin/python scripts/nsys.py --gpu 'RTX 5070' --torch-version 2.13.0+cu130 \
+  --model ResNet-50 --precision strict --mode max-autotune \
+  --nsys /usr/local/cuda-13.1/bin/nsys --results-dir ../resnet-nsight
+```
+
+Alternatively put `nsys` on PATH or set `NSYS` (including its Windows `.exe`
+path). `--no-graphs` captures the launch-overhead control; `--inference-only`
+supports the larger SmolLM2 workloads. The wrapper builds before capture,
+retains both engines and applies the same numerical/source/device gates.
+It records the exact command, tool version and input hashes, plus compiler
+diagnostics, a `.nsys-rep` and a queryable SQLite export. Missing GPU events
+fail capture qualification. All artifacts stay outside Git.
+
+[Nsight Systems](https://docs.nvidia.com/nsight-systems/UserGuide/) captures
+CUDA graph **nodes**, Vulkan individual GPU workloads and host NVTX regions
+for each phase's warmup/measurement. Meganeura's measured samples additionally
+mark `step` and `wait`; the CPU/API/GPU timeline provides actual correlation.
+The Vulkan runner keeps its production grouped schedule: this is **not**
+`--profile` / one-pass-per-dispatch mode. Records are labelled diagnostic and
+cannot pass ordinary campaign checks. Tool instrumentation changes timings;
+compare ordinary controls separately, never publish these as speed results.
+
+Systems locates launch/queue gaps, synchronization and active workloads; it
+does not make every gap a barrier cost. For Meganeura's Vulkan barrier/stall
+analysis, open the same release runner/configuration in **Nsight Graphics GPU
+Trace** (compute workload, no swapchain): working directory `frameworks/meganeura`,
+executable `target/release/inferena-meganeura`, argument the model name. Set
+`INFERENA_STRICT`, `INFERENA_INFERENCE_ONLY`, warmup/sample counts and device
+selection exactly as in `capture.json`; do not enable `MEGANEURA_GPU_TIMING`.
+Use its [barrier/occupancy timeline](https://docs.nvidia.com/nsight-graphics/UserGuide/gpu-trace-ui.html)
+and shader profiler on the kernels identified by Systems. **Nsight Compute**
+is for the PyTorch CUDA kernels, not Meganeura's Vulkan shaders. Workgroup
+barrier stalls are distinct from Vulkan resource barriers. A causal removable
+barrier-cost number still needs the legal schedule A/B described below.
 
 ### Bounded gap-analysis plan
 
@@ -187,8 +285,8 @@ they cover convolution derivatives, attention and short-dispatch latency.
 Localize the largest families, then inspect only their register/spill,
 occupancy and memory counters with the applicable vendor tool. Retain generated
 shaders and traces outside Git, identified by source/configuration in a short
-results summary. The existing NVIDIA shell helper is Windows-path-specific;
-do not mistake it for a qualified Linux profiling entry point.
+results summary. Use the paired Nsight entry point above; the older Meganeura
+shell helpers still contain workstation-specific Windows paths.
 
 For barriers, first capture the **production** grouped schedule with Blade 0.9.
 Normal steps already use inline compute-to-compute barriers; the old broad
@@ -199,9 +297,8 @@ geometry, data and precision with interleaved unprofiled trials; report the
 paired latency delta and uncertainty, including a null result. Never disable
 all barriers on a dependent graph or multiply a no-op barrier cost by its count.
 
-For scaling, extend the matched SmolLM2 family from 135M to 360M and 1.7B before
-introducing another architecture; the latter two still need native-runner and
-collector wiring and qualification. Hold batch/context/precision fixed, then
+For scaling, use the matched SmolLM2 family above before introducing another
+architecture. Hold batch/context/precision fixed, then
 vary batch and context separately. Separate prefill, KV-cache decode and F+L+B;
 the current minimal forward is **not** cached autoregressive decode. More weights
 can amortize fixed costs, but deeper networks also add dependencies, and memory
@@ -236,6 +333,23 @@ search at 68 SMs. RTX 5070 has 48 SMs and RTX 5080 has 84: the latter is a usefu
 automatic-search control despite sharing the Blackwell architecture. Clearing
 that gate does not guarantee a different selected kernel or a timing gain.
 [NVIDIA specifications](https://images.nvidia.com/aem-dam/Solutions/geforce/blackwell/nvidia-rtx-blackwell-gpu-architecture.pdf).
+
+This is **PyTorch's upstream policy**, not a new Inferena or Meganeura device
+threshold. We do not override it to privilege either GPU. Meganeura's actual
+measured kernel search is `SessionConfig.tune` (off in the default cohort):
+it probes bounded legal f32 matmul/convolution alternatives, not every dtype,
+attention variant or graph representation. Baseline shape/occupancy heuristics
+remain; supported timed challengers are not vetoed by a card-name/SM cutoff.
+The runner reports `optimizer.measured_kernel_search`. Its former misleading
+"auto-tune" preflight only queried capabilities and has been removed; builds
+already query the selected GPU. A tuned-vs-default study must declare that
+setting and include preparation costs rather than pretend all selection is
+already measured.
+
+The Naga Workgroup `ArrayStride` validation diagnostic is an acknowledged
+upstream limitation for this revision, not a release blocker or a reason to
+disable Vulkan validation. Preserve diagnostics; distinguish this known message
+from new validation failures and from numerical qualification.
 
 Recollect Meganeura at the declared revision in the same campaign. Do not
 compare current PyTorch times against old Meganeura timings or select a winner

@@ -6,6 +6,6 @@
 /frameworks/llama-cpp/llama.cpp/
 __pycache__/
 *.pyc
-.venv/
+.venv*/
 .claude/
 *.egg-info/

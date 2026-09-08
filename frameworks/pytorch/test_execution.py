@@ -6,10 +6,11 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import torch
 
-from execution import capture_phase, profile_phase
+from execution import capture_phase, profile_phase, synchronize
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from p3hpc import TORCH_REVISION, TORCH_VERSION, check_torch_identity
@@ -21,7 +22,7 @@ class CampaignTest(unittest.TestCase):
             Path(__file__).resolve().parents[2] / "requirements-p3hpc.txt"
         ).read_text().splitlines() if line.startswith("torch=="))
         self.assertEqual(pin, f"torch=={TORCH_VERSION}")
-        for suffix in ("", "+cu130", "+rocm7.2"):
+        for suffix in ("", "+cu130", "+rocm7.2", "+xpu"):
             version = TORCH_VERSION + suffix
             check_torch_identity(version, TORCH_REVISION, version)
             for revision in (None, "unknown", "0" * 40):
@@ -31,6 +32,20 @@ class CampaignTest(unittest.TestCase):
             check_torch_identity(TORCH_VERSION, TORCH_REVISION, TORCH_VERSION + "+cu130")
         with self.assertRaises(ValueError):
             check_torch_identity("2.12.0", TORCH_REVISION, "2.12.0")
+
+    def test_explicit_backend_is_probed_and_synchronized_without_fallback(self):
+        from bench import detect_device
+        with patch.dict("os.environ", {"INFERENA_TORCH_BACKEND": "xpu"}), \
+             patch("torch.xpu.is_available", return_value=True), \
+             patch("bench._xpu_actually_works", return_value=False) as probe:
+            with self.assertRaisesRegex(RuntimeError, "no fallback"):
+                detect_device()
+            probe.return_value = True
+            self.assertEqual(detect_device(), "xpu:0")
+        with patch("torch.xpu.synchronize") as xpu, patch("torch.cuda.synchronize") as cuda:
+            synchronize("xpu:0")
+            xpu.assert_called_once()
+            cuda.assert_not_called()
 
 
 @unittest.skipUnless(torch.cuda.is_available() and torch.version.cuda, "NVIDIA CUDA required")

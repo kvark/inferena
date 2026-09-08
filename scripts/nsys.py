@@ -83,7 +83,7 @@ def main():
         manifest["event_counts"] = counts
         if not counts.get("CUPTI_ACTIVITY_KIND_KERNEL") or not counts.get("NVTX_EVENTS"):
             raise ValueError("missing CUDA GPU events or host phase markers; inspect profiler diagnostics")
-        if not any(count for name, count in counts.items() if name.startswith("VULKAN_") and "GPU" in name):
+        if not counts.get("VULKAN_WORKLOAD"):
             raise ValueError("missing Vulkan GPU events; API-only capture is insufficient")
         manifest["status"] = "complete"
     except (Exception, KeyboardInterrupt) as error:

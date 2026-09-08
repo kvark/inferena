@@ -199,6 +199,13 @@ F+L+B cohort on sizes that fit; do not silently quantize/offload/shrink workload
 Depth, width and grouped-query attention differ across the family, so this is
 an observed family scaling curve, not a parameter-count-only law.
 
+Each native session owns its GPU context, which is destroyed after use; its
+creation is included in preparation time. This avoids the library's immortal
+default context. On this machine that default caused Nsight 2025.5.2 and
+2026.4.1 to crash during exit and omit Vulkan GPU records; owned contexts
+complete and flush normally. The lifetime rule applies to both profiled and
+ordinary runs, not just to a diagnostic workaround.
+
 ## Diagnose host and device costs separately
 
 After ordinary collection, run a **separate** representative profile with the
@@ -236,7 +243,7 @@ separately. Vendor timelines are needed for correlated host/device attribution.
 ```sh
 .venv-p3hpc/bin/python scripts/nsys.py --gpu 'RTX 5070' --torch-version 2.13.0+cu130 \
   --model ResNet-50 --precision strict --mode max-autotune \
-  --nsys /usr/local/cuda-13.1/bin/nsys --results-dir ../resnet-nsight
+  --nsys /path/to/nsys --results-dir ../resnet-nsight
 ```
 
 Alternatively put `nsys` on PATH or set `NSYS` (including its Windows `.exe`

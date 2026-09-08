@@ -9,13 +9,24 @@ use sha2::{Digest, Sha256};
 use std::time::Instant;
 
 fn build_inference_session(graph: &Graph) -> Session {
-    let mut config = session_config();
-    config.mode = Mode::Inference;
-    meganeura::build(graph, config).0
+    build_session_for(graph, Mode::Inference)
 }
 
 fn build_session(graph: &Graph) -> Session {
-    meganeura::build(graph, session_config()).0
+    build_session_for(graph, Mode::Training)
+}
+
+fn build_session_for(graph: &Graph, mode: Mode) -> Session {
+    let mut config = session_config();
+    config.mode = mode;
+    // The library's process-global default is never destroyed. Own the context
+    // so dropping a session releases its device and flushes vendor trace data.
+    config.gpu.get_or_insert_with(|| {
+        std::sync::Arc::new(
+            meganeura::runtime::init_gpu_context().expect("GPU initialization failed"),
+        )
+    });
+    meganeura::build(graph, config).0
 }
 
 fn session_config() -> SessionConfig<'static> {
@@ -975,6 +986,7 @@ fn emit_result(
             "training_scope": training.map(|_| "forward + loss + backward; no optimizer update"),
             "compile_scope": "graph construction, optimization, and GPU pipeline creation for requested sessions",
             "diagnostic": std::env::var_os("INFERENA_NSYS").is_some(),
+            "context_lifetime": "owned per session; destroyed after use",
         },
         "precision": precision,
         "optimizer": {

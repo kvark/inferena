@@ -207,6 +207,15 @@ complete and flush with **2026.4.1**; 2025.5.2 still fails during context
 recreation, so use the newer tool for this host. The lifetime rule applies to both profiled and
 ordinary runs, not just to a diagnostic workaround.
 
+Numerical qualification does **not** certify all-VRAM residency. On discrete
+GPUs, check actual memory placement when the large-model timing or memory
+counters change abruptly. Blade's `Shared` allocation prefers device-local
+memory but can fall back to a host heap. The plan's `device_local_bytes` counts
+the unmappable allocation class, not all actual device-local storage; shared
+buffers may also be device-local. Total device budget alone does not establish
+their placement. The 1.7B result below is a concrete example. Unified-memory
+devices need their own memory interpretation, not a discrete-VRAM test.
+
 ## Diagnose host and device costs separately
 
 After ordinary collection, run a **separate** representative profile with the
@@ -280,16 +289,26 @@ The Vulkan runner keeps its production grouped schedule: this is **not**
 `--profile` / one-pass-per-dispatch mode. Records are labelled diagnostic and
 cannot pass ordinary campaign checks. Tool instrumentation changes timings;
 compare ordinary controls separately, never publish these as speed results.
+On the qualified Linux captures, Systems resolves Meganeura's GPU work per
+grouped submission, not per shader dispatch. Use the separate dispatch sidecars
+for family rankings and Graphics for finer Vulkan analysis; do not claim native
+per-kernel Systems timings from these reports.
 
 Systems locates launch/queue gaps, synchronization and active workloads; it
 does not make every gap a barrier cost. For Meganeura's Vulkan barrier/stall
 analysis, open the same release runner/configuration in **Nsight Graphics GPU
 Trace** (compute workload, no swapchain): working directory `frameworks/meganeura`,
-executable `target/release/inferena-meganeura`, argument the model name. Set
+executable `<checkout>/target/release/inferena-meganeura` (absolute path), argument the model name. Set
 `INFERENA_STRICT`, `INFERENA_INFERENCE_ONLY`, warmup/sample counts and device
 selection exactly as in `capture.json`; do not enable `MEGANEURA_GPU_TIMING`.
+For this direct executable launch, set `INFERENA_NSYS=1` to enable host NVTX
+markers. Choose **Submit Count** or **Elapsed Time** as the start condition and
+**Max Submits** or **None** as the limit; there are no present/frame boundaries.
+Record clock-lock and capture settings. This Graphics workflow follows the
+[headless application instructions](https://docs.nvidia.com/nsight-graphics/UserGuide/gpu-trace-ui.html)
+but has not yet been qualified on this host.
 Use its [barrier/occupancy timeline](https://docs.nvidia.com/nsight-graphics/UserGuide/gpu-trace-ui.html)
-and shader profiler on the kernels identified by Systems. **Nsight Compute**
+and shader profiler to examine the expensive regions. **Nsight Compute**
 is for the PyTorch CUDA kernels, not Meganeura's Vulkan shaders. Workgroup
 barrier stalls are distinct from Vulkan resource barriers. A causal removable
 barrier-cost number still needs the legal schedule A/B described below.
@@ -437,11 +456,73 @@ Records remain outside Git at `/mnt/data/inferena-methodology.fEQO0q/resnet`
 and `/mnt/data/inferena-profile-handoff.bzLgOQ`. Earlier handoff attempts are
 retained thereabouts as diagnostics, not pooled with these checks. No full
 matrix, independent performance replication or other-platform qualification is
-claimed. Next: prepare the immutable SmolLM2 files, qualify the remaining models,
-then run the declared `--collect` campaign on each available machine.
+claimed by that handoff. The later source-pin and scaling checks below extend
+it; other-platform qualification and the remaining workloads are still needed.
 
 The source-identity follow-up is tagged `experiment/p3hpc-source-pin-2026-09-08`
 (`47462c1`). The CPU identity check, broad CUDA replay/profile check and all
 three strict ResNet-50 qualification pairs pass under campaign v2. Records are
 outside Git at `/mnt/data/inferena-source-pin.GJxFR7/resnet`; these are not a
 replicated timing study or evidence that other platform wheels share the pin.
+
+## September 8 SmolLM2 scaling and vendor traces
+
+Measured source: `experiment/p3hpc-scaling-2026-09-08` (`c7d9e79`). Check out
+that tag to reproduce or join this cohort; later documentation/console fixes
+do not relabel its records. RTX 5070, driver 595.71.05, Python 3.13.13,
+PyTorch 2.13.0+cu130 at the common source pin, Meganeura `43b606ff`, Blade 0.9.
+Both precision classes pass all nine paired forward-only qualification cases.
+Strict additionally completes all 27 measurement pairs: three fresh processes
+per model/configuration, five warmups and twenty retained calls per phase.
+There were no numerical exclusions or timing retries. No larger-model training
+or replicated accelerated timing result is claimed.
+
+The table uses the declared **max-autotune + whole-phase CUDA Graph** reference,
+not a fastest configuration selected per model. Times are medians of the three
+process medians. Ratios are medians of paired process ratios; brackets give
+their min–max range, **not** a confidence interval. M/P above one means Meganeura
+is slower. This is the strict scalar-control configuration, with Meganeura's
+measured kernel search off, not its practical accelerated configuration.
+
+| SmolLM2 | Prefill P / M (ms) | Prefill M/P [range] | Stateless token P / M (ms) | Token M/P [range] |
+|---|---:|---:|---:|---:|
+| 135M | 6.064 / 12.723 | 2.100 [2.098–2.111] | 1.346 / 2.643 | 1.962 [1.960–1.966] |
+| 360M | 11.817 / 21.823 | 1.850 [1.842–1.855] | 2.816 / 5.371 | 1.909 [1.870–1.931] |
+| 1.7B, placement-limited | 28.716 / 945.587 | 32.945 [32.902–32.968] | 11.090 / 1940.140 | 174.937 [174.487–177.460] |
+
+The smaller models show some prefill-gap narrowing, not a universal scaling
+law. With default compilation plus graphs, their token ratios instead rise
+from 1.575 to 1.693. The no-graph controls also show why capture matters:
+135M PyTorch token time is 2.743 ms without graphs and 1.632 ms with graphs
+under the same default compiler mode. All controls and process variation are
+retained, including a faster 135M Meganeura prefill replicate; none was chosen
+as a replacement for the paired controls.
+
+**1.7B is not an all-VRAM scaling point on this setup.** Its planned buffers
+occupy 9.414 GiB for prefill and 9.376 GiB for a token, but device-local heap
+usage is about 4.5 GiB. A separate qualified Nsight capture confirms 4.930 GiB
+and 4.906 GiB of bindings, respectively, on the non-device-local heap (property
+flags 14: host-visible, coherent, cached). The token bindings include 24 each
+of 128 MiB and 64 MiB matrix-sized buffers. NVIDIA's kernel log also reports
+BAR1 mapping-allocation failures. `Shared` permits this fallback; passing the
+total-budget preflight and numerical gates does not rule it out. Resolve or
+explicitly account for placement before drawing an in-core scaling conclusion;
+do not interpret this row as evidence for a barrier fraction or extrapolate it
+to Gemma. No offload or reduced-weight option was requested.
+
+Nsight Systems 2026.4.1 captures qualify for strict ResNet-50 F+L+B and 1.7B
+forward-only, with GPU events inside every measured phase for both engines.
+For the latter's token phase, the diagnostic host `step` averages about 2.5 ms
+while grouped GPU work lasts about 1.95 s. This localizes the elapsed time to
+device execution; it does not separate shader work, memory stalls and barriers.
+The current removable barrier cost remains **unmeasured**.
+
+Evidence is outside Git under `/mnt/data/inferena-native-analysis.nC5jZj/`:
+`smollm-strict`, `smollm-accelerated-qualification`, `resnet-nsys-final` and
+`smollm-1.7b-nsys`. Earlier incomplete profiler attempts are diagnostic failures,
+not samples in these completed campaigns. The tagged source reproduces the
+procedure; no weights, binaries, traces or raw measurement arrays are in Git.
+Some tagged human-readable logs say comparison was skipped when Meganeura ran
+first; the JSON validator always locates PyTorch independently of order, and
+all declared gates passed. The subsequent console fix removes that misleading
+message without changing the validator or measured engine code.

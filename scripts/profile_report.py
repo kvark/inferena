@@ -42,7 +42,7 @@ def summarize(path: Path, artifact: dict[str, Any], profile: dict[str, Any], top
         f"GPU pass intervals={measurement['gpu_total_median_ms']:.3f} ms; instrumentation={ratio_text}"
     )
     print(f"Timing contract: {profile.get('timing_contract', 'unspecified in this artifact')}")
-    print("Pass intervals are not kernel-only time; wall minus their sum is not CPU overhead.")
+    print("Pass intervals are not kernel-only time; wall minus their sum is neither CPU time nor barrier cost.")
     print(
         f"dispatches={plan.get('dispatch_count', '?')} "
         f"(forward={plan.get('forward_dispatch_count', '?')}, "

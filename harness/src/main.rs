@@ -886,16 +886,10 @@ fn compare_outputs(results: &[&BenchResult]) {
     if results.len() < 2 {
         return;
     }
-    let reference = results[0];
-    // Skip detailed comparison if PyTorch (ground truth) isn't the reference.
-    if reference.framework != "pytorch" {
-        eprintln!();
-        eprintln!(
-            "=== Output comparison skipped (no PyTorch ground truth, reference: {}) ===",
-            reference.framework
-        );
+    let Some(reference) = results.iter().copied().find(|r| r.framework == "pytorch") else {
+        eprintln!("\n=== Output comparison skipped (no PyTorch reference) ===");
         return;
-    }
+    };
     eprintln!();
     eprintln!(
         "=== Output comparison (reference: {}) ===",
@@ -1602,13 +1596,14 @@ mod tests {
         reference.timings.training_ms = None;
         let mut other = reference.clone();
         other.framework = "meganeura".to_string();
-        let mut outcomes = [FrameworkOutcome::Ok(reference), FrameworkOutcome::Ok(other)];
+        let mut outcomes = [FrameworkOutcome::Ok(other), FrameworkOutcome::Ok(reference)];
         annotate_validation(&mut outcomes, "test-revision");
         for outcome in outcomes {
             let FrameworkOutcome::Ok(result) = outcome else {
                 unreachable!()
             };
             assert_eq!(result.extra["validation"]["forward_valid"], true);
+            assert_eq!(result.extra["validation"]["reference_framework"], "pytorch");
             assert!(result.extra["validation"]["training_valid"].is_null());
             assert!(serde_json::to_value(result).unwrap()["timings"]["training_ms"].is_null());
         }

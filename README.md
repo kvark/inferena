@@ -6,7 +6,7 @@ Single-GPU ML systems benchmark for matched inference and training workloads.
 
 This experiment branch adds validated whole-phase CUDA Graph replay to the
 PyTorch comparison and pins Meganeura to merged main. See the
-[protocol, controls and pilot conclusions](EXPERIMENT.md). Generated records
+[protocol, controls and scaling results](EXPERIMENT.md). Generated records
 stay outside Git; submitted results remain reproducible at `paper-arxiv-1`.
 
 PyTorch and Meganeura currently report the complete timing, precision,
@@ -71,6 +71,8 @@ The paired runners also support pinned **SmolLM2-360M and SmolLM2-1.7B** base
 checkpoints. These opt-in scaling workloads are not part of the historical
 results table. Use `--inference-only` for the same forward-only protocol across
 sizes when f32 training does not fit; absent training is not a validated result.
+The measured 1.7B workload exposes host-backed buffer placement on the RTX 5070;
+see the experiment notes before treating it as an all-VRAM scaling point.
 
 | Model | Type | Params | Results |
 |-------|------|-------:|---------|

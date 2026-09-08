@@ -30,8 +30,10 @@ fi
 
 PREFIX=()
 if [ -n "${INFERENA_NSYS:-}" ]; then
-    PREFIX=("$INFERENA_NSYS" profile --trace=cuda,nvtx,osrt --cuda-graph-trace=node
-        --sample=none --cpuctxsw=none "--output=${INFERENA_NSYS_DIR:?}/pytorch")
+    # Diagnostic compilation stays in-process; do not trace forked compiler workers.
+    export TORCHINDUCTOR_COMPILE_THREADS=1
+    PREFIX=("$INFERENA_NSYS" profile --trace=cuda-sw,nvtx --cuda-graph-trace=node
+        --sample=none --cpuctxsw=none --wait=primary "--output=${INFERENA_NSYS_DIR:?}/pytorch")
     printf '%q ' "${PREFIX[@]}" "$PYTHON" "$SCRIPT_DIR/bench.py" "$MODEL" >&2
     echo >&2
 fi

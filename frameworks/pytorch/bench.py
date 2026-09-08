@@ -1545,6 +1545,7 @@ def bench(model_name: str, spec: dict):
         "torch_version": torch.__version__,
         "torch_git_version": torch.version.git_version,
         "torch_build_config": torch.__config__.show(),
+        "inductor_compile_threads": os.environ.get("TORCHINDUCTOR_COMPILE_THREADS"),
         "cuda_version": torch.version.cuda,
         "hip_version": torch.version.hip,
         "xpu_version": getattr(torch.version, "xpu", None),
@@ -1564,6 +1565,9 @@ def bench(model_name: str, spec: dict):
             "device_total_memory_bytes": properties.total_memory,
             "device_properties": str(properties),
         })
+    if execution["compiled"] and dev.startswith(("cuda", "xpu")):
+        from torch._inductor.utils import is_big_gpu
+        environment["inductor_is_big_gpu"] = is_big_gpu(torch.device(dev))
     profiles = {}
     if profile_dir := os.environ.get("INFERENA_PROFILE_DIR"):
         samples = int(os.environ.get("INFERENA_PROFILE_SAMPLES", "3"))

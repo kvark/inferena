@@ -258,10 +258,19 @@ engine process is profiled, with CUDA tracing for PyTorch and Vulkan tracing
 for Meganeura; builds and wrapper/device-discovery processes stay outside.
 The Vulkan capture omits OSRT interposition: adding it reproduced a crash
 during training-session creation on this host; Vulkan API calls and NVTX still
-provide the host timeline. CUDA retains OSRT. These are explicit profiler
+provide the host timeline. CUDA uses explicit software tracing (`cuda-sw`)
+without OSRT, serial in-process compilation, and waits only for the primary
+process; the default collector configuration hung after PyTorch exited here.
+Compilation under these diagnostic settings is not a preparation benchmark.
+The compile-thread override is recorded and ordinary campaigns do not set it.
+These are explicit profiler
 limitations, not ignored engine failures.
 Missing GPU events
 fail capture qualification. All artifacts stay outside Git.
+
+Open the reports with the same or a newer Nsight GUI; an older installed GUI
+may not read them. No driver or system-wide profiler upgrade is required by
+the wrapper: `--nsys` can point to an isolated CLI installation.
 
 [Nsight Systems](https://docs.nvidia.com/nsight-systems/UserGuide/) captures
 CUDA graph **nodes**, Vulkan individual GPU workloads and host NVTX regions

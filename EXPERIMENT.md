@@ -36,8 +36,8 @@ checks repeated forward/backward results against an independent eager model.
 `reduce-overhead`, `max-autotune`, `max-autotune-no-cudagraphs`).
 `INFERENA_CUDA_GRAPHS=0|1` controls explicit whole-phase capture, defaulting to
 1 on NVIDIA CUDA and 0 elsewhere. Explicit capture is not yet qualified on
-ROCm. When it is enabled, Inductor's own `triton.cudagraphs` option is disabled
-to avoid nesting partial graph trees inside the whole-phase graph; other
+ROCm. Inductor's own `triton.cudagraphs` option is disabled in every condition:
+the explicit switch owns replay, including the no-graph control. Other
 options of the requested compiler mode remain active. The exact resolved
 options, compile status and per-phase capture/validation reports are in
 `execution`, not inferred from the mode's name. Requested compilation or
@@ -54,27 +54,90 @@ The PyTorch record uses `inferena-cuda-graphs-v2`; the harness requires that
 name on this experiment branch. Meganeura retains the v1 matched workload and
 validation contract. Do not mix these new records into the submitted matrix.
 
-## Reproduce
+## Collect a new cohort
+
+Use a dedicated environment with `requirements-p3hpc.txt` and the appropriate
+vendor wheel index; it contains only this comparison's Python dependencies.
+For NVIDIA, install using `--extra-index-url https://download.pytorch.org/whl/cu130`.
+The collector checks the exact installed torch version including its vendor
+suffix. Use the same release across machines where available; a vendor channel
+requiring another release is a separately labelled availability cohort, not a
+controlled cross-backend comparison. Do not upgrade packages during a campaign.
+
+For SmolLM2, prepare `models/SmolLM2-135M/config.json` and `model.safetensors`
+from a declared immutable Hugging Face revision before running. Both engines
+must use those files. The collector hashes them and Cargo.lock before/after
+the campaign and disables downloads/random-weight fallback. The other four
+workloads use the unchanged deterministic initialization in source.
+
+Use an idle device with no concurrent builds, profiles or experiments, a clean
+source revision, and a **new directory outside the checkout**:
 
 ```sh
 # A correctness check, not a benchmark.
 .venv/bin/python -m unittest discover -s frameworks/pytorch -p test_execution.py -v
 
-# Compiled whole-phase CUDA Graph baseline with automatic kernel search.
-INFERENA_TORCH_MODE=max-autotune INFERENA_CUDA_GRAPHS=1 \
-  ./run.sh -f pytorch,meganeura -m ResNet-50 --strict \
-  --results-dir results/p3hpc-cuda-graphs/max-autotune-graph-01
+# Short paired qualification. No publication performance samples.
+.venv/bin/python scripts/p3hpc.py --backend cuda --gpu 'RTX 5070' \
+  --torch-version 2.13.0+cu130 --models ResNet-50 --precisions strict \
+  --results-dir /mnt/data/p3hpc-resnet-qualification
 
-# Matched compiled control, no explicit graph replay.
-INFERENA_TORCH_MODE=default INFERENA_CUDA_GRAPHS=0 \
-  ./run.sh -f pytorch,meganeura -m ResNet-50 --strict \
-  --results-dir results/p3hpc-cuda-graphs/default-01
+# All five models, both precision classes; qualify ALL pairs, then measure.
+.venv/bin/python scripts/p3hpc.py --backend cuda --gpu 'RTX 5070' \
+  --torch-version 2.13.0+cu130 --collect --replicates 3 \
+  --results-dir /mnt/data/p3hpc-nvidia-campaign
 ```
 
-For diagnosis, set `TORCH_LOGS=graph_breaks,recompiles,perf_hints`. Capture is
-untimed and qualification errors name the output or parameter. Use PyTorch's
-profiler/Nsight separately to inspect `cudaGraphLaunch`, kernels and transfers;
-instrumented durations must not replace ordinary timing samples.
+The first stage retains one call per phase for each pair to exercise the full
+runner and validity gates; these are qualification records, not publishable
+timings. `--collect` starts the 5-warmup/20-sample campaign only after every
+selected qualification pair passes. Each pair uses fresh PyTorch and Meganeura
+processes; compiler configurations rotate across replicates and engine order
+alternates. Each configuration gets its own Meganeura control, not an old or
+fastest control reused across unrelated runs. Rust builds finish before the
+first pair and later wrapper checks use the locked dependency resolution.
+
+| Declared reference backend | Collected configurations |
+|---|---|
+| CUDA | default/no-graph, default/whole-phase-graph, max-autotune/whole-phase-graph |
+| ROCm | default/no-graph, max-autotune/no-graph; explicit capture still unqualified |
+| MPS | declared eager reference |
+| CPU | declared eager availability reference, separate from GPU comparisons |
+
+Every pair must retain both engines, pass forward **and** backward validation,
+and match the declared revision, torch version, backend, GPU and execution
+mode. A successful harness exit alone is insufficient. Invalid or missing
+records stop the campaign; logs and `campaign.json` mark it incomplete. Do not
+retry until favorable: diagnose, record the reason, and use a new source ref
+and output directory when the protocol changes. Unsupported/oracle-disputed
+pairs need an explicit scientific disposition, not an automatic exclusion.
+
+`campaign.json` records the complete source SHA, pinned Meganeura dependency,
+Python package versions, input hashes, device-selection overrides and run order.
+The per-engine records retain driver/device, preparation, memory, execution and
+validation details. Do not run two collectors on the same device concurrently.
+
+## Diagnose host and device costs separately
+
+After ordinary collection, run a **separate** representative profile with the
+same revisions and configuration:
+
+```sh
+INFERENA_TORCH_MODE=max-autotune INFERENA_CUDA_GRAPHS=1 \
+  ./run.sh -f pytorch,meganeura -m ResNet-50 --strict --profile \
+  --results-dir /mnt/data/p3hpc-resnet-profile
+```
+
+`--profile` now retains PyTorch host/device Chrome traces with synchronized
+`inferena.phase` regions, alongside Meganeura's per-dispatch GPU sidecars.
+Inspect `cudaGraphLaunch`, kernels, launch gaps and waits in the timeline;
+compare instrumented wall durations with ordinary samples to disclose overhead.
+Do not call `wall minus sum(kernel medians)` CPU time: overlap, gaps and
+instrumentation defeat that decomposition. CUDA/ROCm profiler activity needs
+the device tracing runtime; MPS currently yields CPU traces only and requires
+Metal tooling for its GPU timeline. Missing GPU events are not zero GPU cost.
+For compiler diagnosis, use `TORCH_LOGS=graph_breaks,recompiles,perf_hints` in a
+separate run. The publication collector rejects profiling/debug overrides.
 
 ## Collection plan (not yet a new paper matrix)
 
@@ -85,16 +148,11 @@ or a PyTorch-versus-Meganeura speed claim. Keep failures and do not retry a
 configuration merely to improve its timing. The max-autotune condition and
 paired Meganeura/full-model/device campaign remain separate required work.
 
-Freeze source and dependency versions, then qualify all five matched workloads
-before the publication cohort. Preserve strict and accelerated classes
-separately. Compare default/no-graphs, default/whole-phase-graphs, and
-max-autotune/whole-phase-graphs; eager/graphs is a useful separate diagnosis,
-not a silently substituted compiled baseline. Use at least three fresh
-processes per configuration, rotate order, keep 5 warmups and 20 retained
-samples per phase, and retain failures as well as successes outside Git.
-Collect on an idle GPU, without concurrent builds/profiles, recording driver,
-PyTorch/CUDA versions and source revision. Keep compilation/capture/search
-costs and graph-pool memory alongside steady-state times.
+The collector implements the qualification and process-rotation plan above;
+it does not establish that all workloads/platforms have already passed it.
+Automatic max-autotune may reject a kernel family on hardware/capacity grounds;
+retain its diagnostics rather than overriding its hardware policy per model.
+Keep compilation/capture/search costs and graph-pool memory alongside timings.
 
 Recollect Meganeura at the declared revision in the same campaign. Do not
 compare current PyTorch times against old Meganeura timings or select a winner

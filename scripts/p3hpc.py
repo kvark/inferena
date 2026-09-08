@@ -109,7 +109,9 @@ def main():
             hashes[str(path.relative_to(ROOT))] = hashlib.file_digest(source, "sha256").hexdigest()
     dependency = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["dependencies"]["meganeura"]
     destination.mkdir(parents=True, exist_ok=False)
-    env = dict(os.environ, PYTHON=sys.executable, HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
+    env = dict(os.environ, PYTHON=sys.executable, HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
+               INFERENA_REQUIRE_LOCAL_WEIGHTS="1")
+    env.pop("VIRTUAL_ENV", None)
     manifest = {
         "protocol": "p3hpc-paired-campaign-v1", "source": revision,
         "meganeura": dependency, "python": sys.version, "packages": packages,
@@ -125,6 +127,7 @@ def main():
         (destination / "campaign.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
     save()
+    print(f"Campaign: {destination}", flush=True)
     try:
         # Finish compilation before the first paired process; later wrapper
         # builds are locked no-ops, outside the timed engine calls.
@@ -167,10 +170,16 @@ def main():
                                 raise ValueError("Meganeura dependency revision changed")
                             run["status"] = "valid"
                             save()
+        for path in [lockfile, *model_files]:
+            with path.open("rb") as source:
+                if hashlib.file_digest(source, "sha256").hexdigest() != hashes[str(path.relative_to(ROOT))]:
+                    raise ValueError(f"input changed during collection: {path}")
         manifest["status"] = "complete"
     except (Exception, KeyboardInterrupt) as error:
         manifest["status"] = "incomplete"
         manifest["error"] = str(error)
+        if manifest["runs"] and manifest["runs"][-1]["status"] == "running":
+            manifest["runs"][-1]["status"] = "failed"
         raise
     finally:
         save()

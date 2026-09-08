@@ -546,7 +546,12 @@ def load_model(model_name: str, spec: dict, dev: str):
         try:
             model = _load_pretrained(model_type, local_dir)
         except Exception as e:
+            if os.environ.get("INFERENA_REQUIRE_LOCAL_WEIGHTS") == "1":
+                raise
             print(f"[pytorch] local load failed ({e})", file=sys.stderr)
+
+    if model is None and os.environ.get("INFERENA_REQUIRE_LOCAL_WEIGHTS") == "1":
+        raise FileNotFoundError(f"required local checkpoint could not be loaded: {local_dir}")
 
     # Try HF download.
     if model is None:

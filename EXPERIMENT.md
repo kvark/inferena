@@ -231,6 +231,12 @@ Automatic max-autotune may reject a kernel family on hardware/capacity grounds;
 retain its diagnostics rather than overriding its hardware policy per model.
 Keep compilation/capture/search costs and graph-pool memory alongside timings.
 
+In the pinned PyTorch source, Inductor's `is_big_gpu` gates some NVIDIA GEMM
+search at 68 SMs. RTX 5070 has 48 SMs and RTX 5080 has 84: the latter is a useful
+automatic-search control despite sharing the Blackwell architecture. Clearing
+that gate does not guarantee a different selected kernel or a timing gain.
+[NVIDIA specifications](https://images.nvidia.com/aem-dam/Solutions/geforce/blackwell/nvidia-rtx-blackwell-gpu-architecture.pdf).
+
 Recollect Meganeura at the declared revision in the same campaign. Do not
 compare current PyTorch times against old Meganeura timings or select a winner
 independently for every reported sample. Report configurations and process
@@ -294,3 +300,9 @@ retained thereabouts as diagnostics, not pooled with these checks. No full
 matrix, independent performance replication or other-platform qualification is
 claimed. Next: prepare the immutable SmolLM2 files, qualify the remaining models,
 then run the declared `--collect` campaign on each available machine.
+
+The source-identity follow-up is tagged `experiment/p3hpc-source-pin-2026-09-08`
+(`47462c1`). The CPU identity check, broad CUDA replay/profile check and all
+three strict ResNet-50 qualification pairs pass under campaign v2. Records are
+outside Git at `/mnt/data/inferena-source-pin.GJxFR7/resnet`; these are not a
+replicated timing study or evidence that other platform wheels share the pin.

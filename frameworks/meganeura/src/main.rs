@@ -4,16 +4,31 @@
 //! using the meganeura crate (e-graph optimized NN on blade-graphics).
 
 use meganeura::data::safetensors::SafeTensorsModel;
-use meganeura::{Graph, Session, SessionConfig};
+use meganeura::{CoopPolicy, Graph, Mode, Session, SessionConfig};
 use sha2::{Digest, Sha256};
 use std::time::Instant;
 
 fn build_inference_session(graph: &Graph) -> Session {
-    meganeura::build(graph, SessionConfig::inference_from_env()).0
+    let mut config = session_config();
+    config.mode = Mode::Inference;
+    meganeura::build(graph, config).0
 }
 
 fn build_session(graph: &Graph) -> Session {
-    meganeura::build(graph, SessionConfig::from_env()).0
+    meganeura::build(graph, session_config()).0
+}
+
+fn session_config() -> SessionConfig<'static> {
+    let strict = std::env::var("INFERENA_STRICT").as_deref() == Ok("1");
+    let mut config = SessionConfig::from_env();
+    config.runtime.coop = if strict {
+        CoopPolicy::Disabled
+    } else {
+        CoopPolicy::Auto
+    };
+    config.options.flash_forward_coop = !strict;
+    config.options.flash_backward_coop = false;
+    config
 }
 
 fn find_local_model(model_name: &str) -> Option<std::path::PathBuf> {
@@ -835,30 +850,26 @@ fn emit_result(
     let strict = std::env::var("INFERENA_STRICT").as_deref() == Ok("1");
     let accelerated = !strict;
     let precision = if accelerated {
-        let reduced_attention_backward =
-            std::env::var("MEGANEURA_FLASH_BWD_COOP").as_deref() == Ok("1");
         serde_json::json!({
             "comparison_class": "reduced-input-f32-accumulate",
+            "cooperative_matrix_policy": "Auto: protect full-precision derivative regions",
             "tensor_storage": "f32",
             "matmul_inputs": "forward: f16 for eligible cooperative-matrix kernels; f32 otherwise",
             "attention_inputs": "forward: f16 for eligible cooperative-matrix kernels; f32 otherwise",
             "convolution_inputs": "forward: f16 for eligible cooperative-matrix kernels; f32 otherwise",
             "backward_matmul_inputs": "f32",
             "backward_convolution_inputs": "f32",
-            "backward_attention_inputs": if reduced_attention_backward {
-                "experimental f16 cooperative-matrix path"
-            } else {
-                "f32"
-            },
+            "backward_attention_inputs": "f32",
             "accumulation": "f32",
             "output": "f32",
             "reduced_precision_allowed": true,
-            "f16_cooperative_matrix_permitted": std::env::var("MEGANEURA_COOP_F16").is_ok(),
+            "f16_cooperative_matrix_permitted": true,
             "persistent_f16_tensors": false,
         })
     } else {
         serde_json::json!({
             "comparison_class": "strict-f32",
+            "cooperative_matrix_policy": "Disabled: includes native-f32 cooperative tiles",
             "tensor_storage": "f32",
             "matmul_inputs": "f32",
             "attention_inputs": "f32",

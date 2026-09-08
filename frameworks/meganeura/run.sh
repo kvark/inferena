@@ -7,21 +7,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 MODEL="${1:-SmolLM2-135M}"
 
-# The practical default enables eligible f16-input/f32-accumulate forward
-# kernels. `--strict` disables reduced-input paths for a controlled f32 run.
-if [ "${INFERENA_STRICT:-0}" = "1" ]; then
-    unset MEGANEURA_COOP_F16
-    export MEGANEURA_FLASH_FWD_COOP=0
-    export MEGANEURA_FLASH_BWD_COOP=0
-else
-    export MEGANEURA_COOP_F16=1
-    export MEGANEURA_FLASH_FWD_COOP=1
-    # Backward remains f32: IEEE-f16 rounding of small derivative operands
-    # caused a historical Whisper gradient failure. Full-precision autodiff
-    # preserves the gradient gate while forward cooperative attention remains
-    # enabled.
-    export MEGANEURA_FLASH_BWD_COOP=0
-fi
+# The runner maps INFERENA_STRICT to typed compile/runtime precision options.
+# Environment overrides remain available for diagnostics, not this contract.
 if [ -n "${INFERENA_PROFILE_DIR:-}" ]; then
     # Blade allocates timestamp query pools when the first GPU context is
     # created, so profiling must be enabled before launching the runner.

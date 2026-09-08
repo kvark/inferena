@@ -17,9 +17,15 @@ removed from this branch. Reproduce that historical path at `paper-arxiv-1`.
 
 The September 8 profile handoff also exposed a Meganeura API migration:
 convenience builders now use pure defaults, so the runner must opt into
-`SessionConfig::from_env` / `inference_from_env`. This applies the declared
-precision switches and enables timestamp contexts. Earlier pilot records on
-this branch do not qualify that corrected Meganeura precision configuration.
+`SessionConfig::from_env` for diagnostics, then apply the protocol's typed
+precision options explicitly. Strict uses `CoopPolicy::Disabled` and scalar
+attention; accelerated uses `Auto` and eligible cooperative forward attention,
+with full-precision derivative regions protected. `AllowF16` is inappropriate
+here because it permits raw f16 derivative operands. Strict also disables
+native-f32 cooperative tiles where available: it is a declared scalar control,
+not the fastest possible full-f32 configuration. This restriction must remain
+visible in the new cohort; do not assume equivalence to old strict timings.
+Earlier pilot records do not qualify this corrected Meganeura configuration.
 
 This branch adds a generic whole-phase capture wrapper, not model-specific
 kernels. Each inference, minimal-shape and forward/loss/backward phase gets its

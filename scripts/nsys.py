@@ -27,6 +27,7 @@ def main():
     args = parser.parse_args()
     if not args.nsys:
         parser.error("put Nsight Systems on PATH, or pass --nsys /path/to/nsys")
+    args.nsys = shutil.which(args.nsys) or str(Path(args.nsys).resolve())
     if subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT).strip():
         parser.error("commit source changes before capture")
     if any(key.startswith("MEGANEURA_") or key in (
@@ -42,9 +43,6 @@ def main():
     subprocess.run(["cargo", "build", "--release", "--locked", "-p", "inferena-harness", "-p", "inferena-meganeura"], cwd=ROOT, check=True)
     destination.mkdir(parents=True, exist_ok=False)
     command = [
-        args.nsys, "profile", "--trace=cuda,vulkan,nvtx,osrt", "--cuda-graph-trace=node",
-        "--vulkan-gpu-workload=individual", "--sample=none", "--cpuctxsw=none",
-        f"--output={destination / 'timeline'}",
         "bash", str(ROOT / "run.sh"), "-m", args.model, "-f", "pytorch,meganeura",
         "--warmup-runs", "5", "--measurement-runs", "3", "--results-dir", str(destination),
     ]
@@ -52,7 +50,8 @@ def main():
         command.append("--strict")
     if args.inference_only:
         command.append("--inference-only")
-    env = dict(os.environ, PYTHON=sys.executable, INFERENA_NSYS="1", INFERENA_TORCH_BACKEND="cuda",
+    env = dict(os.environ, PYTHON=sys.executable, INFERENA_NSYS=args.nsys,
+               INFERENA_NSYS_DIR=str(destination), INFERENA_TORCH_BACKEND="cuda",
                INFERENA_TORCH_MODE=args.mode, INFERENA_CUDA_GRAPHS=str(int(not args.no_graphs)),
                INFERENA_REQUIRE_LOCAL_WEIGHTS="1", HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
                TORCH_LOGS="graph_breaks,recompiles,perf_hints")
@@ -73,18 +72,19 @@ def main():
         check_pair(records, args, args.mode, not args.no_graphs, 3, revision, diagnostic=True)
         if input_hashes([args.model]) != hashes:
             raise ValueError("inputs changed during capture")
-        database = destination / "timeline.sqlite"
-        subprocess.run([args.nsys, "export", "--type=sqlite", f"--output={database}",
-                        str(destination / "timeline.nsys-rep")], check=True)
-        with sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True) as connection:
-            tables = [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")]
-            counts = {name: connection.execute(f'SELECT count(*) FROM "{name}"').fetchone()[0]
-                      for name in tables if name.startswith(("CUPTI_ACTIVITY_KIND_", "VULKAN_", "NVTX_"))}
-        manifest["event_counts"] = counts
-        if not counts.get("CUPTI_ACTIVITY_KIND_KERNEL") or not counts.get("NVTX_EVENTS"):
-            raise ValueError("missing CUDA GPU events or host phase markers; inspect profiler diagnostics")
-        if not counts.get("VULKAN_WORKLOAD"):
-            raise ValueError("missing Vulkan GPU events; API-only capture is insufficient")
+        manifest["event_counts"] = {}
+        for engine, gpu_table in (("pytorch", "CUPTI_ACTIVITY_KIND_KERNEL"), ("meganeura", "VULKAN_WORKLOAD")):
+            database = destination / f"{engine}.sqlite"
+            with (destination / f"{engine}-export.log").open("w") as log:
+                subprocess.run([args.nsys, "export", "--type=sqlite", f"--output={database}",
+                                str(destination / f"{engine}.nsys-rep")], stdout=log, stderr=subprocess.STDOUT, check=True)
+            with sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True) as connection:
+                tables = [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+                counts = {name: connection.execute(f'SELECT count(*) FROM "{name}"').fetchone()[0]
+                          for name in tables if name.startswith(("CUPTI_ACTIVITY_KIND_", "VULKAN_", "NVTX_"))}
+            manifest["event_counts"][engine] = counts
+            if not counts.get(gpu_table) or not counts.get("NVTX_EVENTS"):
+                raise ValueError(f"{engine}: missing GPU events or host markers; API-only capture is insufficient")
         manifest["status"] = "complete"
     except (Exception, KeyboardInterrupt) as error:
         manifest["status"] = "incomplete"
@@ -92,7 +92,7 @@ def main():
         raise
     finally:
         save()
-    print(f"Open {destination / 'timeline.nsys-rep'} in Nsight Systems")
+    print(f"Open pytorch.nsys-rep and meganeura.nsys-rep in {destination}")
 
 
 if __name__ == "__main__":

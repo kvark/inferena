@@ -901,7 +901,7 @@ def _benchmark_forward(model_type: str, model, inputs: dict):
         return model(inputs["input_features"])
     if model_type == "causal_lm":
         kwargs = {k: v for k, v in inputs.items() if k != "labels"}
-        return model(**kwargs)
+        return model(**kwargs, use_cache=False)
     return model(**inputs)
 
 
@@ -935,7 +935,7 @@ def _benchmark_latency_call(model_type: str, model, inputs: dict, dev: str):
     if model_type == "causal_lm":
         token = torch.tensor([[0]], device=dev, dtype=torch.long)
         mask = torch.ones(1, 1, dtype=torch.long, device=dev)
-        return lambda: model(input_ids=token, attention_mask=mask)
+        return lambda: model(input_ids=token, attention_mask=mask, use_cache=False)
     if model_type == "resnet":
         image = torch.zeros(1, 3, 224, 224, device=dev, dtype=torch.float32)
         return lambda: model(image)

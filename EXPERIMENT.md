@@ -251,7 +251,11 @@ path). `--no-graphs` captures the launch-overhead control; `--inference-only`
 supports the larger SmolLM2 workloads. The wrapper builds before capture,
 retains both engines and applies the same numerical/source/device gates.
 It records the exact command, tool version and input hashes, plus compiler
-diagnostics, a `.nsys-rep` and a queryable SQLite export. Missing GPU events
+diagnostics, a `.nsys-rep` and queryable SQLite export **per engine**. Only the
+engine process is profiled, with CUDA tracing for PyTorch and Vulkan tracing
+for Meganeura; builds and wrapper/device-discovery processes stay outside.
+This also avoids the failures observed with mixed-API process-tree injection.
+Missing GPU events
 fail capture qualification. All artifacts stay outside Git.
 
 [Nsight Systems](https://docs.nvidia.com/nsight-systems/UserGuide/) captures

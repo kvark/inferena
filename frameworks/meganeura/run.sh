@@ -61,4 +61,11 @@ restore_lockfile
 trap - EXIT
 
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) EXE=.exe ;; *) EXE= ;; esac
-exec "$ROOT_DIR/target/release/inferena-meganeura${EXE}" "$MODEL"
+PREFIX=()
+if [ -n "${INFERENA_NSYS:-}" ]; then
+    PREFIX=("$INFERENA_NSYS" profile --trace=vulkan,nvtx,osrt --vulkan-gpu-workload=individual
+        --sample=none --cpuctxsw=none "--output=${INFERENA_NSYS_DIR:?}/meganeura")
+    printf '%q ' "${PREFIX[@]}" "$ROOT_DIR/target/release/inferena-meganeura${EXE}" "$MODEL" >&2
+    echo >&2
+fi
+exec "${PREFIX[@]}" "$ROOT_DIR/target/release/inferena-meganeura${EXE}" "$MODEL"

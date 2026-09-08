@@ -28,4 +28,11 @@ if ! "$PYTHON" -c "import torch" 2>/dev/null; then
     exit 1
 fi
 
-exec "$PYTHON" "$SCRIPT_DIR/bench.py" "$MODEL"
+PREFIX=()
+if [ -n "${INFERENA_NSYS:-}" ]; then
+    PREFIX=("$INFERENA_NSYS" profile --trace=cuda,nvtx,osrt --cuda-graph-trace=node
+        --sample=none --cpuctxsw=none "--output=${INFERENA_NSYS_DIR:?}/pytorch")
+    printf '%q ' "${PREFIX[@]}" "$PYTHON" "$SCRIPT_DIR/bench.py" "$MODEL" >&2
+    echo >&2
+fi
+exec "${PREFIX[@]}" "$PYTHON" "$SCRIPT_DIR/bench.py" "$MODEL"

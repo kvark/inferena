@@ -1,11 +1,14 @@
 """One broad CUDA replay regression; no benchmark or retained artifacts."""
 
 import copy
+import json
+from pathlib import Path
+import tempfile
 import unittest
 
 import torch
 
-from execution import capture_phase
+from execution import capture_phase, profile_phase
 
 
 @unittest.skipUnless(torch.cuda.is_available() and torch.version.cuda, "NVIDIA CUDA required")
@@ -17,13 +20,16 @@ class ReplayTest(unittest.TestCase):
             torch.nn.Flatten(), torch.nn.Linear(4 * 8 * 8, 3),
         ).cuda()
         inputs = torch.randn(2, 2, 8, 8, device="cuda")
+        compiled = torch.compile(model, options={
+            "max_autotune": True, "triton.cudagraphs": False,
+        })
 
         def inference():
             with torch.no_grad():
-                return model(inputs)
+                return compiled(inputs)
 
         def training():
-            output = model(inputs)
+            output = compiled(inputs)
             loss = output.square().mean()
             loss.backward()
             return output, loss
@@ -53,6 +59,13 @@ class ReplayTest(unittest.TestCase):
             ):
                 self.assertIs(parameter.grad, storage)
                 torch.testing.assert_close(parameter.grad, expected)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "training.json"
+            profile = profile_phase(backward, path, 2)
+            self.assertEqual(len(profile["instrumented_wall_ms"]), 2)
+            events = json.loads(path.read_text())["traceEvents"]
+            self.assertTrue(any(event.get("cat") == "kernel" for event in events))
+            self.assertTrue(any("cudaGraphLaunch" in event.get("name", "") for event in events))
 
 
 if __name__ == "__main__":

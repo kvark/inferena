@@ -1,8 +1,40 @@
 """Whole-phase CUDA replay with untimed, full-tensor qualification."""
 
 import time
+from pathlib import Path
 
 import torch
+
+
+def profile_phase(fn, path, samples, before=None):
+    """Separate diagnostic timeline; these durations are never benchmark samples."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    activities = [torch.profiler.ProfilerActivity.CPU]
+    if torch.cuda.is_available():
+        activities.append(torch.profiler.ProfilerActivity.CUDA)
+    wall_ms = []
+    with torch.profiler.profile(activities=activities) as trace:
+        for _ in range(samples):
+            if before is not None:
+                before()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            with torch.profiler.record_function("inferena.phase"):
+                start = time.perf_counter()
+                fn()
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                elif torch.backends.mps.is_available():
+                    torch.mps.synchronize()
+                wall_ms.append((time.perf_counter() - start) * 1000)
+    trace.export_chrome_trace(str(path))
+    return {
+        "trace": str(path),
+        "instrumented_wall_ms": wall_ms,
+        "activities": [activity.name for activity in activities],
+        "scope": "diagnostic host/device timeline, not an additive CPU/GPU cost split",
+    }
 
 
 class CapturedPhase:

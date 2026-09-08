@@ -1,0 +1,9 @@
+# Install in a dedicated venv using the appropriate vendor wheel index.
+# Different vendor releases require a separately labelled campaign, not an
+# unnoticed upgrade within one campaign. No unrelated inference engines.
+torch==2.13.0
+torchvision==0.28.0
+transformers==5.14.1
+numpy==2.5.1
+safetensors==0.8.0
+huggingface-hub==1.26.0

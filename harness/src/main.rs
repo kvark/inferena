@@ -186,7 +186,7 @@ struct Cli {
     #[arg(long, default_value_t = 20)]
     measurement_runs: usize,
 
-    /// Collect Meganeura's structured per-dispatch GPU profile after each
+    /// Collect each supported runner's diagnostic profile after each
     /// normal benchmark series.
     #[arg(long)]
     profile: bool,
@@ -515,12 +515,12 @@ fn run_framework(
     cmd.env("INFERENA_STRICT", if strict { "1" } else { "0" })
         .env("INFERENA_WARMUP_RUNS", warmup_runs.to_string())
         .env("INFERENA_MEASUREMENT_RUNS", measurement_runs.to_string());
-    if framework == "meganeura"
-        && let Some(profile_dir) = profile_dir
-    {
+    if let Some(profile_dir) = profile_dir {
         cmd.env("INFERENA_PROFILE_DIR", profile_dir)
-            .env("INFERENA_PROFILE_SAMPLES", profile_samples.to_string())
-            .env("MEGANEURA_GPU_TIMING", "1");
+            .env("INFERENA_PROFILE_SAMPLES", profile_samples.to_string());
+        if framework == "meganeura" {
+            cmd.env("MEGANEURA_GPU_TIMING", "1");
+        }
     }
     if dry_run {
         cmd.env("INFERENA_DRY_RUN", "1");

@@ -64,6 +64,7 @@ if [ -n "${INFERENA_MEGANEURA_PATH:-}" ]; then
     fi
     export FRAMEWORK_REV
 else
+    CARGO_ARGS+=(--locked)
     # Extract the pinned git revision from Cargo.lock.
     source "$ROOT_DIR/scripts/cargo-rev.sh"
     export FRAMEWORK_REV=$(cargo_rev_short meganeura "$ROOT_DIR")

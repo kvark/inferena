@@ -24,7 +24,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from execution import capture_phase
+from execution import capture_phase, profile_phase
 
 
 # --- Conditioned latent-diffusion U-Net (matches meganeura::models::sd_unet) ---
@@ -1352,10 +1352,9 @@ def bench(model_name: str, spec: dict):
         compile_start = time.perf_counter()
         try:
             options = dict(modes[mode])
-            if use_graphs:
-                # Capture the entire measured phase once, including loss and
-                # backward. Do not nest Inductor's partial CUDA Graph Trees.
-                options["triton.cudagraphs"] = False
+            # The explicit switch owns graph replay in this experiment. Do not
+            # enable hidden partial graph trees in the no-graph control either.
+            options["triton.cudagraphs"] = False
             execution["compiler_options"] = options
             candidate = torch.compile(eager_model, options=options)
             compile_inputs = prepare_inputs(model_type, candidate, dev)
@@ -1538,6 +1537,21 @@ def bench(model_name: str, spec: dict):
             "device_multiprocessor_count": properties.multi_processor_count,
             "device_uuid": str(properties.uuid),
         })
+    profiles = {}
+    if profile_dir := os.environ.get("INFERENA_PROFILE_DIR"):
+        samples = int(os.environ.get("INFERENA_PROFILE_SAMPLES", "3"))
+        if samples < 1:
+            raise ValueError("profile samples must be positive")
+        for name, fn in (
+            ("inference", inference_call), ("training", train_call),
+            ("latency", no_grad_latency),
+        ):
+            before = (
+                lambda: model.zero_grad(set_to_none=True)
+            ) if name == "training" and not use_graphs else None
+            path = os.path.join(profile_dir, f"{model_name}_pytorch_{name}.json")
+            profiles[name] = profile_phase(fn, path, samples, before)
+
     result = {
         "framework": "pytorch",
         "framework_rev": torch.__version__,
@@ -1548,6 +1562,7 @@ def bench(model_name: str, spec: dict):
         "backend": backend,
         "environment": environment,
         "execution": execution,
+        "profile_artifacts": profiles,
         "protocol": {
             "name": "inferena-cuda-graphs-v2",
             "warmup_runs": warmup_runs,

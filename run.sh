@@ -191,7 +191,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --strict                  Disable reduced-input fast paths for an f32 control run"
             echo "  --warmup-runs <n>         Untimed runs per measurement (default: 5)"
             echo "  --measurement-runs <n>    Timed samples per measurement (default: 20)"
-            echo "  --profile                 Collect Meganeura per-dispatch GPU profile sidecars"
+            echo "  --profile                 Collect separate Meganeura/PyTorch diagnostic profiles"
             echo "  --profile-samples <n>     Timestamp samples per profile (default: 3)"
             echo "  --results-dir <path>      JSON/chart artifact directory (default: results/)"
             echo "  -h, --help                Show this help"
@@ -584,6 +584,8 @@ if [ -n "${INFERENA_MEGANEURA_PATH:-}" ]; then
         --config
         "patch.\"https://github.com/kvark/meganeura\".meganeura.path=\"$INFERENA_MEGANEURA_PATH\""
     )
+else
+    WORKSPACE_CARGO_ARGS+=(--locked)
 fi
 # An empty --frameworks means "all".
 want_framework() {

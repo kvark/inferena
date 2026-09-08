@@ -202,8 +202,9 @@ an observed family scaling curve, not a parameter-count-only law.
 Each native session owns its GPU context, which is destroyed after use; its
 creation is included in preparation time. This avoids the library's immortal
 default context. On this machine that default caused Nsight 2025.5.2 and
-2026.4.1 to crash during exit and omit Vulkan GPU records; owned contexts
-complete and flush normally. The lifetime rule applies to both profiled and
+2026.4.1 to crash during exit and omit Vulkan GPU records. Owned contexts
+complete and flush with **2026.4.1**; 2025.5.2 still fails during context
+recreation, so use the newer tool for this host. The lifetime rule applies to both profiled and
 ordinary runs, not just to a diagnostic workaround.
 
 ## Diagnose host and device costs separately
@@ -246,7 +247,8 @@ separately. Vendor timelines are needed for correlated host/device attribution.
   --nsys /path/to/nsys --results-dir ../resnet-nsight
 ```
 
-Alternatively put `nsys` on PATH or set `NSYS` (including its Windows `.exe`
+Use Nsight **2026.4.1** for the qualified Linux setup here. Alternatively put
+`nsys` on PATH or set `NSYS` (including its Windows `.exe`
 path). `--no-graphs` captures the launch-overhead control; `--inference-only`
 supports the larger SmolLM2 workloads. The wrapper builds before capture,
 retains both engines and applies the same numerical/source/device gates.

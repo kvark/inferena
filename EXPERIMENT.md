@@ -387,6 +387,11 @@ Trace** (compute workload, no swapchain): working directory `frameworks/meganeur
 executable `<checkout>/target/release/inferena-meganeura` (absolute path), argument the model name. Set
 `INFERENA_STRICT`, `INFERENA_INFERENCE_ONLY`, warmup/sample counts and device
 selection exactly as in `capture.json`; do not enable `MEGANEURA_GPU_TIMING`.
+Native source/name correlation is being prepared in
+[Meganeura PR #165](https://github.com/kvark/meganeura/pull/165), with a separate
+`MEGANEURA_GPU_CAPTURE` switch and descriptive pipeline keys. This is not yet in
+the pinned collection revision: setting that variable on the old runner does
+not enable capture support. Record and qualify any diagnostic revision separately.
 For this direct executable launch, set `INFERENA_NSYS=1` to enable host NVTX
 markers. Choose **Submit Count** or **Elapsed Time** as the start condition and
 **Max Submits** or **None** as the limit; there are no present/frame boundaries.
@@ -633,6 +638,10 @@ total-budget preflight and numerical gates does not rule it out. Resolve or
 explicitly account for placement before drawing an in-core scaling conclusion;
 do not interpret this row as evidence for a barrier fraction or extrapolate it
 to Gemma. No offload or reduced-weight option was requested.
+Offline byte accounting also finds exactly **3 GiB of extra packed gate/up
+weights** at 1.7B: the original named parameters remain allocated alongside their
+derived copy. This explains the plan footprint, not the fallback threshold or
+an unpacked speedup. See [representation and placement analysis](ANALYSIS.md#weight-representation-and-placement-first-for-17b).
 
 Nsight Systems 2026.4.1 captures qualify for strict ResNet-50 F+L+B and 1.7B
 forward-only, with GPU events inside every measured phase for both engines.

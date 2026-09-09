@@ -1,7 +1,7 @@
 # Native gap analysis — September 9
 
-The evidence separates two problems: inefficient resident kernels and large-model
-memory placement. It does **not** establish a removable barrier-cost percentage.
+The evidence separates inefficient resident kernels from weight-representation
+and memory-placement costs. It does **not** establish a removable barrier-cost percentage.
 No new speed samples were collected during the post-OOM offline analysis.
 
 ## Qualified Systems evidence
@@ -71,12 +71,42 @@ charge all partial storage and the final pass, and confirm whole-step gains.
 No ResNet/card-name rule, giant sweep or relaxed validation is warranted.
 [Existing experiment conclusions](https://github.com/kvark/meganeura/blob/43b606ff45b99d23e7e57b5f120f5fc347039082/docs/experiments.md).
 
-## Placement first for 1.7B
+## Weight representation and placement first for 1.7B
+
+Header-only accounting of the pinned checkpoints explains almost all the native
+token plan: SwiGLU packing retains both original gate/up matrices **and** their
+horizontal-concatenation copy. The strict cohort expands weights to f32; this
+table counts tensor shapes × 4 bytes, not the checkpoint's BF16 file size.
+
+| SmolLM2 | Original f32 weights (MiB) | Extra packed copy (MiB) | Recorded token plan (MiB) |
+|---|---:|---:|---:|
+| 135M | 513.134 | 202.500 | 715.849 |
+| 360M | 1380.238 | 600.000 | 1980.472 |
+| 1.7B | 6528.383 | 3072.000 | 9600.703 |
+
+Reproduce without loading tensors: sum `product(shape) * 4` over the safetensors
+header, then separately over `.mlp.gate_proj.` and `.mlp.up_proj.` tensors.
+Their sum is within 0.321 MiB of `memory.phases.latency.allocated_bytes` in each
+saved `smollm-strict/measurement/r3/strict/<model>/max-autotune-graph1` native row.
+For 1.7B, `24 layers × 2 × 2048 × 8192 × 4 bytes = 3 GiB` of extra storage.
+The tied embedding/head is counted once. This is static byte accounting,
+**not** a measured unpacked speedup or proof that packing alone causes fallback.
+
+The [optimizer](https://github.com/kvark/meganeura/blob/43b606ff45b99d23e7e57b5f120f5fc347039082/src/optimize.rs)
+creates the derived parameter, but `sweep_dead_nodes` deliberately keeps original
+parameters for named access. Compilation allocates all of them and the memory
+planner pins them. `set_parameter` writes both the original and its packed slice;
+named reads and updates still require the original contract. Simply deleting
+unconsumed source buffers is therefore not a safe dead-code optimization.
+Treat packed/unpacked storage as legal representation choices: include persistent
+bytes, preparation and actual placement in an eventual measured comparison.
+Eliminating duplicate backing must preserve named reads/updates and external
+buffer contracts, not just the forward output.
 
 Systems confirms roughly 4.9 GiB of native bindings on the non-device-local
 host-visible/coherent/cached heap despite a roughly 9.4 GiB plan. This is not
 an all-VRAM scaling point. `Shared` permits fallback; the budget preflight
-does not guarantee placement. The next general experiment should allocate
+does not guarantee placement. A separate general experiment should allocate
 persistent parameters device-locally with explicit upload/readback staging,
 then inspect actual binding heaps and rerun the unchanged numerical gates.
 Keep host-visible inputs/external buffers' contracts intact, bound staging,
@@ -113,6 +143,14 @@ source/pipeline correlation, and matching PyTorch compiler mode. Then inspect
 the expensive kernel's instruction/load/stall mix. A current barrier-overpayment
 estimate still requires a legal schedule A/B with unchanged kernels and full
 validation; warp-barrier stalls are not Vulkan resource-barrier cost.
+
+[Meganeura PR #165](https://github.com/kvark/meganeura/pull/165) prepares this:
+existing structured pipeline keys become native-tool names, and default-off
+`MEGANEURA_GPU_CAPTURE` enables Blade's shader debug information/command labels
+independently of pass timestamps and dispatch grouping. All CI jobs passed;
+hardware source/name correlation is still unqualified, so the PR remains draft.
+It is **not** in Inferena's `43b606ff` collection pin. Qualify a separately recorded
+diagnostic revision before using the flag; existing measurement tags stay unchanged.
 
 Local evidence stays outside Git: `/mnt/data/inferena-native-analysis.nC5jZj/`
 (`resnet-nsys-final`, `smollm-1.7b-nsys`),

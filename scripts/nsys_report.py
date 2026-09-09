@@ -6,7 +6,7 @@ from pathlib import Path
 import sqlite3
 
 
-def report(database, top):
+def report(database, top, launches=False):
     with sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True) as db:
         ranges = db.execute(
             "SELECT start, end, coalesce(text, value) FROM NVTX_EVENTS "
@@ -47,17 +47,31 @@ def report(database, top):
                 (start, end),
             ).fetchone()[0]
             print(f"  CUDA graph-node events: {graph_nodes}/{len(events)}")
+            if launches and graph_nodes != len(events):
+                raise ValueError("launch-level reporting requires captured CUDA graph nodes")
             print("  ms/call   launches/call   registers/thread   shared bytes/block   kernel")
+            grouping = "value, graphId, graphNodeId" if launches else "value"
             rows = db.execute(
                 f"SELECT value, count(*), sum(end-start), min(registersPerThread), "
                 f"max(registersPerThread), min(staticSharedMemory+dynamicSharedMemory), "
-                f"max(staticSharedMemory+dynamicSharedMemory) FROM {table} "
+                f"max(staticSharedMemory+dynamicSharedMemory), min(graphId), min(graphNodeId), "
+                "min(gridX*gridY*gridZ), max(gridX*gridY*gridZ), "
+                "min(blockX*blockY*blockZ), max(blockX*blockY*blockZ), "
+                "group_concat(DISTINCT gridX||'x'||gridY||'x'||gridZ), "
+                "group_concat(DISTINCT blockX||'x'||blockY||'x'||blockZ), "
+                f"max(localMemoryPerThread) FROM {table} "
                 "JOIN StringIds ON demangledName=StringIds.id WHERE start>=? AND end<=? "
-                "GROUP BY value ORDER BY sum(end-start) DESC LIMIT ?", (start, end, top),
+                f"GROUP BY {grouping} ORDER BY sum(end-start) DESC LIMIT ?", (start, end, top),
             )
-            for kernel, calls, duration, low_reg, high_reg, low_shared, high_shared in rows:
+            for (kernel, calls, duration, low_reg, high_reg, low_shared, high_shared,
+                 graph, node, low_blocks, high_blocks, low_threads, high_threads,
+                 grid, block, local_bytes) in rows:
                 print(f"  {duration / count / 1e6:7.3f}   {calls / count:13g}   "
                       f"{low_reg}-{high_reg:<14}   {low_shared}-{high_shared:<16}   {kernel}")
+                geometry = (f"graph {graph}, node {node}; grid {grid}, block {block}" if launches
+                            else f"blocks/launch {low_blocks}-{high_blocks}; "
+                                 f"threads/block {low_threads}-{high_threads}")
+                print(f"    {geometry}; max reported local bytes/thread {local_bytes}")
         print("\nDiagnostic durations only. Summed intervals may overlap; host waits are elapsed time.")
         print("Do not subtract these quantities to estimate busy CPU time or removable barrier cost.")
 
@@ -66,10 +80,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("database", type=Path)
     parser.add_argument("--top", type=int, default=8)
+    parser.add_argument("--launches", action="store_true", help="rank CUDA graph nodes separately")
     args = parser.parse_args()
     if args.top < 1:
         parser.error("--top must be positive")
-    report(args.database, args.top)
+    report(args.database, args.top, args.launches)
 
 
 if __name__ == "__main__":

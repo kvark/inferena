@@ -362,6 +362,10 @@ reports host spans and ranks CUDA kernels with launch counts/register/shared
 memory metadata. Vulkan rows remain grouped submissions. This is a diagnostic
 summary, not a replacement for `capture.json` qualification. See
 [current findings and their limits](ANALYSIS.md).
+Add `--launches` for CUDA graph-node rankings with grid/block geometry; without
+it, identically named kernels remain aggregated. Launch-level attribution
+requires graph-node IDs, which identify launches within that trace, not stable
+operators across runs. Reported local-memory bytes are not measured spill traffic.
 
 Open the reports with the same or a newer Nsight GUI; an older installed GUI
 may not read them. No driver or system-wide profiler upgrade is required by

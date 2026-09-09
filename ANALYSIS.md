@@ -61,6 +61,18 @@ Ten groups cannot occupy all 48 SMs simultaneously. This is a concrete
 parallelism limit, **not** a measured fraction of time lost to barriers.
 Its pass interval is 4.475 ms, about 9.2% of the profile sum.
 
+The qualified Systems trace's final cuDNN `wgrad_alg0_engine_NHWC` launch
+(graph 5, node 21474837191) uses grid `[5,2,100]`, block `[8,8,1]`: **1000 blocks**,
+81 registers/thread and 2304 shared bytes/block. Its mean kernel interval is
+0.109 ms across three calls. Matching it to the native stem is an inference
+from ordering and geometry, not retained operator/shape correlation. Replay
+traces do not contain those CPU operator ranges. The 100× block-count difference
+is evidence of different launch geometry, not a 100× speedup or a paired timing
+ratio; the native pass profile uses different instrumentation. Any cuDNN
+conversion/initialization/reduction kernels must also be charged to its operation.
+Use `scripts/nsys_report.py <capture>/pytorch.sqlite --launches --top 1000`
+to inspect individual graph nodes instead of aggregating a shared kernel name.
+
 The general candidate is split reduction plus a final sum, using the existing
 bounded sequence search and plan-before-allocation lowering. This is **not a
 new discovery or a ready promotion**: the September 6 experiments already found
@@ -70,6 +82,17 @@ First resolve accumulation accuracy, then measure a few legal split counts,
 charge all partial storage and the final pass, and confirm whole-step gains.
 No ResNet/card-name rule, giant sweep or relaxed validation is warranted.
 [Existing experiment conclusions](https://github.com/kvark/meganeura/blob/43b606ff45b99d23e7e57b5f120f5fc347039082/docs/experiments.md).
+
+The source-only [CPU arithmetic diagnostic](https://github.com/kvark/meganeura/blob/1224323/bench/dw_rounding.rs)
+narrows that accuracy question. On the old long uneven-K, tiny structured-input
+case, f32 FMA dot products inside 16-term tiles already cause relative L2 error
+`3.491e-3` even with an f64 outer sum, versus the unchanged `2e-4` gate. Rounding
+f64-evaluated split partitions once passes all four structured shapes. Thus
+outer compensation alone need not fix inaccurate inner subtotals; inspect
+inner accumulation before blaming f32 partial storage or relaxing the gate.
+This is a CPU arithmetic model of a subset, not the full GPU qualification or
+proof of the historical GPU failure's instruction-level cause. Disabling FMA
+is not a generally justified fix. No new shader or performance result is promoted.
 
 ## Weight representation and placement first for 1.7B
 

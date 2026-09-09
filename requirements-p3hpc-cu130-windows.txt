@@ -1,0 +1,3 @@
+-r requirements-p3hpc.txt
+# PyTorch's Windows CUDA wheel does not depend on Triton. Match its 3.7.1 compiler.
+triton-windows==3.7.1.post27; sys_platform == "win32"

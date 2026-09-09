@@ -14,6 +14,7 @@ $IS_WINDOWS && EXE_SUFFIX=".exe"
 # `/c/Code/...` which Python cannot interpret as a filesystem path.
 if $IS_WINDOWS; then
     ROOT_DIR="$(cd "$(dirname "$0")" && pwd -W)"
+    export INFERENA_BASH="$(cygpath -m "$BASH")"
 else
     ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 fi
@@ -351,7 +352,7 @@ run_check() {
     elif command -v nvidia-smi &>/dev/null; then
         GPU_TYPE="nvidia"
     elif command -v rocm-smi &>/dev/null || [ -d /opt/rocm ] || \
-         python3 -c "import torch; assert torch.version.hip" 2>/dev/null; then
+         "$PYTHON" -c "import torch; assert torch.version.hip" 2>/dev/null; then
         GPU_TYPE="amd"
     elif command -v vulkaninfo &>/dev/null; then
         vk_dev=$(vulkaninfo --summary 2>/dev/null | grep "deviceName" | head -1 | sed 's/.*= //' | xargs)
@@ -465,7 +466,7 @@ print('GPU offload' if llama_supports_gpu_offload() else 'CPU only')
     RUST_FW="inferena-candle inferena-burn inferena-inferi inferena-luminal inferena-meganeura"
     for pkg in $RUST_FW; do
         name="${pkg#inferena-}"
-        bin="$ROOT_DIR/target/release/$pkg"
+        bin="$ROOT_DIR/target/release/$pkg${EXE_SUFFIX}"
         if [ -f "$bin" ]; then
             echo "  ✓ $name (binary at $bin)"
         elif [ "$name" = "inferi" ] && ! cargo gpu --version &>/dev/null; then
@@ -703,7 +704,7 @@ for MODEL in $MODELS; do
         # Capture table output for markdown update.
         TABLE_FILE=$(mktemp)
         "$HARNESS" "${ARGS[@]}" | tee "$TABLE_FILE" || true
-        python3 "$ROOT_DIR/scripts/update_results.py" \
+        "$PYTHON" "$ROOT_DIR/scripts/update_results.py" \
             --model "$MODEL" --platform "$PLATFORM" --table "$TABLE_FILE" --root "$ROOT_DIR"
         rm -f "$TABLE_FILE"
     else
@@ -720,7 +721,7 @@ if [ -z "$CHART_PLATFORM" ] && [ "$DRY_RUN" != true ]; then
     CHART_PLATFORM=$(detect_platform)
 fi
 if [ "$DRY_RUN" != true ]; then
-    python3 "$ROOT_DIR/scripts/generate_chart.py" \
+    "$PYTHON" "$ROOT_DIR/scripts/generate_chart.py" \
         --results-dir "$RESULTS_DIR" \
         ${CHART_PLATFORM:+--platform "$CHART_PLATFORM"} || true
 fi

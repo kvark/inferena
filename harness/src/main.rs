@@ -516,8 +516,13 @@ fn run_framework(
 
     // Always use bash (Git Bash on Windows).
     // Inherits environment so WGPU_BACKEND, HSA_OVERRIDE_GFX_VERSION, etc. propagate.
-    let mut cmd = Command::new("bash");
-    cmd.arg(&run_script).arg(model).current_dir(&fw_dir);
+    let mut cmd = Command::new(std::env::var_os("INFERENA_BASH").unwrap_or_else(|| "bash".into()));
+    let script = if cfg!(windows) {
+        run_script.to_string_lossy().replace('\\', "/")
+    } else {
+        run_script.to_string_lossy().into_owned()
+    };
+    cmd.arg(script).arg(model).current_dir(&fw_dir);
     cmd.env("INFERENA_STRICT", if strict { "1" } else { "0" })
         .env(
             "INFERENA_INFERENCE_ONLY",

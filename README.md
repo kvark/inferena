@@ -173,11 +173,14 @@ bash scripts/setup.sh cu130                 # new .venv-p3hpc; Python downloaded
   --inference-only --precisions strict --collect --results-dir ../smollm-scaling
 ```
 
-On Windows use Git Bash and `.venv-p3hpc/Scripts/python.exe`. Existing
-environments are never replaced; pass a second argument to choose a new path.
-The script verifies the common PyTorch source pin; the collector additionally
-checks the requested device and actual execution. GPU drivers remain a system
-prerequisite. See [collection, XPU and Nsight instructions](EXPERIMENT.md).
+On native Windows use Git Bash and `.venv-p3hpc/Scripts/python.exe`. CUDA setup
+also installs the matching Windows Triton compiler; it is not included by the
+PyTorch wheel. Existing environments are never replaced; pass a second argument
+to choose a new path. Setup verifies the common PyTorch source and runs a small
+forward/backward probe in each reference mode, including CUDA Graph replay.
+GPU drivers and Rust's platform build tools remain system prerequisites.
+See [Windows collection](EXPERIMENT.md#windows-nvidia) and
+[XPU and Nsight instructions](EXPERIMENT.md).
 
 Requirements files cannot select/install an interpreter by themselves. For
 the broader, non-paper runner dependencies, `uv venv .venv` also reads

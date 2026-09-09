@@ -2,6 +2,7 @@
 
 import copy
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -13,7 +14,7 @@ import torch
 from execution import capture_phase, profile_phase, synchronize
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-from p3hpc import TORCH_REVISION, TORCH_VERSION, check_torch_identity
+from p3hpc import TORCH_REVISION, TORCH_VERSION, check_torch_identity, runner_bash
 
 
 class CampaignTest(unittest.TestCase):
@@ -32,6 +33,19 @@ class CampaignTest(unittest.TestCase):
             check_torch_identity(TORCH_VERSION, TORCH_REVISION, TORCH_VERSION + "+cu130")
         with self.assertRaises(ValueError):
             check_torch_identity("2.12.0", TORCH_REVISION, "2.12.0")
+        with tempfile.TemporaryDirectory(prefix="inferena Git with spaces ") as directory:
+            shell = Path(directory) / "bin/bash.exe"
+            shell.parent.mkdir()
+            shell.touch()
+            with patch.dict(os.environ), patch("p3hpc.sys.platform", "win32"), \
+                 patch("p3hpc.shutil.which", return_value=str(Path(directory) / "cmd/git.exe")), \
+                 patch("p3hpc.subprocess.check_output", return_value="MINGW64_NT\n") as uname:
+                os.environ.pop("INFERENA_BASH", None)
+                self.assertEqual(runner_bash(), str(shell))
+                self.assertEqual(uname.call_args.args[0], [str(shell), "-c", "uname -s"])
+                uname.return_value = "Linux\n"
+                with self.assertRaisesRegex(RuntimeError, "not WSL"):
+                    runner_bash()
 
     def test_explicit_backend_is_probed_and_synchronized_without_fallback(self):
         from bench import detect_device
@@ -43,8 +57,8 @@ class CampaignTest(unittest.TestCase):
             probe.return_value = True
             self.assertEqual(detect_device(), "xpu:0")
         with patch("torch.xpu.synchronize") as xpu, patch("torch.cuda.synchronize") as cuda:
-            synchronize("xpu:0")
-            xpu.assert_called_once()
+            synchronize("xpu:1")
+            xpu.assert_called_once_with("xpu:1")
             cuda.assert_not_called()
 
 

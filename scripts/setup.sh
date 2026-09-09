@@ -2,9 +2,10 @@
 # Create an isolated comparison environment, downloading Python when needed.
 set -euo pipefail
 case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) ROOT=$(cd "$(dirname "$0")/.." && pwd -W) ;;
+    MINGW*|MSYS*) ROOT=$(cd "$(dirname "$0")/.." && pwd -W) ;;
     *) ROOT=$(cd "$(dirname "$0")/.." && pwd) ;;
 esac
+export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
     echo "Usage: bash scripts/setup.sh <cu130|xpu|cpu|mps|rocm7.2> [new-venv-path]" >&2
     exit 2
@@ -33,15 +34,10 @@ TORCH_ARGS=()
 if [ "$BACKEND" != mps ]; then
     TORCH_ARGS=(--torch-backend "$BACKEND")
 fi
-uv pip install --python "$ENV_PYTHON" "${TORCH_ARGS[@]}" -r "$ROOT/requirements-p3hpc.txt"
-"$ENV_PYTHON" - "$ROOT" <<'PY'
-from pathlib import Path
-import platform
-import sys
-import torch
-sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))
-from p3hpc import check_torch_identity
-check_torch_identity(torch.__version__, torch.version.git_version, torch.__version__)
-print(f"Ready: Python {platform.python_version()}, torch {torch.__version__}, source {torch.version.git_version}")
-print(f"Collector: {sys.executable} scripts/p3hpc.py --help")
-PY
+REQUIREMENTS="$ROOT/requirements-p3hpc.txt"
+if [ -f "$ENV_DIR/Scripts/python.exe" ] && [ "$BACKEND" = cu130 ]; then
+    REQUIREMENTS="$ROOT/requirements-p3hpc-cu130-windows.txt"
+fi
+uv pip install --python "$ENV_PYTHON" "${TORCH_ARGS[@]}" -r "$REQUIREMENTS"
+case "$BACKEND" in cu130) PROBE_BACKEND=cuda ;; rocm*) PROBE_BACKEND=rocm ;; *) PROBE_BACKEND=$BACKEND ;; esac
+"$ENV_PYTHON" "$ROOT/scripts/check_environment.py" --backend "$PROBE_BACKEND"

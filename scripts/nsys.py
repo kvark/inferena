@@ -10,7 +10,7 @@ import sqlite3
 import subprocess
 import sys
 
-from p3hpc import ROOT, SUPPORTED_MODELS, check_pair, input_hashes
+from p3hpc import ROOT, SUPPORTED_MODELS, check_pair, input_hashes, runner_bash
 
 
 def main():
@@ -43,14 +43,15 @@ def main():
     subprocess.run(["cargo", "build", "--release", "--locked", "-p", "inferena-harness", "-p", "inferena-meganeura"], cwd=ROOT, check=True)
     destination.mkdir(parents=True, exist_ok=False)
     command = [
-        "bash", str(ROOT / "run.sh"), "-m", args.model, "-f", "pytorch,meganeura",
+        runner_bash(), (ROOT / "run.sh").as_posix(), "-m", args.model, "-f", "pytorch,meganeura",
         "--warmup-runs", "5", "--measurement-runs", "3", "--results-dir", str(destination),
     ]
     if args.precision == "strict":
         command.append("--strict")
     if args.inference_only:
         command.append("--inference-only")
-    env = dict(os.environ, PYTHON=sys.executable, INFERENA_NSYS=args.nsys,
+    env = dict(os.environ, PYTHON=Path(sys.executable).as_posix(), PYTHONUTF8="1", PYTHONIOENCODING="utf-8",
+               INFERENA_BASH=command[0], INFERENA_NSYS=args.nsys,
                INFERENA_NSYS_DIR=str(destination), INFERENA_TORCH_BACKEND="cuda",
                INFERENA_TORCH_MODE=args.mode, INFERENA_CUDA_GRAPHS=str(int(not args.no_graphs)),
                INFERENA_REQUIRE_LOCAL_WEIGHTS="1", HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",

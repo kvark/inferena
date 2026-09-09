@@ -8,6 +8,7 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -20,6 +21,24 @@ PHASES = ("inference", "latency", "training")
 PYTHON_VERSION = (ROOT / ".python-version").read_text().strip()
 TORCH_VERSION = "2.13.0"
 TORCH_REVISION = "cf30153c4c131c8164ee7798e5022d810682e2cb"
+
+
+def runner_bash():
+    """Use Git Bash on native Windows, never the unrelated WSL launcher."""
+    shell = os.environ.get("INFERENA_BASH")
+    if not shell and sys.platform == "win32":
+        git = shutil.which("git")
+        if git:
+            shell = next((str(parent / "bin/bash.exe") for parent in Path(git).parents
+                          if (parent / "bin/bash.exe").is_file()), None)
+    shell = shell or shutil.which("bash")
+    if not shell:
+        raise RuntimeError("Bash not found; install Git for Windows or set INFERENA_BASH")
+    if sys.platform == "win32":
+        system = subprocess.check_output([shell, "-c", "uname -s"], text=True, encoding="utf-8").strip()
+        if not system.startswith(("MINGW", "MSYS")):
+            raise RuntimeError("native Windows needs Git Bash, not WSL; set INFERENA_BASH to Git's bash.exe")
+    return shell
 
 
 def check_torch_identity(version, revision, declared_version):
@@ -155,7 +174,8 @@ def main():
         parser.error(f"prepare local pinned models first: {error}")
     dependency = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["dependencies"]["meganeura"]
     destination.mkdir(parents=True, exist_ok=False)
-    env = dict(os.environ, PYTHON=sys.executable, HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
+    env = dict(os.environ, PYTHON=Path(sys.executable).as_posix(), PYTHONUTF8="1", PYTHONIOENCODING="utf-8",
+               INFERENA_BASH=runner_bash(), HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
                INFERENA_REQUIRE_LOCAL_WEIGHTS="1", INFERENA_TORCH_BACKEND=args.backend)
     env.pop("VIRTUAL_ENV", None)
     manifest = {
@@ -198,7 +218,7 @@ def main():
                             folder.mkdir(parents=True)
                             order = "pytorch,meganeura" if sequence % 2 == 0 else "meganeura,pytorch"
                             sequence += 1
-                            command = ["bash", str(ROOT / "run.sh"), "-m", model, "-f", order,
+                            command = [env["INFERENA_BASH"], (ROOT / "run.sh").as_posix(), "-m", model, "-f", order,
                                        "--warmup-runs", "5", "--measurement-runs", str(count),
                                        "--results-dir", str(folder)]
                             if precision == "strict":

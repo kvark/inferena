@@ -74,6 +74,12 @@ downloads managed Python **3.13.13** and installs `requirements-p3hpc.txt` in a
 new `.venv-p3hpc`; pass a second argument for a different new directory. No
 existing venv is overwritten. Use `.venv-p3hpc/bin/python` below; on Windows
 use Git Bash and `.venv-p3hpc/Scripts/python.exe`.
+Setup also probes the requested backend with a tiny forward/backward workload
+in every reference condition, including CUDA Graph replay. Missing drivers,
+compiler support or failed numerical checks stop setup; it never reports an
+eager fallback as successful compilation. Rerun the check in an existing venv
+with `python scripts/check_environment.py --backend cuda` (or `xpu`, etc.).
+This is an installation check, not model qualification or a timing result.
 
 The v3 campaign collector requires that Python version, PyTorch 2.13.0 and reported source commit
 `cf30153c4c131c8164ee7798e5022d810682e2cb` on **every** platform. It checks
@@ -147,6 +153,46 @@ It also records the common PyTorch source and platform-specific build settings.
 The per-engine records retain driver/device, preparation, memory, execution and
 validation details. Do not run two collectors on the same device concurrently.
 
+### Windows NVIDIA
+
+Use **native Windows x64**, Git for Windows / Git Bash (not WSL), uv, Rust's
+MSVC toolchain, Visual Studio C++ Build Tools with a Windows SDK, and a current
+NVIDIA driver supporting the CUDA 13.0 wheel. Rust builds require the MSVC
+linker even though Triton's wheel bundles its own minimal CUDA/C toolchain.
+Run from Git Bash; Python is downloaded automatically. Git Bash is located
+from Git's installation and propagated to the Rust harness; `INFERENA_BASH`
+can name its `bash.exe` explicitly for a nonstandard installation. Paths with
+spaces are kept as individual arguments; scripts use LF and Python UTF-8 I/O.
+
+```sh
+bash scripts/setup.sh cu130
+.venv-p3hpc/Scripts/python.exe scripts/prepare_models.py SmolLM2-135M SmolLM2-360M
+.venv-p3hpc/Scripts/python.exe scripts/p3hpc.py --backend cuda --gpu 'RTX 3050' \
+  --torch-version 2.13.0+cu130 --models SmolLM2-135M SmolLM2-360M \
+  --inference-only --precisions strict --results-dir ../rtx3050-windows-qualification
+# After qualification, repeat with --collect and a new results directory.
+```
+
+CUDA setup selects `requirements-p3hpc-cu130-windows.txt`, adding exactly
+`triton-windows==3.7.1.post27`. Upstream PyTorch only depends on `triton==3.7.1`
+on Linux; importing torch on Windows does **not** establish that Inductor can
+compile. This [Windows Triton port](https://github.com/triton-lang/triton-windows)
+supports Ampere/RTX 30xx and the 3.7 compiler family required by PyTorch 2.13;
+the [pinned wheel](https://pypi.org/project/triton-windows/3.7.1.post27/) supports
+Python 3.13. It is a platform-specific compiler distribution, **not identical
+Linux/Windows compiler binaries**. The collector records installed package
+versions and the common PyTorch source independently. Do not replace it with
+the newest Triton minor version. XPU setup does not install this CUDA port.
+
+For an environment made by the earlier setup, install the corrected file with
+`uv pip install --python .venv-p3hpc/Scripts/python.exe --torch-backend cu130 -r requirements-p3hpc-cu130-windows.txt`,
+then run `.venv-p3hpc/Scripts/python.exe scripts/check_environment.py --backend cuda`.
+Successful Linux probes and Windows wheel resolution are not Windows hardware
+qualification; the first completed paired campaign must establish that.
+Record the exact 3050 model, VRAM, driver, Windows version and laptop power mode
+where applicable. Keep 1.7B separate until memory placement/capacity is checked;
+do not silently shrink precision, batch size or sequence length to fit it.
+
 ### Intel, including mobile GPUs
 
 A discrete GPU is **not required**. For the pinned PyTorch 2.13 build, supported
@@ -174,6 +220,12 @@ On hybrid machines select the same device using `ONEAPI_DEVICE_SELECTOR` /
 `ZE_AFFINITY_MASK` and Vulkan loader selection (`VK_ICD_FILENAMES` or
 `MESA_VK_DEVICE_SELECT`); both reported names are checked. Record laptop power
 mode, AC power and shared-memory capacity; do not treat memory budget as VRAM.
+For the planned B570 + RTX 5070 machine, use a **separate** `xpu` venv (pass a
+new path to setup), select Intel's Vulkan ICD explicitly, and use
+`--gpu 'Arc B570'`. The backend flag selects PyTorch, not a Vulkan adapter;
+the two reported GPU names must both match. Installing the card alone does
+not qualify its driver or compiler. Start with ResNet-50 strict qualification,
+then add accelerated and larger-model cases after those gates pass.
 
 ROCm's official wheel index and AMD's APU-specific requirements may offer
 different source builds or supported devices. Setup does not promise every
@@ -312,6 +364,47 @@ and shader profiler to examine the expensive regions. **Nsight Compute**
 is for the PyTorch CUDA kernels, not Meganeura's Vulkan shaders. Workgroup
 barrier stalls are distinct from Vulkan resource barriers. A causal removable
 barrier-cost number still needs the legal schedule A/B described below.
+
+The September 9 headless attempt with Graphics **2026.3.1.0** launches and
+attaches, but fails before collection: `GPU Performance Counters unavailable`.
+The installed 595.71.05 driver reports `RmProfilingAdminOnly: 1` in
+`/proc/driver/nvidia/params`; interactive administrative authentication is
+required on this host. No Graphics metrics or barrier attribution resulted.
+See [NVIDIA's counter-access instructions](https://developer.nvidia.com/ERR_NVGPUCTRPERM):
+an administrator can run the profiling application elevated, or deliberately
+enable non-admin counters. The persistent driver option may require rebuilding
+initramfs and rebooting. Do not unload the live display driver or change this
+security policy from the collection script.
+
+Once access is enabled, this reproduces the attempted **diagnostic** launch
+from Inferena's root; set `NGFX` to the installed `host/.../ngfx` executable:
+
+```sh
+NGFX_OUT=$(mktemp -d ../inferena-ngfx.XXXXXX)
+QT_QPA_PLATFORM=offscreen INFERENA_NSYS=1 INFERENA_STRICT=1 \
+INFERENA_INFERENCE_ONLY=1 INFERENA_WARMUP_RUNS=5 INFERENA_MEASUREMENT_RUNS=3 \
+"$NGFX" --activity 'GPU Trace Profiler' \
+  --exe "$PWD/target/release/inferena-meganeura" \
+  --dir "$PWD/frameworks/meganeura" --args SmolLM2-1.7B \
+  --output-dir "$NGFX_OUT" --start-after-submits 15 --limit-to-submits 1 \
+  --max-duration-ms 6000 --collect-screenshot 0 --set-gpu-clocks unaltered \
+  --auto-export --trace-timeout 180 > "$NGFX_OUT/launcher.log" 2>&1
+```
+
+Build the clean, recorded source first. Omit `--platform` on this Linux CLI:
+Qt misinterprets that option as its window-system plugin and aborts before
+launch. The submit count 15 comes from the qualified 1.7B Systems capture
+(one initialization submission and five warmups per phase, three prefill
+samples), not a portable timing heuristic. Verify the captured region against
+`meganeura/latency/measure`; other workloads/counts need their own trigger.
+Do not use `--time-every-action` for the initial production-schedule trace.
+First inspect system-memory traffic/long-latency loads in this placement-limited
+case, then repeat on a resident smaller model for kernel/barrier analysis.
+Account for the profiler's own memory allocations. Do not substitute frame
+capture/replay for this placement experiment: `ngfx-capture` defaults to
+demoting host-visible video memory to system memory (`--hvvm-demote`).
+Preserve the full runner's numerical qualification and an ordinary control;
+successful attachment or an exported file alone is not capture qualification.
 
 ### Bounded gap-analysis plan
 

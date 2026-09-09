@@ -472,7 +472,8 @@ def sha256_f32_tensor(t: torch.Tensor) -> str:
 def clear_compile_cache():
     """Own an empty cache for this run; never delete the developer's cache."""
     torch._dynamo.reset()
-    cache = tempfile.TemporaryDirectory(prefix="inferena-inductor-")
+    # Windows may keep a loaded JIT DLL locked until process exit.
+    cache = tempfile.TemporaryDirectory(prefix="inferena-inductor-", ignore_cleanup_errors=os.name == "nt")
     os.environ["TORCHINDUCTOR_CACHE_DIR"] = cache.name
     os.environ["TRITON_CACHE_DIR"] = os.path.join(cache.name, "triton")
     return cache

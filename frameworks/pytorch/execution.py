@@ -14,8 +14,10 @@ def nsys_range(name):
 
 def synchronize(device):
     backend = torch.device(device).type
-    if backend in ("cuda", "xpu", "mps"):
-        getattr(torch, backend).synchronize()
+    if backend in ("cuda", "xpu"):
+        getattr(torch, backend).synchronize(device)
+    elif backend == "mps":
+        torch.mps.synchronize()
 
 
 def profile_phase(fn, path, samples, before=None, device="cuda"):

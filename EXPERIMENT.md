@@ -193,6 +193,15 @@ Record the exact 3050 model, VRAM, driver, Windows version and laptop power mode
 where applicable. Keep 1.7B separate until memory placement/capacity is checked;
 do not silently shrink precision, batch size or sequence length to fit it.
 
+Prepared collection source: `experiment/p3hpc-portability-2026-09-09`
+(`819b7d2`). On Linux/RTX 5070 it passes all three strict ResNet-50 paired
+qualification cases (forward + latency + backward), the 3 broad Python checks
+and 9 harness tests, and the CPU/CUDA setup probes. The Windows requirements
+resolve for Python 3.13 x64; **Windows and B570 hardware qualification remain
+pending**. Use this source ref on the new machines; the September 8 measurements
+keep their original ref. Untimed qualification evidence is outside Git at
+`/mnt/data/inferena portability.8Hc6y5/resnet qualification`.
+
 ### Intel, including mobile GPUs
 
 A discrete GPU is **not required**. For the pinned PyTorch 2.13 build, supported

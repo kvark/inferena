@@ -311,11 +311,28 @@ separately. Vendor timelines are needed for correlated host/device attribution.
 
 ### NVIDIA paper-analysis captures
 
+On Linux, bound the **entire** profiler/runner tree. Choose a host-memory and
+time budget that fits the workload and leaves headroom; these are safety
+limits, not hardware-specific performance gates:
+
 ```sh
-.venv-p3hpc/bin/python scripts/nsys.py --gpu 'RTX 5070' --torch-version 2.13.0+cu130 \
+.venv-p3hpc/bin/python scripts/limited.py --memory-mib 6144 --seconds 600 -- \
+  .venv-p3hpc/bin/python scripts/nsys.py --gpu 'RTX 5070' --torch-version 2.13.0+cu130 \
   --model ResNet-50 --precision strict --mode max-autotune \
   --nsys /path/to/nsys --results-dir ../resnet-nsight
 ```
+
+`limited.py` requires a systemd user manager and cgroup v2. It checks available
+RAM, reserves at least 1 GiB / 10% of host RAM (whichever is larger), then
+verifies the actual memory cap, zero swap allowance and group OOM termination
+before starting the command. Environment and working directory are inherited;
+core dumps are disabled. The printed scope name lets you stop the whole job.
+There is no unbounded fallback. It does **not** bound VRAM or guarantee that
+all driver-pinned memory is charged to the cgroup. Check profiler buffer sizes
+and device/host memory separately, and never attach to an unbounded detached
+target. A killed/timed-out run is incomplete, not a smaller valid sample.
+This wrapper is Linux-only; `nsys.py` itself remains usable on Windows, where
+equivalent process-tree resource containment needs separate qualification.
 
 Use Nsight **2026.4.1** for the qualified Linux setup here. Alternatively put
 `nsys` on PATH or set `NSYS` (including its Windows `.exe`
@@ -337,6 +354,14 @@ These are explicit profiler
 limitations, not ignored engine failures.
 Missing GPU events
 fail capture qualification. All artifacts stay outside Git.
+
+For low-memory, offline analysis, run
+`python scripts/nsys_report.py <capture-dir>/pytorch.sqlite` (or
+`meganeura.sqlite`). It restricts analysis to complete measured samples,
+reports host spans and ranks CUDA kernels with launch counts/register/shared
+memory metadata. Vulkan rows remain grouped submissions. This is a diagnostic
+summary, not a replacement for `capture.json` qualification. See
+[current findings and their limits](ANALYSIS.md).
 
 Open the reports with the same or a newer Nsight GUI; an older installed GUI
 may not read them. No driver or system-wide profiler upgrade is required by
@@ -366,54 +391,51 @@ For this direct executable launch, set `INFERENA_NSYS=1` to enable host NVTX
 markers. Choose **Submit Count** or **Elapsed Time** as the start condition and
 **Max Submits** or **None** as the limit; there are no present/frame boundaries.
 Record clock-lock and capture settings. This Graphics workflow follows the
-[headless application instructions](https://docs.nvidia.com/nsight-graphics/UserGuide/gpu-trace-ui.html)
-but has not yet been qualified on this host.
+[headless application instructions](https://docs.nvidia.com/nsight-graphics/UserGuide/gpu-trace-ui.html).
+The initial traces below have explicit completeness limits.
 Use its [barrier/occupancy timeline](https://docs.nvidia.com/nsight-graphics/UserGuide/gpu-trace-ui.html)
 and shader profiler to examine the expensive regions. **Nsight Compute**
 is for the PyTorch CUDA kernels, not Meganeura's Vulkan shaders. Workgroup
 barrier stalls are distinct from Vulkan resource barriers. A causal removable
 barrier-cost number still needs the legal schedule A/B described below.
 
-The September 9 headless attempt with Graphics **2026.3.1.0** launches and
-attaches, but fails before collection: `GPU Performance Counters unavailable`.
-The installed 595.71.05 driver reports `RmProfilingAdminOnly: 1` in
-`/proc/driver/nvidia/params`; interactive administrative authentication is
-required on this host. No Graphics metrics or barrier attribution resulted.
-See [NVIDIA's counter-access instructions](https://developer.nvidia.com/ERR_NVGPUCTRPERM):
-an administrator can run the profiling application elevated, or deliberately
-enable non-admin counters. The persistent driver option may require rebuilding
-initramfs and rebooting. Do not unload the live display driver or change this
-security policy from the collection script.
+Counter access is now enabled (`RmProfilingAdminOnly: 0`), following the user's
+September 9 reboot. Graphics **2026.3.1.0** collects counters with driver
+595.71.05. No further driver reload, security-policy change or reboot is part
+of this workflow. The earlier counter-denied attempts produced no metrics.
+[NVIDIA's counter-access documentation](https://developer.nvidia.com/ERR_NVGPUCTRPERM).
 
-Once access is enabled, this reproduces the attempted **diagnostic** launch
-from Inferena's root; set `NGFX` to the installed `host/.../ngfx` executable:
+**Do not repeat the former 1.7B recipe or detached retry.** At 06:11 UTC the profiler's
+4 GB sampling buffer plus the large runner exhausted host RAM and swap; the
+kernel's global OOM killer killed the runner. There was no subsequent reboot.
+The failed run has no complete runner JSON and is excluded. Later offline
+viewing hit a 900 MiB cgroup limit and terminated only that analysis job.
+New GPU captures are on hold while host-memory headroom remains low.
 
-```sh
-NGFX_OUT=$(mktemp -d ../inferena-ngfx.XXXXXX)
-QT_QPA_PLATFORM=offscreen INFERENA_NSYS=1 INFERENA_STRICT=1 \
-INFERENA_INFERENCE_ONLY=1 INFERENA_WARMUP_RUNS=5 INFERENA_MEASUREMENT_RUNS=3 \
-"$NGFX" --activity 'GPU Trace Profiler' \
-  --exe "$PWD/target/release/inferena-meganeura" \
-  --dir "$PWD/frameworks/meganeura" --args SmolLM2-1.7B \
-  --output-dir "$NGFX_OUT" --start-after-submits 15 --limit-to-submits 1 \
-  --max-duration-ms 6000 --collect-screenshot 0 --set-gpu-clocks unaltered \
-  --auto-export --trace-timeout 180 > "$NGFX_OUT/launcher.log" 2>&1
-```
+For the next bounded Graphics qualification, start with resident 135M and a
+short window (about 100 ms), unaltered clocks and screenshots disabled. Set
+sampling bandwidth **at launch**, not at a later attach. Inspect the actual
+`GPU PMA Buffer Size` in the launch log: a 256 bandwidth request still allocated
+2500 MB with a five-second window here. The default allocated 4000 MB.
+[GPU Trace memory/sampling controls](https://docs.nvidia.com/nsight-graphics/UserGuide/gpu-trace-overview.html).
+Keep the profiler and target together under `limited.py`. Shorten the window
+or lower sampling density before increasing any buffer budget.
 
-Build the clean, recorded source first. Omit `--platform` on this Linux CLI:
-Qt misinterprets that option as its window-system plugin and aborts before
-launch. The submit count 15 comes from the qualified 1.7B Systems capture
-(one initialization submission and five warmups per phase, three prefill
-samples), not a portable timing heuristic. Verify the captured region against
-`meganeura/latency/measure`; other workloads/counts need their own trigger.
-Do not use `--time-every-action` for the initial production-schedule trace.
-First inspect system-memory traffic/long-latency loads in this placement-limited
-case, then repeat on a resident smaller model for kernel/barrier analysis.
-Account for the profiler's own memory allocations. Do not substitute frame
-capture/replay for this placement experiment: `ngfx-capture` defaults to
-demoting host-visible video memory to system memory (`--hvvm-demote`).
-Preserve the full runner's numerical qualification and an ordinary control;
-successful attachment or an exported file alone is not capture qualification.
+Build the clean, recorded source first. On this Linux CLI, use
+`QT_QPA_PLATFORM=offscreen` and omit `--platform`, which Qt misinterprets.
+Keep `--time-every-action` off. With five warmups, start-after-submits 5 and
+limit-to-submits 4 captured two complete prefill measurement markers on 135M;
+verify the markers rather than assuming counts transfer between workloads.
+Context destruction between phases can end collection before the token phase.
+`--keep-going` requests more traces; it does not guarantee runner completion.
+Retain complete runner stdout separately and verify hashes/numerics against an
+ordinary control. Reject hardware-event overflow for per-dispatch attribution;
+the first 135M trace passed output checks but reported this overflow.
+
+Do not substitute frame capture/replay for a placement experiment:
+`ngfx-capture` defaults to demoting host-visible video memory to system memory
+(`--hvvm-demote`). Successful attachment, exported counters or a partial trace
+alone do not establish a qualified, correctly placed run.
 
 ### Bounded gap-analysis plan
 

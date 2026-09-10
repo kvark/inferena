@@ -15,6 +15,15 @@ struct MatmulData {
     params: [u32; 4],
 }
 
+#[derive(blade_macros::ShaderData)]
+struct MatmulAddData {
+    matrix_a: gpu::BufferPiece,
+    matrix_b: gpu::BufferPiece,
+    matrix_c: gpu::BufferPiece,
+    src: gpu::BufferPiece,
+    params: [u32; 4],
+}
+
 fn input(elements: usize, operand: u32, scale: f32) -> Vec<f32> {
     (0..elements)
         .map(|index| {
@@ -38,18 +47,25 @@ fn main() {
         panic!("usage: compile_gemm M N K TILE");
     };
     assert!(m > 0 && n > 0 && k > 0 && matches!(tile, 32 | 64));
-    let gemv = std::env::var("INFERENA_GEMM_GEMV").as_deref() == Ok("1");
+    let gemv_mode = std::env::var("INFERENA_GEMM_GEMV").unwrap_or_default();
+    let gemv_add = gemv_mode == "add";
+    let gemv = gemv_mode == "1" || gemv_add;
     assert!(!gemv || (m == 1 && n % 4 == 0));
     let sizes =
         [m.checked_mul(k), k.checked_mul(n), m.checked_mul(n)].map(|size| size.unwrap() as usize);
-    assert!(sizes.iter().sum::<usize>() * 4 <= 256 * 1024 * 1024);
+    assert!(
+        (sizes.iter().sum::<usize>() + if gemv_add { sizes[2] } else { 0 }) * 4
+            <= 256 * 1024 * 1024
+    );
     let context_start = Instant::now();
     let context = meganeura::init_gpu_context_with(meganeura::GpuOptions::from_env()).unwrap();
     let context_ns = context_start.elapsed().as_nanos();
     let compile = |tile, role| {
         let _span = tracing::info_span!("gemm_candidate", tile, role).entered();
         let prepare = Instant::now();
-        let module = if gemv {
+        let module = if gemv_add {
+            codegen::generate_module(ShaderGroup::MatMulGemvAdd)
+        } else if gemv {
             codegen::generate_module(ShaderGroup::MatMulGemv)
         } else if tile == 32 {
             codegen::generate_module_small(ShaderGroup::MatMul)
@@ -61,9 +77,14 @@ fn main() {
             source: &module.source,
             naga_module: Some(module.module),
         });
+        let layout = if gemv_add {
+            MatmulAddData::layout()
+        } else {
+            MatmulData::layout()
+        };
         let pipeline = context.create_compute_pipeline(gpu::ComputePipelineDesc {
             name: "matched-f32-gemm",
-            data_layouts: &[&MatmulData::layout()],
+            data_layouts: &[&layout],
             compute: shader.at("main"),
         });
         (pipeline, source_bytes, prepare.elapsed().as_nanos())
@@ -92,6 +113,13 @@ fn main() {
         size: (sizes[2] * 4) as u64,
         memory: gpu::Memory::Download,
     });
+    let residual = gemv_add.then(|| {
+        context.create_buffer(gpu::BufferDesc {
+            name: "gemv-residual",
+            size: (sizes[2] * 4) as u64,
+            memory: gpu::Memory::Shared,
+        })
+    });
     let mut encoder = context.create_command_encoder(gpu::CommandEncoderDesc {
         name: "gemm-validation",
         buffer_count: 1,
@@ -100,6 +128,20 @@ fn main() {
     let mut validation = Vec::new();
     for scale in [1.0f32, 1.0e-12] {
         let inputs = [input(sizes[0], 0, scale), input(sizes[1], 1, 1.0)];
+        let residual_input = if gemv_add {
+            input(sizes[2], 2, scale)
+        } else {
+            Vec::new()
+        };
+        if let Some(buffer) = residual {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    residual_input.as_ptr(),
+                    buffer.data().cast(),
+                    residual_input.len(),
+                );
+            }
+        }
         for (data, buffer) in inputs.iter().zip(&buffers) {
             unsafe {
                 std::ptr::copy_nonoverlapping(data.as_ptr(), buffer.data().cast(), data.len());
@@ -113,15 +155,28 @@ fn main() {
         {
             let mut pass = encoder.compute("gemm");
             let mut bound = pass.with(&pipeline);
-            bound.bind(
-                0,
-                &MatmulData {
-                    matrix_a: buffers[0].at(0),
-                    matrix_b: buffers[1].at(0),
-                    matrix_c: buffers[2].at(0),
-                    params: [m, n, k, 0],
-                },
-            );
+            if let Some(src) = residual {
+                bound.bind(
+                    0,
+                    &MatmulAddData {
+                        matrix_a: buffers[0].at(0),
+                        matrix_b: buffers[1].at(0),
+                        matrix_c: buffers[2].at(0),
+                        src: src.at(0),
+                        params: [m, n, k, 0],
+                    },
+                );
+            } else {
+                bound.bind(
+                    0,
+                    &MatmulData {
+                        matrix_a: buffers[0].at(0),
+                        matrix_b: buffers[1].at(0),
+                        matrix_c: buffers[2].at(0),
+                        params: [m, n, k, 0],
+                    },
+                );
+            }
             bound.dispatch(if gemv {
                 [n / 4, 1, 1]
             } else {
@@ -144,7 +199,12 @@ fn main() {
                     inputs[0][row * k as usize + inner] as f64
                         * inputs[1][inner * n as usize + col] as f64
                 })
-                .sum();
+                .sum::<f64>()
+                + if gemv_add {
+                    residual_input[index] as f64
+                } else {
+                    0.0
+                };
             let error = (reference - actual as f64).abs();
             max_error = max_error.max(error);
             failures += usize::from(
@@ -158,6 +218,7 @@ fn main() {
         serde_json::json!({
             "engine": "meganeura", "shape": [m, n, k], "tile": tile,
             "gemv": gemv, "gemv_threads": std::env::var("MEGANEURA_GEMV_THREADS").ok(),
+            "gemv_add": gemv_add, "gemv_add_threads": std::env::var("MEGANEURA_GEMV_ADD_THREADS").ok(),
             "gpu": context.device_information().device_name, "source_bytes": source_bytes,
             "context_ns": context_ns, "warmup_ns": warmup_ns, "prepare_ns": prepare_ns,
             "dimensions": "runtime uniforms", "validation": validation,
@@ -166,6 +227,9 @@ fn main() {
     context.destroy_command_encoder(&mut encoder);
     context.destroy_compute_pipeline(&mut pipeline);
     context.destroy_buffer(download);
+    if let Some(buffer) = residual {
+        context.destroy_buffer(buffer);
+    }
     for buffer in buffers {
         context.destroy_buffer(buffer);
     }

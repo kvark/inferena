@@ -31,6 +31,7 @@ def main():
     parser.add_argument("--transpose-tile", type=int, default=0)
     parser.add_argument("--unpacked", action="store_true", help="experiment-only SwiGLU representation")
     parser.add_argument("--gemv-threads", type=int, choices=(32, 64, 128, 256), default=256)
+    parser.add_argument("--gemv-add-threads", type=int, choices=(32, 64, 128, 256), default=32)
     parser.add_argument("--warmup-runs", type=int, default=5)
     parser.add_argument("--measurement-runs", type=int, default=3)
     parser.add_argument("--sample-clocks", action="store_true", help="diagnostic nvidia-smi clock/power samples at 20 ms")
@@ -73,6 +74,7 @@ def main():
                MEGANEURA_TRANSPOSE_TILE=str(args.transpose_tile),
                MEGANEURA_GREEDY_PACK_SWIGLU=str(int(not args.unpacked)),
                MEGANEURA_GEMV_THREADS=str(args.gemv_threads),
+               MEGANEURA_GEMV_ADD_THREADS=str(args.gemv_add_threads),
                INFERENA_REQUIRE_LOCAL_WEIGHTS="1", HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
                TORCH_LOGS="graph_breaks,recompiles,perf_hints")
     env.pop("VIRTUAL_ENV", None)

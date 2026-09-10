@@ -401,6 +401,100 @@ checks and 217,792 full-f64 output checks pass. No broad width win emerges;
 the unusually fast 135M/64 run drifts within its window. Residual-add GEMV,
 the largest PC-sample family, needs its own measured width experiment.
 
+## Residual-add GEMV width — September 10
+
+The source-only Inferena/Meganeura `experiment/gemv-add-width-2026-09-10` tags
+pin Inferena `054db61`, Meganeura `2c8b5df` and Blade `7b6d97a`. They reuse one
+width generator for the residual-add f32 kernel as well as plain/RMSNorm GEMV.
+`MEGANEURA_GEMV_ADD_THREADS=32|64|128|256` changes workgroup/reduction width;
+other kernels, four outputs per workgroup and the grouped schedule stay fixed.
+The prototype keeps 32 as default and fixes the environment per process. This
+is an implementation ablation, not a production pipeline-key/selection API.
+
+A 24-process pilot covers all four widths and packed/unpacked weights on all
+three SmolLM2 sizes. A separate 54-process confirmation uses six replicates,
+all six three-arm execution orders, 100 warmups and 100 retained samples,
+strict f32, resident parameters, streamed loading, reused upload staging and
+CPU transpose tile 16. No tracing or system power-policy changes. All processes
+complete; minimum globally available RAM is 8711 MiB under the memory guard.
+
+| Token latency, median ms | Original 32 | 128 | 128 + unpacked |
+|---|---:|---:|---:|
+| 135M | 3.586 | 2.984 | 2.912 |
+| 360M | 5.368 | 4.7135 | 4.828 |
+| 1.7B | 16.3135 | 15.5195 | 13.7375 |
+
+Width alone clears the 5% plus paired-noise guard on 135M/360M, not 1.7B.
+Its paired median gains / twice-MAD are 0.601/0.007, 0.6505/0.015 and
+0.7945/0.031 ms. The combined arm clears the guard on all three; 1.7B gives
+2.575/0.028 ms. Prefill has no material gain. Keep the raw quarter-window
+variation: several 135M candidates drift, and one 1.7B control starts faster.
+No run or sample is excluded, and the guard is not a confidence interval.
+
+Every prefill output record is exact across arms. Token hashes change with
+reduction order but repeat exactly within each variant; packed/unpacked agree
+at equal width. Full token/prefill-prefix relative L2 is at most 1.6373e-5.
+All four widths pass the existing 21 shader checks and 14 GEMV parity cases;
+217,792 full-f64 output checks cover ordinary/tiny inputs. At 128, unpacked and
+resident, the existing broad smoke suite passes 83 tests with two already
+ignored. No tolerance relaxation or new regression fixture.
+
+Reproduce with `scripts/tune_study.py --models SmolLM2-135M SmolLM2-360M
+SmolLM2-1.7B --variants untuned gemv-add128 unpacked-gemv-add128 --replicates 6
+--stream-weights --resident --warmup-runs 100 --measurement-runs 100
+--output <new-dir>` under the documented memory guard. The pilot uses one
+replicate and the additional `gemv-add64`, `gemv-add256`, `unpacked`,
+`unpacked-gemv-add64` and `unpacked-gemv-add256` arms. Existing production
+tuning excludes GEMV; bounded per-class selection remains the integration step.
+
+### GPU localization of the accepted candidate
+
+Qualified Systems pairs at the same source use 100/100 counts, default Torch
+compilation and validated explicit CUDA Graphs. The 135M arm retains packing;
+1.7B uses unpacked weights. Both use 128 residual-add threads. Native grouped
+GPU intervals are 1.389 ms/token on 135M, versus 1.877 in the preceding 32-thread
+sustained capture, and 12.163 ms/token on 1.7B. Host step spans are 1.071 and
+2.545 ms, with total host samples 2.652 and 15.042 ms. Those are instrumented
+elapsed intervals, not the unprofiled estimates above or additive CPU/GPU cost.
+Native prefill GPU intervals remain 10.695/53.063 ms; the candidate affects
+token GEMV, not prefill matmul.
+
+Torch's 135M token kernel sum is 1.636 ms and its first-kernel-start to
+last-kernel-end span is 1.673 ms, on one stream with no measured memcpy/memset.
+Its host sample is 1.922 ms. This localizes an important remaining native host
+cost; it does not establish an unprofiled end-to-end win. The report script now
+distinguishes observed GPU span from summed event durations and refuses a
+sample with no GPU events. Neither subtraction yields removable barrier cost.
+
+On 1.7B, Torch's token kernel sum/span is 11.499/11.506 ms and host sample
+11.723 ms. Its prefill kernel span is 28.904 ms. The improved native token path
+is close in observed GPU time but still pays host command recording; prefill
+retains a much larger GPU gap. Both statements concern strict f32, not the
+accelerated-precision engines. A reusable-command path needs a real lifetime
+and invalidation contract: Blade currently records one-time-submit Vulkan
+command buffers, which must not simply be resubmitted.
+
+The short 135M Graphics candidate follows the SDK-triggered recipe with
+`MEGANEURA_GEMV_ADD_THREADS=128`. Complete prefill/token records match its
+ordinary control; there is no reported hardware-event overflow. Three token
+GPU intervals are 1.64–1.66 ms, versus 2.12–2.14 in the labelled 32-thread
+capture. The residual-add pipeline still uses 18 registers/thread; shared
+memory rises 512→2048 bytes and reported maximum resident warps 24→48.
+Its PC-sample share falls 47.52→25.78%; RMSNorm-fused GEMV now has 57.90% and
+BT 15.74%. The latter two implementations are unchanged.
+
+Whole-trace peak-normalized active-compute warp occupancy rises 29.22→38.03%,
+DRAM throughput 33.97→42.71%, and SM throughput 6.53→8.46%. Workgroup-barrier
+occupancy also rises 3.89→6.29% while the GPU work gets faster. These are warp
+state/throughput observations, **not wall-time percentages or Vulkan barrier
+overpayment**. They support a latency-hiding explanation without uniquely
+identifying a hardware bottleneck. Keep the verified early pipeline CSV fields;
+the later ambiguous headers remain unsuitable for attribution.
+
+Local records: `gemv-add-width-20260910-{pilot,confirm}`,
+`nsys-gemv-add128-{135m,1.7b}-20260910` and `ngfx-token-add128-20260910` under
+`/x/Code/inferena-results`. These are separate from collection/paper data.
+
 ## Qualified Graphics source correlation — September 10
 
 The short resident-model captures now have complete runner output, matching

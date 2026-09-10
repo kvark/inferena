@@ -482,6 +482,9 @@ The experimental memory branch also accepts `--minimum-available-mib 2048
 --memory-log <new.csv>` on `limited.py`: it samples global available RAM and
 cgroup use every half second, and terminates its own process group if the
 global floor is crossed. This supplements, not replaces, the cgroup limit.
+Its termination path was exercised with an owned 128 MiB dummy allocation in
+a 256 MiB scope: the deliberately high floor stopped both parent and child,
+leaving over 9 GiB available. This was not a driver-pressure or GPU test.
 
 For a resident-only SmolLM2 investigation on this branch, install the optional
 `requirements-memory.txt` into the experiment environment, then add
@@ -526,7 +529,10 @@ For low-memory, offline analysis, run
 `python scripts/nsys_report.py <capture-dir>/pytorch.sqlite` (or
 `meganeura.sqlite`). It restricts analysis to complete measured samples,
 reports host spans and ranks CUDA kernels with launch counts/register/shared
-memory metadata. Vulkan rows remain grouped submissions. This is a diagnostic
+memory metadata. It distinguishes summed GPU events from the first observed
+start to last end per call; the latter includes inter-event gaps. CUDA spans
+cover kernels, not memcpy/memset events. Neither is a removable barrier cost.
+Vulkan rows remain grouped submissions. This is a diagnostic
 summary, not a replacement for `capture.json` qualification. See
 [current findings and their limits](ANALYSIS.md).
 Add `--launches` for CUDA graph-node rankings with grid/block geometry; without

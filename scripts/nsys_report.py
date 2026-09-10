@@ -61,10 +61,14 @@ def report(database, top, launches=False, setup=False):
             table = {"pytorch": "CUPTI_ACTIVITY_KIND_KERNEL", "meganeura": "VULKAN_WORKLOAD"}[engine]
             events = db.execute(f"SELECT start, end FROM {table} WHERE end>? AND start<?",
                                 (start, end)).fetchall()
-            if not events or any(not any(a <= x < y <= b for a, b in samples) for x, y in events):
+            per_call = [[(x, y) for x, y in events if a <= x < y <= b] for a, b in samples]
+            if any(not part for part in per_call) or sum(map(len, per_call)) != len(events):
                 raise ValueError(f"{name}: GPU events missing or outside complete samples")
             print(f"  {len(events) / count:g} GPU intervals/call; summed duration "
                   f"{sum(b-a for a,b in events) / count / 1e6:.3f} ms/call")
+            spans = [max(b for _, b in part) - min(a for a, _ in part) for part in per_call]
+            print(f"  First observed GPU start to last end: {sum(spans) / count / 1e6:.3f} ms/call")
+            print("  This span includes inter-event gaps, not host time before/after GPU work.")
             if engine == "meganeura":
                 print("  Vulkan intervals are grouped submissions, not individual shaders.")
                 continue
@@ -73,6 +77,7 @@ def report(database, top, launches=False, setup=False):
                 (start, end),
             ).fetchone()[0]
             print(f"  CUDA graph-node events: {graph_nodes}/{len(events)}")
+            print("  CUDA spans cover kernel events only; memcpy/memset events are not included.")
             if launches and graph_nodes != len(events):
                 raise ValueError("launch-level reporting requires captured CUDA graph nodes")
             print("  ms/call   launches/call   registers/thread   shared bytes/block   kernel")

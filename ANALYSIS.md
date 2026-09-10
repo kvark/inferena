@@ -1,8 +1,10 @@
-# Native gap analysis — September 9
+# Native gap analysis — September 9–10
 
 The evidence separates inefficient resident kernels from weight-representation
 and memory-placement costs. It does **not** establish a removable barrier-cost percentage.
-No new speed samples were collected during the post-OOM offline analysis.
+September 9's post-OOM work was offline. September 10 resumed bounded captures
+after the author's cache reclaim restored host-memory headroom. Diagnostic
+and unprofiled performance runs remain separate from the collection tag.
 
 ## Qualified Systems evidence
 
@@ -140,7 +142,58 @@ Only after placement is controlled should resident matmul/GEMV tile, coalescing,
 occupancy and barrier comparisons be interpreted as kernel scaling. Keep any
 fallback result separately labelled; do not silently exclude it or reduce f32 weights.
 
-## Graphics pilot and incident disposition
+## Qualified Graphics source correlation — September 10
+
+The short resident-model captures now have complete runner output, matching
+ordinary-control hashes/numerics, shader/pipeline source correlation and **no
+hardware-event overflow**. Keep `--time-every-action` off and the production
+grouped schedule. The source-only Inferena tag
+`experiment/native-graphics-2026-09-10` pins Meganeura `8ec9f2a` and Blade
+`cccf47a`; these add CPU compilation spans to the collection runtime, not new
+kernels. `INFERENA_SHARED_CAPTURE_GPU=1` keeps one explicitly owned context
+across phases for diagnostic capture only. Default execution is unchanged.
+
+The 135M prefill trace covers three steps in 41.11 ms and contains one complete
+GPU-projected measurement range. In that range, peak-normalized SM throughput
+is 19.40%, active-warp occupancy 11.75%, barrier-stalled warp occupancy 0.82%,
+and incoming PCIe traffic 0.031%. None is a wall-time barrier-cost fraction.
+MatMul, MatMul+Add, horizontal MatMul and MatMulBT account for about 86% of
+whole-trace shader PC samples; flash attention accounts for about 11%.
+The 64-tile scalar matmul uses 91 registers/thread and 16,768 shared bytes.
+Source correlation places many samples on shared-B loads in the inner loop.
+This motivates layout/occupancy experiments, not an automatic barrier diagnosis.
+
+The labelled ResNet training capture exits successfully, covers three steps
+in 127.54 ms and contains a complete `meganeura/training/sample` GPU range of
+42.09 ms. Whole-trace PC samples group as follows:
+
+| Scalar convolution family, both tiles | Shader PC sample share |
+|---|---:|
+| Input gradient | 33.08% |
+| Weight gradient | 38.52% |
+| Forward | 21.69% |
+
+These are **sample shares, not shares of wall time**. Whole-trace SM throughput
+is 32.37% of peak. The instruction mix includes 22.28% shared stores, 13.00%
+FP32 FMA and 11.34% integer FMA. This is evidence to investigate staging and
+index calculation; counters alone do not prove which transformation will help.
+An immutable-parameter specialization ablation is retained separately, with
+the same arithmetic, buffers and schedule. The existing full f64 convolution
+oracles pass; whole-model timing and native-tool follow-up are separate gates.
+
+For this tool version, the pipeline CSV's early sample/register/shared-memory
+columns agree with the UI, but some later headers do not align with their data.
+Do not consume ambiguous stall columns. Use the source export and verified UI
+metrics. [GPU Trace](https://docs.nvidia.com/nsight-graphics/UserGuide/gpu-trace-ui.html),
+[shader profiler semantics](https://docs.nvidia.com/nsight-graphics/UserGuide/shader-profiler.html).
+
+The shared-context Systems control also matches the original per-session
+context's complete outputs and gradient norms. Its training host sample is
+46.585 ms: host `step` 4.308 ms, `wait` 41.922 ms, grouped GPU work 41.539 ms.
+Those nested/overlapping intervals must not be added or subtracted to invent
+a CPU-utilization or barrier-overpayment metric.
+
+## Earlier Graphics pilot and incident disposition
 
 Graphics 2026.3.1.0 counter access now works. The 135M run at Inferena `f51431a`
 completed both phases, with full prefill output hash and loss matching its
@@ -161,19 +214,12 @@ Neither is qualified evidence. No reboot occurred after the 05:51 boot.
 Use [bounded capture instructions](EXPERIMENT.md#nvidia-paper-analysis-captures);
 do not rerun that detached recipe or grow buffers blindly.
 
-Next capture: a short, bounded resident-model window without event loss, shader
-source/pipeline correlation, and matching PyTorch compiler mode. Then inspect
-the expensive kernel's instruction/load/stall mix. A current barrier-overpayment
-estimate still requires a legal schedule A/B with unchanged kernels and full
-validation; warp-barrier stalls are not Vulkan resource-barrier cost.
-
-[Meganeura PR #165](https://github.com/kvark/meganeura/pull/165) prepares this:
-existing structured pipeline keys become native-tool names, and default-off
-`MEGANEURA_GPU_CAPTURE` enables Blade's shader debug information/command labels
-independently of pass timestamps and dispatch grouping. All CI jobs passed;
-hardware source/name correlation is still unqualified, so the PR remains draft.
-It is **not** in Inferena's `43b606ff` collection pin. Qualify a separately recorded
-diagnostic revision before using the flag; existing measurement tags stay unchanged.
+The source/name support is now in the collection runtime: default-off
+`MEGANEURA_GPU_CAPTURE` enables shader debug information/command labels
+independently of pass timestamps and dispatch grouping. The qualified short
+captures above supersede the pilot's missing correlation. A causal removable
+barrier-cost estimate still requires a legal schedule A/B with unchanged kernels
+and full validation; warp-barrier stalls are not Vulkan resource-barrier cost.
 
 Local evidence stays outside Git: `/mnt/data/inferena-native-analysis.nC5jZj/`
 (`resnet-nsys-final`, `smollm-1.7b-nsys`),
@@ -181,3 +227,7 @@ Local evidence stays outside Git: `/mnt/data/inferena-native-analysis.nC5jZj/`
 `/mnt/data/inferena-ngfx-markers.bx2oTf/`. Failed Graphics attempts are retained
 separately at `inferena-ngfx-large.WKyJMP` and `inferena-ngfx-attached.dvS9uD`.
 Git retains the source/recipe and this conclusion, not trace binaries or raw arrays.
+September 10 records live outside Git under `/x/Code/inferena-results`, in
+`ngfx-short-20260910.m4RoCh`, `ngfx-resnet-training-labelled-20260910.AwJMn3`
+and `nsys-native-shared-20260910.Qi2pXf`. Compiler and tuning study scripts/tags
+likewise retain procedures, not binaries/caches/raw arrays.

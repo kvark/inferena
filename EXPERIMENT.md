@@ -535,11 +535,9 @@ Trace** (compute workload, no swapchain): working directory `frameworks/meganeur
 executable `<checkout>/target/release/inferena-meganeura` (absolute path), argument the model name. Set
 `INFERENA_STRICT`, `INFERENA_INFERENCE_ONLY`, warmup/sample counts and device
 selection exactly as in `capture.json`; do not enable `MEGANEURA_GPU_TIMING`.
-Native source/name correlation is being prepared in
-[Meganeura PR #165](https://github.com/kvark/meganeura/pull/165), with a separate
-`MEGANEURA_GPU_CAPTURE` switch and descriptive pipeline keys. This is not yet in
-the pinned collection revision: setting that variable on the old runner does
-not enable capture support. Record and qualify any diagnostic revision separately.
+Set `MEGANEURA_GPU_CAPTURE=1` for native source/name correlation and descriptive
+pipeline keys. This support is now in the collection runtime; record and qualify
+the diagnostic configuration separately. It does not enable pass timestamps.
 For this direct executable launch, set `INFERENA_NSYS=1` to enable host NVTX
 markers. Choose **Submit Count** or **Elapsed Time** as the start condition and
 **Max Submits** or **None** as the limit; there are no present/frame boundaries.
@@ -563,9 +561,12 @@ of this workflow. The earlier counter-denied attempts produced no metrics.
 kernel's global OOM killer killed the runner. There was no subsequent reboot.
 The failed run has no complete runner JSON and is excluded. Later offline
 viewing hit a 900 MiB cgroup limit and terminated only that analysis job.
-New GPU captures are on hold while host-memory headroom remains low.
+After the author's recommended shrinker invocation, reported available RAM
+recovered to roughly 9 GiB; a fresh privileged pool count is unavailable.
+September 10 short captures have healthy headroom and no hardware-event overflow; this does
+not make the rejected large-capture recipe safe on 16 GiB.
 
-For the next bounded Graphics qualification, start with resident 135M and a
+For bounded Graphics qualification, start with resident 135M and a
 short window (about 100 ms), unaltered clocks and screenshots disabled. Set
 sampling bandwidth **at launch**, not at a later attach. Inspect the actual
 `GPU PMA Buffer Size` in the launch log: a 256 bandwidth request still allocated
@@ -576,11 +577,23 @@ or lower sampling density before increasing any buffer budget.
 
 Build the clean, recorded source first. On this Linux CLI, use
 `QT_QPA_PLATFORM=offscreen` and omit `--platform`, which Qt misinterprets.
-Keep `--time-every-action` off. With five warmups, start-after-submits 5 and
-limit-to-submits 4 captured two complete prefill measurement markers on 135M;
-verify the markers rather than assuming counts transfer between workloads.
-Context destruction between phases can end collection before the token phase.
-`--keep-going` requests more traces; it does not guarantee runner completion.
+Keep `--time-every-action` off. The qualified short source tag is
+`experiment/native-graphics-2026-09-10`. Use five warmups, three samples,
+`--pm-bandwidth-limit 64 --allocated-hes-buffer-memory-kb 8000`,
+`--real-time-shader-profiler --pc-samples-per-pm-interval-per-sm 2048`,
+`--set-gpu-clocks unaltered --collect-screenshot 0 --auto-export`.
+For 135M prefill, `--start-after-submits 5 --limit-to-submits 3
+--max-duration-ms 100` allocated 400 MB PMA. For ResNet training, use
+`INFERENA_SHARED_CAPTURE_GPU=1` with `--start-after-submits 25
+--limit-to-submits 3 --max-duration-ms 200`; actual PMA was 800 MB.
+Both use a 6 GiB, no-swap, 300-second whole-tree cap. Counts are specific to
+this source and configuration: inspect phase-labelled NVTX ranges rather than
+assuming the same counts transfer. Each retained window has three steps and
+one explicitly complete measurement range. Shared context ownership is
+diagnostic-only and requires `INFERENA_NSYS=1`; the ordinary runner still uses
+per-session contexts. Do not mix its preparation time into the collection.
+Omit `--keep-going`: it requests another trace and can fail when the context
+is destroyed after the first completed one. It does not guarantee runner completion.
 Retain complete runner stdout separately and verify hashes/numerics against an
 ordinary control. Reject hardware-event overflow for per-dispatch attribution;
 the first 135M trace passed output checks but reported this overflow.

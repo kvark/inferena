@@ -178,6 +178,7 @@ fn name_seed(name: &str) -> f32 {
 /// standard transformer init (GPT-2/LLaMA convention) and produces
 /// realistic activation magnitudes through deep networks.
 fn init_params(session: &mut meganeura::Session) {
+    let _span = tracing::info_span!("parameter_initialization").entered();
     for (name, buf_ref) in session.plan().param_buffers.clone() {
         let n = session.plan().buffers[buf_ref.0 as usize] / 4;
         let seed = name_seed(&name);
@@ -193,6 +194,8 @@ fn load_weights(
     model: &SafeTensorsModel,
     transposed_set: &std::collections::HashSet<&str>,
 ) {
+    let _span = tracing::info_span!("parameter_preparation").entered();
+    let _range = nsys_range("meganeura/parameter_preparation");
     for (name, _) in session.plan().param_buffers.clone() {
         // Skip derived (fused) params — auto-populated when source params are loaded.
         if !model.tensor_info().contains_key(&name) && name != "lm_head.weight" {
@@ -563,7 +566,10 @@ fn bench_smollm2(model_name: &str) {
 
     // --- Load weights ---
     eprintln!("[meganeura] loading from {}", path.display());
-    let model = SafeTensorsModel::load(path).expect("local model load failed");
+    let model = {
+        let _span = tracing::info_span!("checkpoint_file_load").entered();
+        SafeTensorsModel::load(path).expect("local model load failed")
+    };
 
     // --- Build & compile ---
     eprintln!("[meganeura] building graph...");

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import time
 
 from p3hpc import ROOT, SUPPORTED_MODELS, input_hashes, select_native_device
 from study_results import compare
@@ -21,11 +22,13 @@ def main():
     parser.add_argument("--replicates", type=int, default=3)
     parser.add_argument("--precision", choices=("strict", "accelerated"), default="strict")
     parser.add_argument("--variants", nargs="+",
-                        choices=("untuned", "default", "expanded", *specializations),
+                        choices=("untuned", "default", "expanded", "device-params", *specializations),
                         default=["untuned", "default", "expanded"])
     parser.add_argument("--expanded-scratch-mib", type=int, default=64)
     parser.add_argument("--fresh-driver-cache", action="store_true",
                         help="use a new private driver disk cache for each process")
+    parser.add_argument("--trace-setup", action="store_true",
+                        help="separate CPU compilation and parameter-preparation spans (diagnostic)")
     args = parser.parse_args()
     if args.replicates < 1 or subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT).strip():
         parser.error("positive replicate count and committed source required")
@@ -64,7 +67,10 @@ def main():
                                 "INFERENA_REQUIRE_LOCAL_WEIGHTS": "1", "MEGANEURA_DEVICE_ID": str(device["device_id"]),
                                 "MEGANEURA_TUNE": str(int(variant in ("default", "expanded"))),
                                 "MEGANEURA_SPECIALIZE_CONV": specializations.get(variant, "0"),
+                                "MEGANEURA_DEVICE_PARAMETERS": str(int(variant == "device-params")),
                                 "RUST_LOG": "warn,meganeura::runtime::tuning=info"})
+                    if args.trace_setup:
+                        env["INFERENA_COMPILE_TRACE"] = str(destination / "compilation.jsonl")
                     if args.fresh_driver_cache:
                         cache = destination / "driver-cache"
                         cache.mkdir()
@@ -76,8 +82,10 @@ def main():
                     print(f"r{replicate + 1} {model} {variant}", flush=True)
                     row = {"model": model, "variant": variant, "destination": str(destination), "status": "incomplete"}
                     manifest["runs"].append(row)
+                    start = time.monotonic()
                     with (destination / "runner.json").open("x") as output, (destination / "runner.log").open("x") as log:
                         subprocess.run([runner, model], cwd=ROOT, env=env, stdout=output, stderr=log, check=True)
+                    row["process_elapsed_s"] = time.monotonic() - start
                     results[variant] = json.loads((destination / "runner.json").read_text())
                     row["status"] = "complete"
                 for variant, result in results.items():

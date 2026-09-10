@@ -187,6 +187,14 @@ Do not consume ambiguous stall columns. Use the source export and verified UI
 metrics. [GPU Trace](https://docs.nvidia.com/nsight-graphics/UserGuide/gpu-trace-ui.html),
 [shader profiler semantics](https://docs.nvidia.com/nsight-graphics/UserGuide/shader-profiler.html).
 
+The source-only Inferena/Blade `experiment/native-ir-2026-09-10` tags probe
+`VK_KHR_pipeline_executable_properties` with the required internal-representation
+capture flag. This driver advertises the feature but returns zero representations
+for the tested f32 GEMM; both ordinary/tiny full-f64 output checks pass. It does
+not supply native assembly through that query. The public Graphics source view
+offers WGSL/SPIR-V correlation here, not SASS; avoid pretending the sampled mix
+is disassembly or executed-instruction counts.
+
 The shared-context Systems control also matches the original per-session
 context's complete outputs and gradient norms. Its training host sample is
 46.585 ms: host `step` 4.308 ms, `wait` 41.922 ms, grouped GPU work 41.539 ms.

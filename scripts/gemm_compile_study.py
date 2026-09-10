@@ -15,6 +15,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--replicates", type=int, default=3)
+    parser.add_argument("--warm-compiler", action="store_true",
+                        help="compile/load the opposite tile first; record its cost separately")
     args = parser.parse_args()
     if args.replicates < 1 or subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT).strip():
         parser.error("positive repetitions and committed source required")
@@ -25,7 +27,8 @@ def main():
     device = select_native_device(json.loads(subprocess.check_output(
         [str(ROOT / "target/release/inferena-meganeura"), "--list-devices"], text=True)), None)
     manifest = {"source": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
-                "device": device, "runs": [], "status": "incomplete"}
+                "device": device, "warm_compiler": args.warm_compiler,
+                "runs": [], "status": "incomplete"}
     try:
         for replicate in range(args.replicates):
             for k in (576, 1536):
@@ -42,6 +45,8 @@ def main():
                             env.update(MEGANEURA_DEVICE_ID=str(device["device_id"]), NVIDIA_TF32_OVERRIDE="0",
                                        __GL_SHADER_DISK_CACHE="1", __GL_SHADER_DISK_CACHE_PATH=str(cache),
                                        TRITON_CACHE_DIR=str(cache / "triton"), CUDA_CACHE_PATH=str(cache / "cuda"))
+                            if args.warm_compiler:
+                                env["INFERENA_GEMM_WARM_COMPILER"] = "1"
                             output = base / f"{engine}-{state}.json"
                             if engine == "meganeura":
                                 env["INFERENA_COMPILE_TRACE"] = str(base / f"{engine}-{state}.jsonl")

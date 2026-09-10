@@ -44,23 +44,34 @@ fn main() {
     let context_start = Instant::now();
     let context = meganeura::init_gpu_context_with(meganeura::GpuOptions::from_env()).unwrap();
     let context_ns = context_start.elapsed().as_nanos();
-    let prepare = Instant::now();
-    let module = if tile == 32 {
-        codegen::generate_module_small(ShaderGroup::MatMul)
-    } else {
-        codegen::generate_module(ShaderGroup::MatMul)
+    let compile = |tile, role| {
+        let _span = tracing::info_span!("gemm_candidate", tile, role).entered();
+        let prepare = Instant::now();
+        let module = if tile == 32 {
+            codegen::generate_module_small(ShaderGroup::MatMul)
+        } else {
+            codegen::generate_module(ShaderGroup::MatMul)
+        };
+        let source_bytes = module.source.len();
+        let shader = context.create_shader(gpu::ShaderDesc {
+            source: &module.source,
+            naga_module: Some(module.module),
+        });
+        let pipeline = context.create_compute_pipeline(gpu::ComputePipelineDesc {
+            name: "matched-f32-gemm",
+            data_layouts: &[&MatmulData::layout()],
+            compute: shader.at("main"),
+        });
+        (pipeline, source_bytes, prepare.elapsed().as_nanos())
     };
-    let source_bytes = module.source.len();
-    let shader = context.create_shader(gpu::ShaderDesc {
-        source: &module.source,
-        naga_module: Some(module.module),
-    });
-    let mut pipeline = context.create_compute_pipeline(gpu::ComputePipelineDesc {
-        name: "matched-f32-gemm",
-        data_layouts: &[&MatmulData::layout()],
-        compute: shader.at("main"),
-    });
-    let prepare_ns = prepare.elapsed().as_nanos();
+    let warmup_ns = if std::env::var("INFERENA_GEMM_WARM_COMPILER").as_deref() == Ok("1") {
+        let (mut warmup, _, elapsed) = compile(96 - tile, "warmup");
+        context.destroy_compute_pipeline(&mut warmup);
+        Some(elapsed)
+    } else {
+        None
+    };
+    let (mut pipeline, source_bytes, prepare_ns) = compile(tile, "measured");
     let buffers = sizes.map(|size| {
         context.create_buffer(gpu::BufferDesc {
             name: "gemm-input-or-output",
@@ -135,7 +146,7 @@ fn main() {
         serde_json::json!({
             "engine": "meganeura", "shape": [m, n, k], "tile": tile,
             "gpu": context.device_information().device_name, "source_bytes": source_bytes,
-            "context_ns": context_ns, "prepare_ns": prepare_ns,
+            "context_ns": context_ns, "warmup_ns": warmup_ns, "prepare_ns": prepare_ns,
             "dimensions": "runtime uniforms", "validation": validation,
         })
     );

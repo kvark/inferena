@@ -3,6 +3,7 @@
 
 from dataclasses import asdict
 import json
+import os
 import platform
 import sys
 import time
@@ -69,6 +70,18 @@ def main():
     knobs.compilation.listener = compiled
     knobs.runtime.kernel_load_start_hook.add(load_start)
     knobs.runtime.kernel_load_end_hook.add(load_end)
+    warmup = None
+    if os.environ.get("INFERENA_GEMM_WARM_COMPILER") == "1":
+        warmup_start = time.perf_counter_ns()
+        warmup_tile = 96 - tile
+        warmup_kernel = gemm.warmup(a, b, c, m, n, k, TILE=warmup_tile,
+                                   grid=(triton.cdiv(n, warmup_tile), triton.cdiv(m, warmup_tile)),
+                                   num_warps=8, num_stages=1)
+        warmup_kernel._init_handles()
+        assert not starts and len(records) == 1
+        warmup = {"prepare_ns": time.perf_counter_ns() - warmup_start,
+                  "compilations": records[:], "loads": loads[:]}
+        records.clear(); loads.clear()
     grid = (triton.cdiv(n, tile), triton.cdiv(m, tile))
     prepare = time.perf_counter_ns()
     kernel = gemm.warmup(a, b, c, m, n, k, TILE=tile, grid=grid, num_warps=8, num_stages=1)
@@ -91,7 +104,8 @@ def main():
     print(json.dumps({"engine": "triton", "shape": [m, n, k], "tile": tile,
                       "gpu": torch.cuda.get_device_name(), "torch": torch.__version__,
                       "torch_source": torch.version.git_version, "triton": triton.__version__,
-                      "context_ns": context_ns, "prepare_ns": prepare_ns, "compile_ns": compiled_ns,
+                      "context_ns": context_ns, "warmup": warmup,
+                      "prepare_ns": prepare_ns, "compile_ns": compiled_ns,
                       "launcher_and_load_ns": prepare_ns - compiled_ns,
                       "dimensions": "runtime, no value/alignment specialization",
                       "compilations": records, "loads": loads, "validation": validation}, default=str))

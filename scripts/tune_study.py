@@ -15,6 +15,7 @@ from study_results import compare
 def main():
     specializations = {"fixed-params": "1", "fixed-native-div": "native-div",
                        "fixed-k32": "k32", "fixed-native-div-k32": "native-div-k32"}
+    parameter_memory = {"device-params": "1", "device-params-buddy": "device-buddy"}
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--models", nargs="+", choices=SUPPORTED_MODELS,
@@ -22,7 +23,8 @@ def main():
     parser.add_argument("--replicates", type=int, default=3)
     parser.add_argument("--precision", choices=("strict", "accelerated"), default="strict")
     parser.add_argument("--variants", nargs="+",
-                        choices=("untuned", "default", "expanded", "device-params", *specializations),
+                        choices=("untuned", "default", "expanded", "shared-freelist",
+                                 *parameter_memory, *specializations),
                         default=["untuned", "default", "expanded"])
     parser.add_argument("--expanded-scratch-mib", type=int, default=64)
     parser.add_argument("--fresh-driver-cache", action="store_true",
@@ -70,7 +72,8 @@ def main():
                                 "INFERENA_STREAM_WEIGHTS": str(int(args.stream_weights)),
                                 "MEGANEURA_TUNE": str(int(variant in ("default", "expanded"))),
                                 "MEGANEURA_SPECIALIZE_CONV": specializations.get(variant, "0"),
-                                "MEGANEURA_DEVICE_PARAMETERS": str(int(variant == "device-params")),
+                                "MEGANEURA_DEVICE_PARAMETERS": parameter_memory.get(variant, "0"),
+                                "BLADE_SHARED_TRANSIENT": str(int(variant == "shared-freelist")),
                                 "RUST_LOG": "warn,meganeura::runtime::tuning=info"})
                     if args.trace_setup:
                         env["INFERENA_COMPILE_TRACE"] = str(destination / "compilation.jsonl")

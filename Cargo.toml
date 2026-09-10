@@ -20,11 +20,11 @@ luminal_nn = { git = "https://github.com/luminal-ai/luminal", rev = "324d6017238
 luminal_cuda_lite = { git = "https://github.com/luminal-ai/luminal", rev = "324d60172381c2a014e40cac602ca8ee377a3f32" }
 luminal_metal = { git = "https://github.com/luminal-ai/luminal", rev = "324d60172381c2a014e40cac602ca8ee377a3f32" }
 inferi = { git = "https://github.com/dimforge/inferi" }
-meganeura = { git = "https://github.com/kvark/meganeura", rev = "4e9c4e8ff8997e54db982fd988b5f5d14a6007db", features = ["hub"] }
+meganeura = { git = "https://github.com/kvark/meganeura", rev = "2e7137186b2f0c27bd9acf48aeb38bd6f2a9b692", features = ["hub"] }
 
 # Shared dependencies.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [patch.crates-io]
-blade-graphics = { git = "https://github.com/kvark/blade", rev = "cccf47ae3fc0e03919bc5701b84b5c086d14cbd8" }
+blade-graphics = { git = "https://github.com/kvark/blade", rev = "ae46130bf29f9e2298b48605691cc5021d7b6108" }

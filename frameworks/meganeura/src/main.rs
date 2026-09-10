@@ -992,7 +992,7 @@ fn emit_result(
         "optimizer": {
             "mode": std::env::var("MEGANEURA_OPTIMIZER").unwrap_or_else(|_| "greedy".to_string()),
             "extraction_cost": std::env::var("MEGANEURA_EGRAPH_COST").unwrap_or_else(|_| "tensor-traffic".to_string()),
-            "measured_kernel_search": session_config().tune,
+            "measured_kernel_search": meganeura::config::TUNE.bool_or(false),
         },
         "timings": {
             "compile_s": (compile_s * 1000.0).round() / 1000.0,
@@ -1516,6 +1516,25 @@ fn main() {
     env_logger::init();
 
     let model_name = std::env::args().nth(1).unwrap_or("SmolLM2-135M".into());
+    if model_name == "--list-devices" {
+        let devices: Vec<_> = blade_graphics::Context::enumerate()
+            .expect("native device enumeration failed")
+            .into_iter()
+            .map(|report| {
+                serde_json::json!({
+                    "device_id": report.device_id,
+                    "name": report.information.device_name,
+                    "driver_name": report.information.driver_name,
+                    "driver_info": report.information.driver_info,
+                    "software_emulated": report.information.is_software_emulated,
+                    "available": matches!(report.status, blade_graphics::DeviceReportStatus::Available { .. }),
+                    "status": format!("{:?}", report.status),
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string(&devices).unwrap());
+        return;
+    }
     let all_models = [
         "SmolLM2-135M",
         "SmolLM2-360M",

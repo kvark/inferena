@@ -83,7 +83,7 @@ for d in site.getsitepackages():
 fi
 
 # --- Prefer discrete NVIDIA GPU over integrated GPU for Vulkan ---
-if [ -z "${VK_ICD_FILENAMES:-}" ] && [[ "${INFERENA_TORCH_BACKEND:-cuda}" == cuda ]]; then
+if [ -z "${MEGANEURA_DEVICE_ID:-}" ] && [ -z "${VK_ICD_FILENAMES:-}" ] && [[ "${INFERENA_TORCH_BACKEND:-cuda}" == cuda ]]; then
     NVIDIA_ICD=$(find /usr/share/vulkan/icd.d /etc/vulkan/icd.d -name '*nvidia*' 2>/dev/null | head -1 || true)
     if [ -n "$NVIDIA_ICD" ]; then
         export VK_ICD_FILENAMES="$NVIDIA_ICD"

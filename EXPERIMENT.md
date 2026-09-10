@@ -3,7 +3,7 @@
 Source branch: `experiment/p3hpc-cuda-graphs`, based on Inferena main.
 The submitted source remains tagged `paper-arxiv-1`. Git records both bases;
 do not copy binaries or experimental raw records into this branch or main.
-The Meganeura dependency is pinned to merged main `43b606ff`; it is not a
+The Meganeura dependency is pinned to merged main `e59bd32d` (0.3.0); it is not a
 floating sibling checkout.
 
 ## What was missing
@@ -73,7 +73,8 @@ Run `bash scripts/setup.sh cu130` (NVIDIA), `xpu` (Intel), `rocm7.2`, `cpu`, or
 downloads managed Python **3.13.13** and installs `requirements-p3hpc.txt` in a
 new `.venv-p3hpc`; pass a second argument for a different new directory. No
 existing venv is overwritten. Use `.venv-p3hpc/bin/python` below; on Windows
-use Git Bash and `.venv-p3hpc/Scripts/python.exe`.
+use `scripts/setup.ps1` and `.venv-p3hpc/Scripts/python.exe` from PowerShell,
+or the shell setup from Git Bash.
 Setup also probes the requested backend with a tiny forward/backward workload
 in every reference condition, including CUDA Graph replay. Missing drivers,
 compiler support or failed numerical checks stop setup; it never reports an
@@ -84,7 +85,8 @@ This is an installation check, not model qualification or a timing result.
 The v3 campaign collector requires that Python version, PyTorch 2.13.0 and reported source commit
 `cf30153c4c131c8164ee7798e5022d810682e2cb` on **every** platform. It checks
 both before collection and in every paired result; unknown/different commits
-fail closed. `--torch-version` still declares the exact platform wheel suffix.
+fail closed. The exact installed platform wheel suffix is detected and recorded;
+optional `--torch-version` additionally asserts a particular build.
 The campaign and PyTorch records retain the commit and `torch.__config__.show()`.
 This fixes the earlier release-only check; old v1 campaigns did not enforce a
 common source commit; v2 did not pin Python. Neither may be relabelled retroactively.
@@ -95,8 +97,10 @@ Metal and CPU builds necessarily differ. A vendor fork requiring another
 commit/release needs its own labelled source ref and availability cohort,
 not an override inside this controlled cohort. Do not upgrade during collection.
 
-For SmolLM2, run `python scripts/prepare_models.py SmolLM2-135M SmolLM2-360M SmolLM2-1.7B`
-with this environment (or select only the sizes you need). All are **base**
+The collector downloads missing selected SmolLM2 checkpoints before running;
+`--offline` instead requires them to exist already. To prepare another machine
+ahead of time, use `python scripts/prepare_models.py SmolLM2-135M` (or select the
+larger sizes). All are **base**
 checkpoints, pinned in `models/smollm2-revisions.json`. This writes ignored
 weights/configs and a source/hash receipt; it refuses to replace an existing
 model directory. Both engines read those files, including the actual 1.7B
@@ -111,25 +115,38 @@ source revision, and a **new directory outside the checkout**:
 # A correctness check, not a benchmark.
 .venv-p3hpc/bin/python -m unittest discover -s frameworks/pytorch -p test_execution.py -v
 
-# Short paired qualification. No publication performance samples.
-.venv-p3hpc/bin/python scripts/p3hpc.py --backend cuda --gpu 'RTX 5070' \
-  --torch-version 2.13.0+cu130 --models ResNet-50 --precisions strict \
-  --results-dir /mnt/data/p3hpc-resnet-qualification
+# Optional short paired qualification. No publication performance samples.
+.venv-p3hpc/bin/python scripts/p3hpc.py --qualify-only \
+  --models ResNet-50 --precisions strict
 
 # All five models, both precision classes; qualify ALL pairs, then measure.
-.venv-p3hpc/bin/python scripts/p3hpc.py --backend cuda --gpu 'RTX 5070' \
-  --torch-version 2.13.0+cu130 --collect --replicates 3 \
-  --results-dir /mnt/data/p3hpc-nvidia-campaign
+.venv-p3hpc/bin/python scripts/p3hpc.py
 ```
+
+After environment activation the last command is `python scripts/p3hpc.py`, with
+no required arguments. Defaults are the five common models, both precision
+classes, three measurement replicates, and a new
+`../inferena-results/<host>-<UTC>-<source>/` directory outside Git. Backend and
+GPU are detected from the installed reference build. The native device is
+enumerated and selected by device ID; software adapters, ambiguous matches and
+cross-engine name mismatches fail the preflight. `--backend`, `--gpu`, and
+`--results-dir` remain available as explicit assertions/overrides. CPU requires
+an explicit `--backend cpu`; it is never an automatic fallback.
 
 The first stage retains one call per phase for each pair to exercise the full
 runner and validity gates; these are qualification records, not publishable
-timings. `--collect` starts the 5-warmup/20-sample campaign only after every
+timings. Collection (now the default; `--collect` remains accepted) starts the
+5-warmup/20-sample campaign only after every
 selected qualification pair passes. Each pair uses fresh PyTorch and Meganeura
 processes; compiler configurations rotate across replicates and engine order
 alternates. Each configuration gets its own Meganeura control, not an old or
 fastest control reused across unrelated runs. Rust builds finish before the
 first pair and later wrapper checks use the locked dependency resolution.
+Build parallelism defaults to one job to limit preparation RAM. Missing weights
+are prepared once; existing receipts and file hashes must still match exactly.
+Copy the complete printed result directory, including logs and `campaign.json`.
+The manifest must finish with `status: complete`; an interrupted campaign is
+not a complete data point. Use the same clean source revision on every machine.
 
 | Declared reference backend | Collected configurations |
 |---|---|
@@ -159,18 +176,16 @@ Use **native Windows x64**, Git for Windows / Git Bash (not WSL), uv, Rust's
 MSVC toolchain, Visual Studio C++ Build Tools with a Windows SDK, and a current
 NVIDIA driver supporting the CUDA 13.0 wheel. Rust builds require the MSVC
 linker even though Triton's wheel bundles its own minimal CUDA/C toolchain.
-Run from Git Bash; Python is downloaded automatically. Git Bash is located
+Run from PowerShell or Git Bash; Python is downloaded automatically. Git Bash is located
 from Git's installation and propagated to the Rust harness; `INFERENA_BASH`
 can name its `bash.exe` explicitly for a nonstandard installation. Paths with
 spaces are kept as individual arguments; scripts use LF and Python UTF-8 I/O.
 
-```sh
-bash scripts/setup.sh cu130
-.venv-p3hpc/Scripts/python.exe scripts/prepare_models.py SmolLM2-135M SmolLM2-360M
-.venv-p3hpc/Scripts/python.exe scripts/p3hpc.py --backend cuda --gpu 'RTX 3050' \
-  --torch-version 2.13.0+cu130 --models SmolLM2-135M SmolLM2-360M \
-  --inference-only --precisions strict --results-dir ../rtx3050-windows-qualification
-# After qualification, repeat with --collect and a new results directory.
+```powershell
+.\scripts\setup.ps1 cu130
+.\.venv-p3hpc\Scripts\python.exe scripts\p3hpc.py
+# Optional short preflight before the full campaign:
+# .\.venv-p3hpc\Scripts\python.exe scripts\p3hpc.py --qualify-only --models ResNet-50 --precisions strict
 ```
 
 CUDA setup selects `requirements-p3hpc-cu130-windows.txt`, adding exactly
@@ -193,13 +208,13 @@ Record the exact 3050 model, VRAM, driver, Windows version and laptop power mode
 where applicable. Keep 1.7B separate until memory placement/capacity is checked;
 do not silently shrink precision, batch size or sequence length to fit it.
 
-Prepared collection source: `experiment/p3hpc-portability-2026-09-09`
+Historical preparation source: `experiment/p3hpc-portability-2026-09-09`
 (`819b7d2`). On Linux/RTX 5070 it passes all three strict ResNet-50 paired
 qualification cases (forward + latency + backward), the 3 broad Python checks
 and 9 harness tests, and the CPU/CUDA setup probes. The Windows requirements
 resolve for Python 3.13 x64; **Windows and B570 hardware qualification remain
-pending**. Use this source ref on the new machines; the September 8 measurements
-keep their original ref. Untimed qualification evidence is outside Git at
+pending at that ref**. This is not the updated collection pin above; old
+measurements keep their original refs. Untimed qualification evidence is outside Git at
 `/mnt/data/inferena portability.8Hc6y5/resnet qualification`.
 
 ### Intel, including mobile GPUs
@@ -214,25 +229,26 @@ driver for Meganeura as well as the XPU prerequisites.
 
 ```sh
 bash scripts/setup.sh xpu
-.venv-p3hpc/bin/python scripts/p3hpc.py --backend xpu --gpu 'Intel' \
-  --torch-version 2.13.0+xpu --allow-integrated-gpu \
-  --models ResNet-50 --precisions strict --results-dir ../intel-qualification
+.venv-p3hpc/bin/python scripts/p3hpc.py --qualify-only --models ResNet-50 --precisions strict
+.venv-p3hpc/bin/python scripts/p3hpc.py
 ```
 
-Use the actual wheel suffix printed by setup and a specific GPU substring.
 An explicit XPU request performs a numerical matmul/backward probe and fails
 without CPU fallback; requested compilation failures likewise stop collection.
 The harness synchronizes XPU, reports its device/allocator metadata, and selects
 XPU activity for diagnostic PyTorch profiles. Hardware qualification remains
 required: successful wheel resolution or a mocked test is not an Intel result.
-On hybrid machines select the same device using `ONEAPI_DEVICE_SELECTOR` /
-`ZE_AFFINITY_MASK` and Vulkan loader selection (`VK_ICD_FILENAMES` or
-`MESA_VK_DEVICE_SELECT`); both reported names are checked. Record laptop power
+On hybrid machines the collector selects the native match for the reference
+GPU, including trademark spelling differences. If selection is ambiguous,
+restrict visibility with `ONEAPI_DEVICE_SELECTOR` / `ZE_AFFINITY_MASK` and
+Vulkan loader controls (`VK_ICD_FILENAMES` or `MESA_VK_DEVICE_SELECT`);
+both reported names are checked. Record laptop power
 mode, AC power and shared-memory capacity; do not treat memory budget as VRAM.
 For the planned B570 + RTX 5070 machine, use a **separate** `xpu` venv (pass a
-new path to setup), select Intel's Vulkan ICD explicitly, and use
-`--gpu 'Arc B570'`. The backend flag selects PyTorch, not a Vulkan adapter;
-the two reported GPU names must both match. Installing the card alone does
+new path to setup). That environment's reference probe selects XPU and the
+collector selects the matching native adapter; `--gpu 'Arc B570'` can additionally
+assert the model. An Intel-only Vulkan ICD is needed only if ordinary enumeration
+cannot identify one available matching device. Installing the card alone does
 not qualify its driver or compiler. Start with ResNet-50 strict qualification,
 then add accelerated and larger-model cases after those gates pass.
 
@@ -244,9 +260,8 @@ a separately labelled availability experiment, not a relaxed source check.
 ### Matched SmolLM2 scaling
 
 ```sh
-.venv-p3hpc/bin/python scripts/p3hpc.py --backend cuda --gpu 'RTX 5070' \
-  --torch-version 2.13.0+cu130 --models SmolLM2-135M SmolLM2-360M SmolLM2-1.7B \
-  --inference-only --precisions strict --collect --results-dir ../smollm-scaling
+.venv-p3hpc/bin/python scripts/p3hpc.py --models SmolLM2-135M SmolLM2-360M SmolLM2-1.7B \
+  --inference-only --precisions strict
 ```
 
 All sizes use batch 1, 128-token prefill and stateless one-token forward, with

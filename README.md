@@ -167,16 +167,38 @@ once, then let the setup script install Python and the pinned requirements:
 ```bash
 bash scripts/setup.sh cu130                 # new .venv-p3hpc; Python downloaded automatically
 # Other wheel backends: xpu, rocm7.2, cpu; mps uses the macOS PyPI wheel.
-.venv-p3hpc/bin/python scripts/prepare_models.py SmolLM2-135M SmolLM2-360M SmolLM2-1.7B
-.venv-p3hpc/bin/python scripts/p3hpc.py --backend cuda --gpu 'RTX 5070' \
-  --torch-version 2.13.0+cu130 --models SmolLM2-135M SmolLM2-360M SmolLM2-1.7B \
-  --inference-only --precisions strict --collect --results-dir ../smollm-scaling
+.venv-p3hpc/bin/python scripts/p3hpc.py
 ```
 
-On native Windows use Git Bash and `.venv-p3hpc/Scripts/python.exe`. CUDA setup
-also installs the matching Windows Triton compiler; it is not included by the
-PyTorch wheel. Existing environments are never replaced; pass a second argument
-to choose a new path. Setup verifies the common PyTorch source and runs a small
+On native Windows, from PowerShell:
+
+```powershell
+.\scripts\setup.ps1 cu130
+.\.venv-p3hpc\Scripts\python.exe scripts\p3hpc.py
+```
+
+After activating that environment, the collection command on every platform is
+simply **`python scripts/p3hpc.py`**. Run it from a clean checkout of the same
+collection revision on each machine. It prepares missing pinned 135M weights,
+detects the reference backend and matching native GPU, qualifies all five common
+models in both precision classes, then collects three fresh-process replicates
+per condition (5 warmups, 20 samples). No CPU/eager fallback, automatic model
+exclusion or relaxed validation is allowed. The full campaign can take a while;
+compilation caches are private to each reference process.
+
+The printed `../inferena-results/<host>-<UTC>-<source>/` directory contains the
+manifest, records and logs. Keep that whole directory; `campaign.json` must say
+`"status": "complete"` before treating it as a complete cohort. Nothing is
+overwritten or added to Git. Optional `--qualify-only --models ResNet-50
+--precisions strict` provides a short new-device check; it does not collect
+publication timings. Larger SmolLM2 sizes are a separate opt-in
+[scaling campaign](EXPERIMENT.md#matched-smollm2-scaling).
+
+Windows still needs Git for Windows: the Python collector locates Git Bash for
+the underlying runners. CUDA setup also installs the matching Windows Triton
+compiler; it is not included by the PyTorch wheel. Existing environments are
+never replaced; pass a second argument to choose a new path. Setup verifies the
+common PyTorch source and runs a small
 forward/backward probe in each reference mode, including CUDA Graph replay.
 GPU drivers and Rust's platform build tools remain system prerequisites.
 See [Windows collection](EXPERIMENT.md#windows-nvidia) and

@@ -4540,6 +4540,7 @@ dependencies = [
 name = "inferena-meganeura"
 version = "0.1.0"
 dependencies = [
+ "blade-graphics",
  "env_logger",
  "hex",
  "hf-hub",
@@ -5217,8 +5218,8 @@ checksum = "7ebb8d8732c6a6df3d8f032a82911cfc747e00efb95cc46e8d0acd5b5b88570c"
 
 [[package]]
 name = "meganeura"
-version = "0.2.0"
-source = "git+https://github.com/kvark/meganeura?rev=43b606ff45b99d23e7e57b5f120f5fc347039082#43b606ff45b99d23e7e57b5f120f5fc347039082"
+version = "0.3.0"
+source = "git+https://github.com/kvark/meganeura?rev=e59bd32d2aeb200eb00b1a15698a777d7df8db4f#e59bd32d2aeb200eb00b1a15698a777d7df8db4f"
 dependencies = [
  "blade-graphics",
  "blade-macros",

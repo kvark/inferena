@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 meganeura = { workspace = true }
+blade-graphics = "0.9"
 hf-hub = { version = "0.4", default-features = false, features = ["ureq", "native-tls"] }
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 serde = { workspace = true }

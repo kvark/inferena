@@ -14,11 +14,33 @@ import torch
 from execution import capture_phase, profile_phase, synchronize
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-from p3hpc import TORCH_REVISION, TORCH_VERSION, check_torch_identity, runner_bash
+from p3hpc import (MODELS, TORCH_REVISION, TORCH_VERSION, check_torch_identity,
+                  create_parser, gpu_matches, runner_bash, select_native_device)
 
 
 class CampaignTest(unittest.TestCase):
     def test_common_source_with_platform_specific_builds(self):
+        defaults = create_parser().parse_args([])
+        self.assertTrue(defaults.collect)
+        self.assertEqual(defaults.models, list(MODELS))
+        self.assertEqual(defaults.precisions, ["strict", "accelerated"])
+        self.assertEqual(defaults.replicates, 3)
+        self.assertIsNone(defaults.backend)
+        self.assertIsNone(defaults.gpu)
+        self.assertIsNone(defaults.results_dir)
+        self.assertFalse(create_parser().parse_args(["--qualify-only"]).collect)
+        intel = {"name": "Intel Arc B570 Graphics", "device_id": 0xe20c,
+                 "available": True, "software_emulated": False}
+        nvidia = {**intel, "name": "NVIDIA GeForce RTX 5070", "device_id": 0x2f04}
+        software = {**intel, "name": "llvmpipe", "software_emulated": True}
+        self.assertIs(select_native_device([nvidia, intel, software], "Intel(R) Arc(TM) B570 Graphics"), intel)
+        self.assertTrue(gpu_matches("RTX 5070", nvidia["name"]))
+        self.assertFalse(gpu_matches("RTX 5080", nvidia["name"]))
+        for devices, expected in (([nvidia, intel], None), ([nvidia, nvidia], "RTX 5070"),
+                                  ([software], None), ([nvidia], "B570"),
+                                  ([{**intel, "available": False}], "B570")):
+            with self.assertRaises(ValueError):
+                select_native_device(devices, expected)
         pin = next(line for line in (
             Path(__file__).resolve().parents[2] / "requirements-p3hpc.txt"
         ).read_text().splitlines() if line.startswith("torch=="))

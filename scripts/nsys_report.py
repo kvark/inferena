@@ -24,7 +24,10 @@ def report(database, top, launches=False, setup=False):
                 for label in ("tensor_preparation", "parameter_upload"):
                     spans = [(x, y) for x, y, name in ranges
                              if name == f"meganeura/{label}" and y is not None and a <= x < y <= b]
-                    print(f"  {label}: {len(spans)} calls, {sum(y-x for x,y in spans)/1e6:.3f} ms host elapsed")
+                    if spans:
+                        print(f"  {label}: {len(spans)} calls, {sum(y-x for x,y in spans)/1e6:.3f} ms host elapsed")
+                    else:
+                        print(f"  {label}: not captured")
                 print("  Vulkan API calls, summed host ms, name (nested in preparation):")
                 for count, elapsed, name in db.execute(
                     "SELECT count(*), sum(end-start)/1e6, value FROM VULKAN_API "

@@ -1350,6 +1350,12 @@ def _bench(model_name, spec, dev, stream):
         "requested_mode": mode,
         "compiled": False,
         "stream_policy": "single dedicated CUDA preparation/run stream" if stream is not None else "backend default",
+        "determinism": {
+            "algorithms": torch.are_deterministic_algorithms_enabled(),
+            "cudnn": bool(torch.backends.cudnn.deterministic),
+            "cudnn_benchmark": bool(torch.backends.cudnn.benchmark),
+            "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
+        },
         "cuda_graphs": {"requested": use_graphs, "phases": {}},
     }
 
@@ -1363,6 +1369,7 @@ def _bench(model_name, spec, dev, stream):
         f"torch {torch.__version__}",
         file=sys.stderr,
     )
+    print(f"[pytorch] determinism: {json.dumps(execution['determinism'])}", file=sys.stderr)
 
     load_start = time.perf_counter()
     eager_model = load_model(model_name, spec, dev)

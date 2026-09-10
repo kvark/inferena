@@ -6,6 +6,44 @@ do not copy binaries or experimental raw records into this branch or main.
 The Meganeura dependency is pinned to merged main `e59bd32d` (0.3.0); it is not a
 floating sibling checkout.
 
+## Current collection readiness, September 10
+
+The no-argument workflow, checkpoint preparation, source pin and native device
+selection are implemented. **The full default CUDA campaign is not yet
+qualified; do not begin the multi-machine performance sweep.** The old/new
+Meganeura screen below found no large steady-state regression, but the broader
+reference qualification exposed two distinct pre-existing problems:
+
+1. At `59d4cab`, 13 strict pairs passed before Whisper training capture failed
+   because an autograd node retained the default compilation stream. `50d10f2`
+   gives all CUDA conditions one preparation/run stream. A direct Whisper
+   reproduction now passes; all three broad Python and nine harness tests pass.
+2. Fresh qualification at `50d10f2` passed seven strict pairs, then diffusion's
+   default/graph condition failed the full-gradient replay gate: 3/2304 values
+   in `conv_in.weight`, maximum absolute difference 1.933e-6. A separate
+   eight-call uncaptured-repeat diagnostic also exceeds that same gate, so
+   this is not evidence of a capture-only error or a Meganeura regression.
+
+The default diagnostic fails; cuDNN determinism alone also fails. Full PyTorch
+determinism plus `CUBLAS_WORKSPACE_CONFIG=:4096:8` passes the diagnostic's eight
+repeat checks and all capture phases, including 181 gradient tensors. This is
+a possible **separate** reference condition, not a silently adopted baseline:
+it can change algorithms and performance. We have neither increased tolerance,
+automatically excluded diffusion, nor retried an unchanged campaign until lucky.
+The remaining choice is a labelled deterministic reference versus a reviewed
+replay-validation policy that accounts for ordinary nondeterministic arithmetic
+while preserving the cross-engine accuracy gates. The strongest default
+reference should not be silently constrained to obtain a passing result.
+
+Diagnostic source and concise results are preserved on
+[`experiment/p3hpc-replay-stability-2026-09-10`](https://github.com/kvark/inferena/tree/experiment/p3hpc-replay-stability-2026-09-10)
+(`231bd1a`). It is an evidence branch, **not a collection-ready tag**. The two
+failed campaign manifests remain outside Git at
+`../inferena-results/zork-20260910T040555218867Z-59d4cab0/campaign.json` and
+`../inferena-results/zork-20260910T042613175806Z-50d10f28/campaign.json`.
+Their qualification samples are not publication timings. No Nsight or RAM
+investigation was resumed, and no driver/sysctl setting was changed.
+
 ## What was missing
 
 The `paper-arxiv-1` runner's normal `bench_v2` path uses default
@@ -643,6 +681,12 @@ Preparation is separate: Whisper's medians rise 0.694→0.732 s strict and
 1.223→1.312 s accelerated. Driver caches were left as found, so these are
 startup-cost observations, not controlled cold-compile attribution or a reason
 to undo the correctness fixes.
+
+A predeclared reverse-order follow-up (three additional pairs per precision)
+does **not** reproduce the Whisper preparation increase: 0.617→0.616 s strict,
+1.174→1.171 s accelerated. All six pairs' output records match exactly.
+Records are at `../inferena-results/whisper-uprev-reverse.OtFit4/`. Do not pool
+the two blocks into a controlled cold-start claim; driver caches were not reset.
 
 Rebuild the native binaries at Inferena `6fcdbc4` and `59d4cab` with
 `cargo build --release --locked -j1 -p inferena-harness -p inferena-meganeura`.

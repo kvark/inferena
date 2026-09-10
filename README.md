@@ -161,6 +161,12 @@ install hints for anything missing.
 
 ## Quick start
 
+**September 10 status:** the one-command workflow is implemented, but hold off
+on the full multi-machine campaign. CUDA qualification currently stops on
+diffusion's PyTorch gradient repeatability; see the
+[readiness findings](EXPERIMENT.md#current-collection-readiness-september-10).
+No collection-ready tag has been issued, and validation has not been relaxed.
+
 For the paired P3HPC campaign, install [uv](https://docs.astral.sh/uv/getting-started/installation/)
 once, then let the setup script install Python and the pinned requirements:
 

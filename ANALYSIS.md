@@ -529,6 +529,10 @@ evidence of a new staging/indexing regression or failed whole-model validation.
 The matched runtime-shape IEEE-f32 Triton control also has 2 ordinary and 10
 tiny failures at both output tiles, with the same inputs and bound. Do not
 attribute this shared numerical limit to WGSL translation or the new staging.
+The hash-enabled Triton follow-up matches both complete native output hashes.
+Both micro-runners now return nonzero after reporting a rejected oracle check;
+a retained K=1536 positive control still passes. This changes failure reporting,
+not the numerical bound or earlier qualified compiler measurements.
 The current production tuner samples 32 f64 dots; passing that screen is not a
 full-output proof. No model timing or candidate admission follows this rejection.
 

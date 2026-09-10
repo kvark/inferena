@@ -219,6 +219,7 @@ fn main() {
             "engine": "meganeura", "shape": [m, n, k], "tile": tile,
             "gemv": gemv, "gemv_threads": std::env::var("MEGANEURA_GEMV_THREADS").ok(),
             "gemv_add": gemv_add, "gemv_add_threads": std::env::var("MEGANEURA_GEMV_ADD_THREADS").ok(),
+            "matmul_k_stage": std::env::var("MEGANEURA_MATMUL_K_STAGE").ok(),
             "gpu": context.device_information().device_name, "source_bytes": source_bytes,
             "context_ns": context_ns, "warmup_ns": warmup_ns, "prepare_ns": prepare_ns,
             "dimensions": "runtime uniforms", "validation": validation,

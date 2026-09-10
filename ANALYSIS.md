@@ -449,6 +449,16 @@ tuning excludes GEMV; bounded per-class selection remains the integration step.
 
 ### GPU localization of the accepted candidate
 
+The `experiment/host-candidate-2026-09-10` Inferena tag adds a separate
+three-pair thread-CPU control for 135M/1.7B, original versus combined candidate.
+All twelve processes pass the gates. On 135M, median command-recording CPU
+time changes about 1.424→1.179 ms while reported CPU frequency changes about
+800→1070 MHz. On 1.7B, both arms remain near 800 MHz; CPU time slightly grows
+1.194→1.258 ms while token latency improves. This distinguishes a genuine GPU
+gain from an accompanying host-power response; the instrumented host samples
+do not replace the untraced confirmation. Results are retained at
+`host-candidate-20260910` under the same outside-Git results directory.
+
 Qualified Systems pairs at the same source use 100/100 counts, default Torch
 compilation and validated explicit CUDA Graphs. The 135M arm retains packing;
 1.7B uses unpacked weights. Both use 128 residual-add threads. Native grouped

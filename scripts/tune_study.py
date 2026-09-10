@@ -19,7 +19,8 @@ def main():
                         "device-params-reuse": "device-buddy", "device-params-tiled": "device-buddy"}
     widths = {f"{prefix}gemv{width}": str(width) for prefix in ("", "unpacked-") for width in (32, 64, 128)}
     add_widths = {f"{prefix}gemv-add{width}": str(width) for prefix in ("", "unpacked-") for width in (64, 128, 256)}
-    layouts = ("interleaved", "unpacked", "unpacked-interleaved", *widths, *add_widths)
+    k_stages = {f"matmul-k{stage}": str(stage) for stage in (8, 16)}
+    layouts = ("interleaved", "unpacked", "unpacked-interleaved", *widths, *add_widths, *k_stages)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--models", nargs="+", choices=SUPPORTED_MODELS,
@@ -101,6 +102,7 @@ def main():
                                 "MEGANEURA_GREEDY_PACK_SWIGLU": str(int(not variant.startswith("unpacked"))),
                                 "MEGANEURA_GEMV_THREADS": widths.get(variant, "256"),
                                 "MEGANEURA_GEMV_ADD_THREADS": add_widths.get(variant, "32"),
+                                "MEGANEURA_MATMUL_K_STAGE": k_stages.get(variant, "32"),
                                 "BLADE_SHARED_TRANSIENT": str(int(variant == "shared-freelist")),
                                 "RUST_LOG": "warn,meganeura::runtime::tuning=info"})
                     if args.trace_setup:

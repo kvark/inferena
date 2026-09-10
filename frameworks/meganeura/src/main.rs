@@ -30,7 +30,30 @@ fn build_session_for(graph: &Graph, mode: Mode) -> Session {
             meganeura::runtime::init_gpu_context().expect("GPU initialization failed"),
         )
     });
-    meganeura::build(graph, config).0
+    let report_dir = std::env::var_os("INFERENA_TUNE_REPORT");
+    let report_tuning = report_dir.is_some();
+    if report_tuning {
+        assert!(config.tune, "tuning reports require MEGANEURA_TUNE=1");
+        config.tune = false;
+    }
+    let mut session = meganeura::build(graph, config).0;
+    if let Some(directory) = report_dir {
+        let options = std::env::var_os("INFERENA_TUNE_OPTIONS").map_or_else(
+            meganeura::TuneOptions::default,
+            |path| {
+                serde_json::from_reader(std::fs::File::open(path).unwrap())
+                    .expect("invalid tuning options")
+            },
+        );
+        let _span = tracing::info_span!("tune").entered();
+        let report = session.tune_with(options).expect("tuning failed");
+        static NEXT_REPORT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let index = NEXT_REPORT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::path::PathBuf::from(directory).join(format!("{index}-{mode:?}.json"));
+        let file = std::fs::File::create_new(path).expect("tuning report must be a new file");
+        serde_json::to_writer_pretty(file, &report).unwrap();
+    }
+    session
 }
 
 fn session_config() -> SessionConfig<'static> {

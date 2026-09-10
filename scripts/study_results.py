@@ -107,10 +107,11 @@ def tuning_report(root):
     if manifest["status"] != "complete" or any(row["status"] != "complete" for row in manifest["runs"]):
         raise ValueError("incomplete study")
     groups, outputs = {}, {}
+    reference_variant = manifest["args"].get("baseline", "untuned")
     for row in manifest["runs"]:
         path = Path(row["destination"])
         result = json.loads((path / "runner.json").read_text())
-        baseline = json.loads((path.parent / "untuned/runner.json").read_text())
+        baseline = json.loads((path.parent / reference_variant / "runner.json").read_text())
         compare(baseline, result)
         outputs.setdefault(row["model"], []).append(result["outputs"])
         groups.setdefault((row["model"], row["variant"]), []).append((baseline, result))

@@ -15,12 +15,14 @@ from study_results import compare
 def main():
     specializations = {"fixed-params": "1", "fixed-native-div": "native-div",
                        "fixed-k32": "k32", "fixed-native-div-k32": "native-div-k32"}
-    parameter_memory = {"device-params": "1", "device-params-buddy": "device-buddy"}
+    parameter_memory = {"device-params": "1", "device-params-buddy": "device-buddy",
+                        "device-params-reuse": "device-buddy"}
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--models", nargs="+", choices=SUPPORTED_MODELS,
                         default=["SmolLM2-135M", "ResNet-50", "Whisper-tiny"])
     parser.add_argument("--replicates", type=int, default=3)
+    parser.add_argument("--baseline", default="untuned", help="reference variant present in every replicate")
     parser.add_argument("--precision", choices=("strict", "accelerated"), default="strict")
     parser.add_argument("--variants", nargs="+",
                         choices=("untuned", "default", "expanded", "shared-freelist",
@@ -36,8 +38,8 @@ def main():
     args = parser.parse_args()
     if args.replicates < 1 or subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT).strip():
         parser.error("positive replicate count and committed source required")
-    if "untuned" not in args.variants or len(set(args.variants)) != len(args.variants) or args.expanded_scratch_mib < 1:
-        parser.error("distinct variants including untuned, and positive scratch budget required")
+    if args.baseline not in args.variants or len(set(args.variants)) != len(args.variants) or args.expanded_scratch_mib < 1:
+        parser.error("distinct variants including the baseline, and positive scratch budget required")
     args.output = args.output.resolve()
     if args.output == ROOT or ROOT in args.output.parents:
         parser.error("keep artifacts outside the checkout")
@@ -73,6 +75,7 @@ def main():
                                 "MEGANEURA_TUNE": str(int(variant in ("default", "expanded"))),
                                 "MEGANEURA_SPECIALIZE_CONV": specializations.get(variant, "0"),
                                 "MEGANEURA_DEVICE_PARAMETERS": parameter_memory.get(variant, "0"),
+                                "MEGANEURA_REUSE_UPLOAD": str(int(variant == "device-params-reuse")),
                                 "BLADE_SHARED_TRANSIENT": str(int(variant == "shared-freelist")),
                                 "RUST_LOG": "warn,meganeura::runtime::tuning=info"})
                     if args.trace_setup:
@@ -95,7 +98,7 @@ def main():
                     results[variant] = json.loads((destination / "runner.json").read_text())
                     row["status"] = "complete"
                 for variant, result in results.items():
-                    compare(results["untuned"], result)
+                    compare(results[args.baseline], result)
         if input_hashes(args.models) != manifest["inputs"]:
             raise ValueError("inputs changed during the study")
         manifest["status"] = "complete"

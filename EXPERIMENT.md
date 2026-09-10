@@ -478,6 +478,29 @@ target. A killed/timed-out run is incomplete, not a smaller valid sample.
 This wrapper is Linux-only; `nsys.py` itself remains usable on Windows, where
 equivalent process-tree resource containment needs separate qualification.
 
+The experimental memory branch also accepts `--minimum-available-mib 2048
+--memory-log <new.csv>` on `limited.py`: it samples global available RAM and
+cgroup use every half second, and terminates its own process group if the
+global floor is crossed. This supplements, not replaces, the cgroup limit.
+
+For a resident-only SmolLM2 investigation on this branch, install the optional
+`requirements-memory.txt` into the experiment environment, then add
+`--stream-weights --device-parameters device-buddy --inference-only` to
+`nsys.py`. Streaming uses bounded native tensor reads and Transformers' f32
+single-device loading. Both engines retain the full numerical/graph gates.
+The 1.7B Systems pair qualified inside a 3072 MiB / 900-second scope with the
+2048 MiB global floor; these are host safety limits, not portable guarantees.
+Do **not** repeat the 1.7B Shared-memory control on this host: its mapping
+allocation errors motivated a precautionary stop. See [placement analysis](ANALYSIS.md#placement-and-allocation-ablation--september-10).
+This does not authorize retrying the earlier failed large Graphics capture.
+
+`--reuse-upload` adds the separate bounded-staging-reuse experiment. An
+untraced native-only pair uses `scripts/tune_study.py --stream-weights
+--baseline device-params-buddy --variants device-params-buddy device-params-reuse
+--models SmolLM2-135M SmolLM2-360M SmolLM2-1.7B --replicates 6 --output <new-dir>`.
+Both arms are device-resident; the baseline is explicit in the manifest and
+the same output checks apply. This experiment does not modify the collection tag.
+
 Use Nsight **2026.4.1** for the qualified Linux setup here. Alternatively put
 `nsys` on PATH or set `NSYS` (including its Windows `.exe`
 path). `--no-graphs` captures the launch-overhead control; `--inference-only`

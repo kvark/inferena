@@ -13,10 +13,11 @@ def report(root):
     if manifest["status"] != "complete":
         raise ValueError("incomplete study")
     rows = []
+    reference_variant = manifest["args"].get("baseline", "untuned")
     for run in manifest["runs"]:
         path = Path(run["destination"])
         result = json.loads((path / "runner.json").read_text())
-        baseline = json.loads((path.parent / "untuned/runner.json").read_text())
+        baseline = json.loads((path.parent / reference_variant / "runner.json").read_text())
         compare(baseline, result)
         trace = [json.loads(line) for line in (path / "compilation.jsonl").read_text().splitlines()]
         builds = sorted((row for row in trace if row["stage"] == "inferena_build_session"),

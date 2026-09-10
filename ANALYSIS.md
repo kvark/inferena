@@ -131,16 +131,104 @@ buffer contracts, not just the forward output.
 Systems confirms roughly 4.9 GiB of native bindings on the non-device-local
 host-visible/coherent/cached heap despite a roughly 9.4 GiB plan. This is not
 an all-VRAM scaling point. `Shared` permits fallback; the budget preflight
-does not guarantee placement. A separate general experiment should allocate
-persistent parameters device-locally with explicit upload/readback staging,
-then inspect actual binding heaps and rerun the unchanged numerical gates.
-Keep host-visible inputs/external buffers' contracts intact, bound staging,
-and account for training/checkpoint access. On unified memory, use the actual
-backend's memory semantics rather than imposing a discrete-VRAM rule.
+does not guarantee placement. The September 10 experiment below controls
+placement with explicit bounded staging, retaining named parameter access,
+host-visible inputs and external-buffer contracts. Unified-memory backends
+still need qualification; do not impose a discrete-VRAM interpretation on them.
 
 Only after placement is controlled should resident matmul/GEMV tile, coalescing,
 occupancy and barrier comparisons be interpreted as kernel scaling. Keep any
 fallback result separately labelled; do not silently exclude it or reduce f32 weights.
+
+### Placement and allocation ablation — September 10
+
+The source-only `experiment/parameter-allocation-2026-09-10` tags in Inferena,
+Meganeura and Blade distinguish memory preference from allocator strategy.
+Inferena `b9ef2d5` pins Meganeura `2e71371` and Blade `ae46130`. Parameters can
+request `Device` (buddy) or `DeviceTransient` (free list), with at most 16 MiB
+of upload staging. Original/derived parameter storage and all kernels remain
+unchanged. Optional streaming reads one checkpoint tensor at a time, retaining
+the existing conversion/transposition code. The resident/streaming 135M and
+360M controls have identical recorded output fields. Existing broad smoke,
+device-local and cross-session parameter-lifetime tests pass; no new test file.
+
+The four-arm pilot separates two effects:
+
+| Strict f32, five warmups / twenty samples | Shared buddy | Shared free list | Device buddy | Device free list |
+|---|---:|---:|---:|---:|
+| 360M process device bytes, GiB | 3.137 | 2.176 | 3.145 | 2.239 |
+| 1.7B host-heap plan bindings, GiB, prefill | 4.930 | 5.195 | 0 | 0 |
+| 1.7B prefill, ms | 955.291 | 968.235 | 54.629 | 54.783 |
+| 1.7B stateless token, ms | 1937.933 | 1979.101 | 16.387 | 16.433 |
+
+These are **single-process diagnostic pilots, not replicated performance
+estimates**. CPU setup/allocation tracing is on; the small-model pilot's trace
+was written on NFS and must not be treated as publication timing. All recorded
+outputs, including full prefill hashes, match exactly across each model's arms.
+For 360M, the free list largely removes buddy rounding without a runtime gain.
+For 1.7B, both allocators already have negligible rounding: changing placement
+puts the same 10,108,674,560-byte prefill plan entirely on the device heap.
+Thus rounding and host fallback are different problems. `Device` remains a
+backend preference; actual binding properties, not its name, establish residency.
+Run `scripts/allocation_report.py <completed-study>` for per-plan heap accounting.
+Sequential prefill/token allocations must not be added as simultaneous residency.
+
+An untraced confirmation completed **one** control/candidate pair:
+951.234→54.887 ms prefill and 1941.822→16.282 ms token, with the same full hash.
+It was stopped during the next candidate as a precaution, not a failed numerical
+gate. Its manifest remains `incomplete`; do not report six replicates. The
+Shared controls emitted NVIDIA `dmaAllocMapping_GM107` / `NV_ERR_NO_MEMORY`
+mapping failures. A [first-hand driver report](https://github.com/NVIDIA/open-gpu-kernel-modules/issues/1270)
+describes the same messages preceding an unrecoverable lock in a different
+workload on this driver/architecture. That does not identify our exact driver
+bug, but deliberately repeating mapping exhaustion is not warranted. No Xid,
+watchdog, host OOM, GPU reset or reboot occurred in these bounded runs.
+The card reports a 16 GiB BAR1 aperture, not a legacy 256 MiB aperture; free
+global BAR1 bytes alone do not establish which internal mapping can succeed.
+
+### Fresh resident-only Systems pairs
+
+Inferena `111579d` pins the same Meganeura with Blade `7b6d97a`'s allocation
+spans. Both 135M and 1.7B pairs pass the unchanged cross-engine and full CUDA
+Graph replay gates, with strict f32/default compilation. Native uses device
+parameters and streamed checkpoints. PyTorch uses the ordinary Transformers
+single-device loader with `device_map={"": device}` and f32, avoiding a whole
+CPU-resident f32 model. This experiment-only option needs Accelerate 1.15.0;
+135M's 272 parameters and both buffers match the CPU-then-device loader bitwise.
+There is no quantization or CPU offload. The collection environment is unchanged.
+
+| Three-call diagnostic means, ms | 135M prefill | 135M token | 1.7B prefill | 1.7B token |
+|---|---:|---:|---:|---:|
+| Meganeura host sample | 14.295 | 2.525 | 55.532 | 22.199 |
+| Meganeura host encoding (`step`) | 3.253 | 0.533 | 2.557 | 2.317 |
+| Meganeura grouped GPU interval | 10.769 | 1.877 | 52.672 | 19.448 |
+| PyTorch host sample | 6.228 | 1.922 | 28.395 | 11.679 |
+| PyTorch summed CUDA kernel intervals | 5.951 | 1.622 | 27.908 | 11.488 |
+
+All measured CUDA kernels have graph-node IDs. In 1.7B, the two SIMT SGEMM
+families total 26.818 ms per prefill; cuBLAS GEMV totals 11.148 ms per token.
+The remaining resident gap is mainly GPU execution, not host encoding or the
+earlier host-memory fallback. Profiling inflates some intervals; retain untraced
+confirmation for performance claims. These rows still do not isolate barriers.
+
+Setup profiling also rejects a premature row-copy explanation: 135M parameter
+preparation takes 4.55 / 4.40 seconds for its two sequential plans, of which
+`vkAllocateMemory` plus `vkFreeMemory` take 3.74 / 3.74 seconds. Summed GPU copy
+intervals are only about 41 ms per plan. There are 272 upload allocations per
+plan. Reusing bounded staging is the next controlled experiment; API allocation
+durations are measured directly, not inferred by subtracting GPU time.
+
+The 1.7B pair finished in 109 seconds inside a 3 GiB, swap-disabled cgroup;
+global `MemAvailable` stayed above 4989 MiB. Driver-pinned pages can escape
+cgroup accounting, so `scripts/limited.py` can additionally sample global RAM
+and stop its own process group below a requested floor. Each Systems launch
+logged one `refcntRequestReference_IMPL` status `0x56`
+([`NV_ERR_NOT_SUPPORTED`](https://github.com/NVIDIA/open-gpu-kernel-modules/blob/595.71.05/src/common/sdk/nvidia/inc/nvstatuscodes.h)),
+but neither resident capture logged the earlier mapping-allocation failures.
+The measured traces and full runner output are complete; do not claim a
+warning-free driver. Local results live under `nsys-resident-*-20260910`,
+`parameter-allocation-1.7b-20260910-pilot` and the explicitly incomplete
+`parameter-placement-1.7b-20260910-confirm` in `/x/Code/inferena-results/`.
 
 ## Qualified Graphics source correlation — September 10
 

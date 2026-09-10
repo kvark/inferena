@@ -9,6 +9,7 @@ use std::time::Instant;
 
 mod compilation;
 mod graphics;
+mod host;
 mod stream_weights;
 
 thread_local! {
@@ -404,11 +405,19 @@ fn bench_session(
 ) -> BenchStats {
     let _phase_span = tracing::info_span!("inferena_bench_phase", phase).entered();
     let (warmups, samples) = benchmark_counts();
+    let mut host_trace = host::Trace::new(phase);
     let warmup_range = nsys_range(&format!("meganeura/{phase}/warmup"));
     for _ in 0..warmups {
         set_inputs(session);
+        let mut sample = host_trace.as_ref().map(host::Trace::start);
         session.step();
+        if let Some(sample) = sample.as_mut() {
+            sample.after_step();
+        }
         session.wait();
+        if let Some(trace) = host_trace.as_mut() {
+            trace.finish("warmup", sample.unwrap());
+        }
     }
     drop(warmup_range);
     graphics::start_phase(phase);
@@ -418,14 +427,21 @@ fn bench_session(
     for _ in 0..samples {
         let _sample_range = nsys_range(&sample_label);
         set_inputs(session);
+        let mut sample = host_trace.as_ref().map(host::Trace::start);
         let t0 = Instant::now();
         let step_range = nsys_range("meganeura/step");
         session.step();
         drop(step_range);
+        if let Some(sample) = sample.as_mut() {
+            sample.after_step();
+        }
         let wait_range = nsys_range("meganeura/wait");
         session.wait();
         drop(wait_range);
         samples_ms.push(t0.elapsed().as_secs_f64() * 1000.0);
+        if let Some(trace) = host_trace.as_mut() {
+            trace.finish("measure", sample.unwrap());
+        }
     }
     BenchStats::from_samples(samples_ms)
 }

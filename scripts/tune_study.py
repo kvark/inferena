@@ -18,7 +18,8 @@ def main():
                         default=["SmolLM2-135M", "ResNet-50", "Whisper-tiny"])
     parser.add_argument("--replicates", type=int, default=3)
     parser.add_argument("--precision", choices=("strict", "accelerated"), default="strict")
-    parser.add_argument("--variants", nargs="+", choices=("untuned", "default", "expanded", "fixed-params"),
+    parser.add_argument("--variants", nargs="+",
+                        choices=("untuned", "default", "expanded", "fixed-params", "fixed-native-div"),
                         default=["untuned", "default", "expanded"])
     parser.add_argument("--expanded-scratch-mib", type=int, default=64)
     parser.add_argument("--fresh-driver-cache", action="store_true",
@@ -59,7 +60,8 @@ def main():
                                 "INFERENA_WARMUP_RUNS": "5", "INFERENA_MEASUREMENT_RUNS": "20",
                                 "INFERENA_REQUIRE_LOCAL_WEIGHTS": "1", "MEGANEURA_DEVICE_ID": str(device["device_id"]),
                                 "MEGANEURA_TUNE": str(int(variant in ("default", "expanded"))),
-                                "MEGANEURA_SPECIALIZE_CONV": str(int(variant == "fixed-params")),
+                                "MEGANEURA_SPECIALIZE_CONV": "native-div" if variant == "fixed-native-div"
+                                else str(int(variant == "fixed-params")),
                                 "RUST_LOG": "warn,meganeura::runtime::tuning=info"})
                     if args.fresh_driver_cache:
                         cache = destination / "driver-cache"

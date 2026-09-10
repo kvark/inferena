@@ -174,8 +174,9 @@ in 127.54 ms and contains a complete `meganeura/training/sample` GPU range of
 | Forward | 21.69% |
 
 These are **sample shares, not shares of wall time**. Whole-trace SM throughput
-is 32.37% of peak. The instruction mix includes 22.28% shared stores, 13.00%
-FP32 FMA and 11.34% integer FMA. This is evidence to investigate staging and
+is 32.37% of peak. The sampled instruction mix attributes 22.28% of samples to
+shared stores, 13.00% to FP32 FMA and 11.34% to integer FMA; these are not
+dynamic instruction counts. This is evidence to investigate staging and
 index calculation; counters alone do not prove which transformation will help.
 An immutable-parameter specialization ablation is retained separately, with
 the same arithmetic, buffers and schedule. The existing full f64 convolution

@@ -8,6 +8,8 @@ use meganeura::{CoopPolicy, Graph, Mode, Session, SessionConfig};
 use sha2::{Digest, Sha256};
 use std::time::Instant;
 
+mod compilation;
+
 fn build_inference_session(graph: &Graph) -> Session {
     build_session_for(graph, Mode::Inference)
 }
@@ -17,11 +19,13 @@ fn build_session(graph: &Graph) -> Session {
 }
 
 fn build_session_for(graph: &Graph, mode: Mode) -> Session {
+    let _span = tracing::info_span!("inferena_build_session", mode = ?mode).entered();
     let mut config = session_config();
     config.mode = mode;
     // The library's process-global default is never destroyed. Own the context
     // so dropping a session releases its device and flushes vendor trace data.
     config.gpu.get_or_insert_with(|| {
+        let _span = tracing::info_span!("create_gpu_context").entered();
         std::sync::Arc::new(
             meganeura::runtime::init_gpu_context().expect("GPU initialization failed"),
         )
@@ -1514,6 +1518,7 @@ fn bench_whisper() {
 
 fn main() {
     env_logger::init();
+    let _compile_trace = compilation::init();
 
     let model_name = std::env::args().nth(1).unwrap_or("SmolLM2-135M".into());
     if model_name == "--list-devices" {

@@ -521,8 +521,7 @@ dependencies = [
 [[package]]
 name = "blade-graphics"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f50161de1b828487e321d0df36cba06666e624a6a943293485f0dd0e97ef6ea"
+source = "git+https://github.com/kvark/blade?rev=cccf47ae3fc0e03919bc5701b84b5c086d14cbd8#cccf47ae3fc0e03919bc5701b84b5c086d14cbd8"
 dependencies = [
  "ash",
  "ash-window",
@@ -551,6 +550,7 @@ dependencies = [
  "openxr",
  "raw-window-handle",
  "slab",
+ "tracing",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -4550,6 +4550,8 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokenizers 0.21.4",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -5219,7 +5221,7 @@ checksum = "7ebb8d8732c6a6df3d8f032a82911cfc747e00efb95cc46e8d0acd5b5b88570c"
 [[package]]
 name = "meganeura"
 version = "0.3.0"
-source = "git+https://github.com/kvark/meganeura?rev=e59bd32d2aeb200eb00b1a15698a777d7df8db4f#e59bd32d2aeb200eb00b1a15698a777d7df8db4f"
+source = "git+https://github.com/kvark/meganeura?rev=8ec9f2aaebe75cb2c3bb2e6afb36b30ce5ce8e05#8ec9f2aaebe75cb2c3bb2e6afb36b30ce5ce8e05"
 dependencies = [
  "blade-graphics",
  "blade-macros",

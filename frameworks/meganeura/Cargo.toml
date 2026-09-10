@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 meganeura = { workspace = true }
-blade-graphics = "0.9"
+blade-graphics = { version = "0.9", features = ["profile-compilation"] }
 hf-hub = { version = "0.4", default-features = false, features = ["ureq", "native-tls"] }
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 serde = { workspace = true }
@@ -21,3 +21,5 @@ hex = "0.4"
 env_logger = "0.11"
 # Host phase markers only; no CUDA SDK or tracing-subscriber dependency.
 nvtx = "1.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"] }

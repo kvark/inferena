@@ -17,6 +17,7 @@ def main():
                        "fixed-k32": "k32", "fixed-native-div-k32": "native-div-k32"}
     parameter_memory = {"device-params": "1", "device-params-buddy": "device-buddy",
                         "device-params-reuse": "device-buddy", "device-params-tiled": "device-buddy"}
+    layouts = ("interleaved", "unpacked", "unpacked-interleaved")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--models", nargs="+", choices=SUPPORTED_MODELS,
@@ -26,7 +27,7 @@ def main():
     parser.add_argument("--precision", choices=("strict", "accelerated"), default="strict")
     parser.add_argument("--variants", nargs="+",
                         choices=("untuned", "default", "expanded", "shared-freelist",
-                                 *parameter_memory, *specializations),
+                                 *parameter_memory, *specializations, *layouts),
                         default=["untuned", "default", "expanded"])
     parser.add_argument("--expanded-scratch-mib", type=int, default=64)
     parser.add_argument("--transpose-tile", type=int, default=16,
@@ -37,11 +38,15 @@ def main():
                         help="separate CPU compilation and parameter-preparation spans (diagnostic)")
     parser.add_argument("--stream-weights", action="store_true",
                         help="bound SmolLM2 checkpoint residency to one stored tensor plus conversion")
+    parser.add_argument("--resident", action="store_true",
+                        help="kernel studies: device-buddy parameters, reused uploads, CPU transpose tile 16")
     args = parser.parse_args()
     if args.replicates < 1 or subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT).strip():
         parser.error("positive replicate count and committed source required")
     if args.baseline not in args.variants or len(set(args.variants)) != len(args.variants) or min(args.expanded_scratch_mib, args.transpose_tile) < 1:
         parser.error("distinct variants including the baseline, and positive scratch budget required")
+    if args.resident and any(variant in parameter_memory or variant == "shared-freelist" for variant in args.variants):
+        parser.error("--resident is a common kernel-study setup, not a parameter-placement arm")
     args.output = args.output.resolve()
     if args.output == ROOT or ROOT in args.output.parents:
         parser.error("keep artifacts outside the checkout")
@@ -76,9 +81,11 @@ def main():
                                 "INFERENA_STREAM_WEIGHTS": str(int(args.stream_weights)),
                                 "MEGANEURA_TUNE": str(int(variant in ("default", "expanded"))),
                                 "MEGANEURA_SPECIALIZE_CONV": specializations.get(variant, "0"),
-                                "MEGANEURA_DEVICE_PARAMETERS": parameter_memory.get(variant, "0"),
-                                "MEGANEURA_REUSE_UPLOAD": str(int(variant in ("device-params-reuse", "device-params-tiled"))),
-                                "MEGANEURA_TRANSPOSE_TILE": str(args.transpose_tile if variant == "device-params-tiled" else 0),
+                                "MEGANEURA_DEVICE_PARAMETERS": parameter_memory.get(variant, "device-buddy" if args.resident else "0"),
+                                "MEGANEURA_REUSE_UPLOAD": str(int(args.resident or variant in ("device-params-reuse", "device-params-tiled"))),
+                                "MEGANEURA_TRANSPOSE_TILE": str(16 if args.resident else args.transpose_tile if variant == "device-params-tiled" else 0),
+                                "MEGANEURA_INTERLEAVE_COLUMNS": str(int(variant in ("interleaved", "unpacked-interleaved"))),
+                                "MEGANEURA_GREEDY_PACK_SWIGLU": str(int(variant not in ("unpacked", "unpacked-interleaved"))),
                                 "BLADE_SHARED_TRANSIENT": str(int(variant == "shared-freelist")),
                                 "RUST_LOG": "warn,meganeura::runtime::tuning=info"})
                     if args.trace_setup:

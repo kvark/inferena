@@ -335,6 +335,72 @@ under the same 3 GiB scope and global floor. Add `default` and use the earlier
 5/20 counts to reproduce the three-arm confirmation. `--profile` is a separate
 serialized-pass diagnostic, not another set of publication timings.
 
+### Host-side latency transient
+
+The source-only `experiment/host-latency-2026-09-10` tag retains the diagnosis.
+A qualified Systems pair with 100 warmups/100 samples puts native 135M token
+GPU time at 1.877 ms, versus 1.873 ms in the earlier short capture. Host
+`step` grows from about 0.59 to 1.75 ms. The GPU stays at 2895 MHz SM /
+14001 MHz memory throughout the measured token window, with no clock-event
+flags. This growth is on the host, not a growing GPU barrier cost.
+
+Separate unprofiled-by-Nsight runs add opt-in Linux thread-CPU clocks and
+read-only `scaling_cur_freq` snapshots (`--host-trace`). Three resident runs
+show command recording changing from about 0.59 ms at 2.7–3.2 GHz to
+1.44–1.48 ms at 800 MHz. Thread CPU time matches elapsed recording time;
+descheduling does not account for the increase. Three Shared-allocation
+controls reproduce the downclock. Three fixed-core runs and three per-task
+utilization-hint runs do not prevent it. These diagnostics are not paper
+timings or a paired comparison of scheduling policies.
+
+The host uses active `intel_pstate`, `powersave`, `balance_performance`,
+800–4400 MHz, with HWP dynamic boost disabled. Frequency snapshots are not
+instruction-level measurements; see the kernel's [frequency interface](https://www.kernel.org/doc/html/latest/admin-guide/pm/cpufreq.html)
+and [Intel policy documentation](https://www.kernel.org/doc/html/latest/admin-guide/pm/intel_pstate.html).
+No governor, EPP, driver setting or global clock limit was changed. Affinity
+and utilization hints affect only the diagnostic child and disappear on exit.
+Nsight CPU sampling is unavailable under the current perf paranoid level 4.
+The actual thread clock avoids guessing busy CPU time from GPU subtraction.
+
+Reproduce with the preceding resident command, `--variants untuned --replicates 3
+--host-trace`; compare explicit `--cpu 2` and `--cpu 2 --cpu-util-min 1024`
+controls on an allowed core. Omit both `--resident` and `--stream-weights` for
+the small Shared control; do not extend that control to 1.7B. The diagnostic
+records all warmup/measurement samples and CPU IDs. Even 100 warmups cannot
+guarantee a fixed CPU performance state: the later GEMV pilot contains a
+mid-window acceleration. Collection must disclose power policy and distinguish
+short-window latency from sustained execution, not cherry-pick the faster state.
+
+### Token Graphics source correlation
+
+The `experiment/native-token-graphics-2026-09-10` tag adds an explicit NGFX SDK
+phase trigger. A strict resident 135M capture starts after 100 token warmups,
+retains three submissions in a 7.17 ms trace, and preserves the complete
+prefill and token hashes. The labelled GPU intervals are 2.12–2.14 ms; these
+instrumented durations are not ordinary benchmark samples. No hardware-event
+overflow is reported. Actual PMA is 400 MB; profiler-tree peak is 1379 MiB,
+with at least 8349 MiB globally available. The SDK also passes an initial
+capture without shader debug information; use the labelled follow-up for
+source attribution.
+
+PC sample shares are 47.52% residual-add GEMV, 40.98% RMSNorm-fused GEMV and
+11.09% transposed GEMV. Their workgroups use 32/256/32 threads, 18/22/72
+registers per thread and 512/5136/128 shared bytes respectively. Aggregate SM
+throughput is 6.53% of peak and DRAM throughput 33.97%. Long-scoreboard and
+workgroup-barrier occupancy are 17.58% and 3.89% of peak warp slots; active
+compute warps occupy 29.22%. These are **not fractions of removable wall time**,
+and workgroup barriers are not Vulkan resource barriers. The profile suggests
+latency-hiding/memory-access candidates, not a measured API ceiling.
+
+The preceding `experiment/gemv-width-2026-09-10` pilot varies only plain and
+RMSNorm-fused f32 GEMV (32/64/128/256 threads), keeping residual-add and BT at
+32. Its 24 processes cover three SmolLM2 sizes, packed and unpacked, 100/100
+counts. All prefill records match exactly; full token/prefill-prefix L2 is at
+most 1.64e-5 despite changed reduction order. Existing shader/parity/smoke
+checks and 217,792 full-f64 output checks pass. No broad width win emerges;
+the unusually fast 135M/64 run drifts within its window. Residual-add GEMV,
+the largest PC-sample family, needs its own measured width experiment.
+
 ## Qualified Graphics source correlation — September 10
 
 The short resident-model captures now have complete runner output, matching

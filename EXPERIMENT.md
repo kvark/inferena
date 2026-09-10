@@ -625,6 +625,35 @@ Retain complete runner stdout separately and verify hashes/numerics against an
 ordinary control. Reject hardware-event overflow for per-dispatch attribution;
 the first 135M trace passed output checks but reported this overflow.
 
+The later source-only `experiment/native-token-graphics-2026-09-10` tag avoids
+fragile submit offsets: set `INFERENA_NGFX_PHASE=latency`,
+`INFERENA_SHARED_CAPTURE_GPU=1`, `INFERENA_NSYS=1` and
+`MEGANEURA_GPU_CAPTURE=1`, then use **`--start-with-ngfx-sdk`** instead of
+`--start-after-submits`. The Linux-only hook calls the already injected NGFX
+SDK 0.9.2 after the selected phase's warmup; it does not inject a profiler.
+The CLI still independently bounds duration and submits. This is qualified
+only for a short 135M token capture here: 100 warmups, three samples,
+`--limit-to-submits 3 --max-duration-ms 100` and the same sampling/cgroup
+controls above. Do not transfer this qualification to a large model.
+[NGFX SDK phase control](https://docs.nvidia.com/nsight-graphics/UserGuide/sdk.html).
+
+That resident experiment additionally sets `INFERENA_STREAM_WEIGHTS=1`,
+`MEGANEURA_DEVICE_PARAMETERS=device-buddy`, `MEGANEURA_REUSE_UPLOAD=1`,
+`MEGANEURA_TRANSPOSE_TILE=16`, `MEGANEURA_TUNE=0`,
+`MEGANEURA_GEMV_THREADS=256` and `MEGANEURA_GREEDY_PACK_SWIGLU=1`.
+Its full output hashes match the ordinary control. The prototype's direct
+environment reads are not registered production configuration; unknown-name
+warnings for those experimental keys do not describe their actual effect.
+Use exact names: `MEGANEURA_CAPTURE` is not `MEGANEURA_GPU_CAPTURE`.
+
+For Systems, `--warmup-runs`, `--measurement-runs`, `--sample-clocks`,
+`--gemv-threads` and `--gemv-add-threads` retain their settings in the capture
+manifest; clock sampling is read-only and diagnostic. For host diagnosis,
+`tune_study.py --host-trace` records Linux thread CPU time, elapsed step/wait
+time and CPU-frequency snapshots outside the ordinary collection path.
+`--cpu` and `--cpu-util-min` are explicitly separate process-local controls,
+not automatic power-policy changes. See [the host and token analysis](ANALYSIS.md#host-side-latency-transient).
+
 Do not substitute frame capture/replay for a placement experiment:
 `ngfx-capture` defaults to demoting host-visible video memory to system memory
 (`--hvvm-demote`). Successful attachment, exported counters or a partial trace

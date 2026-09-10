@@ -99,7 +99,7 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False):
             raise ValueError("diagnostic and benchmark samples must not be mixed")
         if not revision.startswith(record["benchmark_rev"]):
             raise ValueError("source changed during collection")
-        if record["protocol"]["warmup_runs"] != 5:
+        if record["protocol"]["warmup_runs"] != (args.warmup_runs if diagnostic else 5):
             raise ValueError("unexpected warmup count")
         for phase in phases:
             samples = record["timing_samples_ms"][phase]

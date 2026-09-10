@@ -38,16 +38,20 @@ fn main() {
         panic!("usage: compile_gemm M N K TILE");
     };
     assert!(m > 0 && n > 0 && k > 0 && matches!(tile, 32 | 64));
+    let gemv = std::env::var("INFERENA_GEMM_GEMV").as_deref() == Ok("1");
+    assert!(!gemv || (m == 1 && n % 4 == 0));
     let sizes =
         [m.checked_mul(k), k.checked_mul(n), m.checked_mul(n)].map(|size| size.unwrap() as usize);
-    assert!(sizes.iter().sum::<usize>() * 4 <= 64 * 1024 * 1024);
+    assert!(sizes.iter().sum::<usize>() * 4 <= 256 * 1024 * 1024);
     let context_start = Instant::now();
     let context = meganeura::init_gpu_context_with(meganeura::GpuOptions::from_env()).unwrap();
     let context_ns = context_start.elapsed().as_nanos();
     let compile = |tile, role| {
         let _span = tracing::info_span!("gemm_candidate", tile, role).entered();
         let prepare = Instant::now();
-        let module = if tile == 32 {
+        let module = if gemv {
+            codegen::generate_module(ShaderGroup::MatMulGemv)
+        } else if tile == 32 {
             codegen::generate_module_small(ShaderGroup::MatMul)
         } else {
             codegen::generate_module(ShaderGroup::MatMul)
@@ -65,6 +69,10 @@ fn main() {
         (pipeline, source_bytes, prepare.elapsed().as_nanos())
     };
     let warmup_ns = if std::env::var("INFERENA_GEMM_WARM_COMPILER").as_deref() == Ok("1") {
+        assert!(
+            !gemv,
+            "GEMV validation does not compare compiler warmup tiles"
+        );
         let (mut warmup, _, elapsed) = compile(96 - tile, "warmup");
         context.destroy_compute_pipeline(&mut warmup);
         Some(elapsed)
@@ -114,7 +122,11 @@ fn main() {
                     params: [m, n, k, 0],
                 },
             );
-            bound.dispatch([n.div_ceil(tile), m.div_ceil(tile), 1]);
+            bound.dispatch(if gemv {
+                [n / 4, 1, 1]
+            } else {
+                [n.div_ceil(tile), m.div_ceil(tile), 1]
+            });
         }
         encoder.transfer("readback").copy_buffer_to_buffer(
             buffers[2].at(0),
@@ -145,6 +157,7 @@ fn main() {
         "{}",
         serde_json::json!({
             "engine": "meganeura", "shape": [m, n, k], "tile": tile,
+            "gemv": gemv, "gemv_threads": std::env::var("MEGANEURA_GEMV_THREADS").ok(),
             "gpu": context.device_information().device_name, "source_bytes": source_bytes,
             "context_ns": context_ns, "warmup_ns": warmup_ns, "prepare_ns": prepare_ns,
             "dimensions": "runtime uniforms", "validation": validation,
@@ -156,4 +169,8 @@ fn main() {
     for buffer in buffers {
         context.destroy_buffer(buffer);
     }
+    assert!(
+        validation.iter().all(|row| row["failures"] == 0),
+        "full-output f64 qualification failed"
+    );
 }

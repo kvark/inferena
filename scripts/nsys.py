@@ -28,8 +28,15 @@ def main():
     parser.add_argument("--device-parameters", choices=("0", "1", "device-buddy"), default="0",
                         help="experiment-only native parameter placement")
     parser.add_argument("--reuse-upload", action="store_true", help="experiment-only bounded upload cache")
+    parser.add_argument("--transpose-tile", type=int, default=0)
+    parser.add_argument("--unpacked", action="store_true", help="experiment-only SwiGLU representation")
+    parser.add_argument("--gemv-threads", type=int, choices=(32, 64, 128, 256), default=256)
+    parser.add_argument("--warmup-runs", type=int, default=5)
+    parser.add_argument("--measurement-runs", type=int, default=3)
     parser.add_argument("--nsys", default=os.environ.get("NSYS") or shutil.which("nsys"), help="Nsight Systems executable (or NSYS/PATH)")
     args = parser.parse_args()
+    if args.transpose_tile < 0 or min(args.warmup_runs, args.measurement_runs) < 1:
+        parser.error("nonnegative transpose tile and positive warmup/measurement counts required")
     if not args.nsys:
         parser.error("put Nsight Systems on PATH, or pass --nsys /path/to/nsys")
     args.nsys = shutil.which(args.nsys) or str(Path(args.nsys).resolve())
@@ -49,7 +56,7 @@ def main():
     destination.mkdir(parents=True, exist_ok=False)
     command = [
         runner_bash(), (ROOT / "run.sh").as_posix(), "-m", args.model, "-f", "pytorch,meganeura",
-        "--warmup-runs", "5", "--measurement-runs", "3", "--results-dir", str(destination),
+        "--warmup-runs", str(args.warmup_runs), "--measurement-runs", str(args.measurement_runs), "--results-dir", str(destination),
     ]
     if args.precision == "strict":
         command.append("--strict")
@@ -62,6 +69,9 @@ def main():
                INFERENA_STREAM_WEIGHTS=str(int(args.stream_weights)),
                MEGANEURA_DEVICE_PARAMETERS=args.device_parameters,
                MEGANEURA_REUSE_UPLOAD=str(int(args.reuse_upload)),
+               MEGANEURA_TRANSPOSE_TILE=str(args.transpose_tile),
+               MEGANEURA_GREEDY_PACK_SWIGLU=str(int(not args.unpacked)),
+               MEGANEURA_GEMV_THREADS=str(args.gemv_threads),
                INFERENA_REQUIRE_LOCAL_WEIGHTS="1", HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
                TORCH_LOGS="graph_breaks,recompiles,perf_hints")
     env.pop("VIRTUAL_ENV", None)
@@ -78,7 +88,7 @@ def main():
             subprocess.run(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
         args.backend = "cuda"
         records = json.loads((destination / f"{args.model}_summary.json").read_text())
-        check_pair(records, args, args.mode, not args.no_graphs, 3, revision, diagnostic=True)
+        check_pair(records, args, args.mode, not args.no_graphs, args.measurement_runs, revision, diagnostic=True)
         if input_hashes([args.model]) != hashes:
             raise ValueError("inputs changed during capture")
         manifest["event_counts"] = {}

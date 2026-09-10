@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 use std::time::Instant;
 
 mod compilation;
+mod graphics;
 mod stream_weights;
 
 thread_local! {
@@ -401,6 +402,7 @@ fn bench_session(
     session: &mut meganeura::Session,
     set_inputs: &dyn Fn(&mut meganeura::Session),
 ) -> BenchStats {
+    let _phase_span = tracing::info_span!("inferena_bench_phase", phase).entered();
     let (warmups, samples) = benchmark_counts();
     let warmup_range = nsys_range(&format!("meganeura/{phase}/warmup"));
     for _ in 0..warmups {
@@ -409,6 +411,7 @@ fn bench_session(
         session.wait();
     }
     drop(warmup_range);
+    graphics::start_phase(phase);
     let _measure_range = nsys_range(&format!("meganeura/{phase}/measure"));
     let sample_label = format!("meganeura/{phase}/sample");
     let mut samples_ms = Vec::with_capacity(samples);
@@ -669,7 +672,10 @@ fn bench_smollm2(model_name: &str) {
     } else {
         f64::INFINITY
     };
-    assert!(relative_l2 < 0.01, "stateless output disagrees with the causal prefill prefix: {relative_l2}");
+    assert!(
+        relative_l2 < 0.01,
+        "stateless output disagrees with the causal prefill prefix: {relative_l2}"
+    );
     environment["stateless_validation"] = serde_json::json!({
         "reference": "first causal prefill position, full vocabulary",
         "output_shape": [1, 1, vocab], "logits_hash": sha256_f32(&token_output),

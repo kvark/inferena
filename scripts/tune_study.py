@@ -17,7 +17,8 @@ def main():
                        "fixed-k32": "k32", "fixed-native-div-k32": "native-div-k32"}
     parameter_memory = {"device-params": "1", "device-params-buddy": "device-buddy",
                         "device-params-reuse": "device-buddy", "device-params-tiled": "device-buddy"}
-    layouts = ("interleaved", "unpacked", "unpacked-interleaved")
+    widths = {f"{prefix}gemv{width}": str(width) for prefix in ("", "unpacked-") for width in (32, 64, 128)}
+    layouts = ("interleaved", "unpacked", "unpacked-interleaved", *widths)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--models", nargs="+", choices=SUPPORTED_MODELS,
@@ -89,13 +90,15 @@ def main():
                                 "MEGANEURA_REUSE_UPLOAD": str(int(args.resident or variant in ("device-params-reuse", "device-params-tiled"))),
                                 "MEGANEURA_TRANSPOSE_TILE": str(16 if args.resident else args.transpose_tile if variant == "device-params-tiled" else 0),
                                 "MEGANEURA_INTERLEAVE_COLUMNS": str(int(variant in ("interleaved", "unpacked-interleaved"))),
-                                "MEGANEURA_GREEDY_PACK_SWIGLU": str(int(variant not in ("unpacked", "unpacked-interleaved"))),
+                                "MEGANEURA_GREEDY_PACK_SWIGLU": str(int(not variant.startswith("unpacked"))),
+                                "MEGANEURA_GEMV_THREADS": widths.get(variant, "256"),
                                 "BLADE_SHARED_TRANSIENT": str(int(variant == "shared-freelist")),
                                 "RUST_LOG": "warn,meganeura::runtime::tuning=info"})
                     if args.trace_setup:
                         env["INFERENA_COMPILE_TRACE"] = str(destination / "compilation.jsonl")
                     if args.profile:
                         env["INFERENA_PROFILE_DIR"] = str(destination / "profiles")
+                        env["MEGANEURA_GPU_TIMING"] = "1"
                     if args.fresh_driver_cache:
                         cache = destination / "driver-cache"
                         cache.mkdir()

@@ -5,11 +5,14 @@ import argparse
 import os
 from pathlib import Path
 import shutil
+import signal
+import subprocess
 import sys
+import time
 import uuid
 
 
-def execute(limit, command):
+def execute(limit, floor_mib, log_path, command):
     entry = next(line for line in Path("/proc/self/cgroup").read_text().splitlines()
                  if line.startswith("0::"))
     group = Path("/sys/fs/cgroup") / entry[3:].lstrip("/")
@@ -17,7 +20,35 @@ def execute(limit, command):
                            ("memory.oom.group", "1")):
         if not (group / name).exists() or (group / name).read_text().strip() != expected:
             raise SystemExit(f"{name}: requested cgroup limit is not active; refusing launch")
-    os.execvp(command[0], command)
+    if not floor_mib:
+        os.execvp(command[0], command)
+    with Path(log_path).open("x") as log:
+        log.write("elapsed_s,mem_available_mib,cgroup_memory_mib\n")
+        start = time.monotonic()
+        process = subprocess.Popen(command, start_new_session=True)
+        try:
+            while process.poll() is None:
+                available = next(int(line.split()[1]) // 1024
+                                 for line in Path("/proc/meminfo").read_text().splitlines()
+                                 if line.startswith("MemAvailable:"))
+                resident = int((group / "memory.current").read_text()) // 1024**2
+                log.write(f"{time.monotonic() - start:.3f},{available},{resident}\n")
+                log.flush()
+                if available < floor_mib:
+                    raise RuntimeError(f"host headroom {available} MiB below {floor_mib} MiB; stopping experiment")
+                try:
+                    process.wait(timeout=0.5)
+                except subprocess.TimeoutExpired:
+                    pass
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()
+        raise SystemExit(process.returncode)
 
 
 def positive(value):
@@ -31,6 +62,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--memory-mib", type=positive, required=True)
     parser.add_argument("--seconds", type=positive, required=True)
+    parser.add_argument("--minimum-available-mib", type=positive,
+                        help="stop the experiment if global available RAM falls below this floor")
+    parser.add_argument("--memory-log", type=Path, help="new CSV file, required with the global RAM floor")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="-- executable [arguments]")
     args = parser.parse_args()
     command = args.command
@@ -38,6 +72,8 @@ def main():
         command = command[1:]
     if not command:
         parser.error("provide a command after --")
+    if bool(args.minimum_available_mib) != bool(args.memory_log):
+        parser.error("provide both --minimum-available-mib and --memory-log")
     if sys.platform != "linux" or not shutil.which("systemd-run"):
         parser.error("requires Linux and a systemd user manager; no unbounded fallback")
     if not Path("/sys/fs/cgroup/cgroup.controllers").exists():
@@ -65,12 +101,13 @@ def main():
         f"--property=MemoryMax={limit}", "--property=MemorySwapMax=0",
         "--property=OOMPolicy=kill", f"--property=RuntimeMaxSec={args.seconds}",
         "--property=TimeoutStopSec=5s", "--", sys.executable,
-        str(Path(__file__).resolve()), "--exec", str(limit), *command,
+        str(Path(__file__).resolve()), "--exec", str(limit),
+        str(args.minimum_available_mib or 0), str(args.memory_log.resolve()) if args.memory_log else "-", *command,
     ])
 
 
 if __name__ == "__main__":
     if sys.argv[1:2] == ["--exec"]:
-        execute(int(sys.argv[2]), sys.argv[3:])
+        execute(int(sys.argv[2]), int(sys.argv[3]), sys.argv[4], sys.argv[5:])
     else:
         main()

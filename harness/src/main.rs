@@ -572,12 +572,12 @@ fn run_framework(
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
         let combined = format!("{stderr}\n{stdout}");
-        // Truncate long error output for readability.
-        let stderr_short: String = stderr.lines().take(20).collect::<Vec<_>>().join("\n");
-
-        // "Unknown model" / "unsupported" → skip, not error.
+        // Audited runners fail explicitly: a capture error can itself contain
+        // "unsupported". Keep the full traceback, including its final cause.
         let lower = combined.to_lowercase();
-        if lower.contains("unknown model") || lower.contains("unsupported") {
+        if !matches!(framework, "pytorch" | "meganeura")
+            && (lower.contains("unknown model") || lower.contains("unsupported"))
+        {
             return FrameworkOutcome::Skipped {
                 framework: framework.to_string(),
                 model: model.to_string(),
@@ -588,7 +588,7 @@ fn run_framework(
         return FrameworkOutcome::Error {
             framework: framework.to_string(),
             model: model.to_string(),
-            error: format!("{}: {}", output.status, stderr_short),
+            error: format!("{}: {}", output.status, combined.trim()),
         };
     }
 

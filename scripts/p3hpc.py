@@ -84,6 +84,7 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False):
     for engine, record in by_engine.items():
         if record["status"] != "ok":
             raise ValueError(f"{engine} failed: {record.get('error', record.get('reason'))}")
+    for engine, record in by_engine.items():
         validation = record["validation"]
         gates = ("comparison_performed", "forward_valid")
         if not args.inference_only:
@@ -115,6 +116,8 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False):
     if args.backend in ("cuda", "rocm", "xpu") and not gpu_matches(args.gpu, pt["gpu_name"]):
         raise ValueError(f"unexpected PyTorch GPU: {pt['gpu_name']}")
     execution = pt["execution"]
+    if args.backend == "cuda" and execution.get("stream_policy") != "single dedicated CUDA preparation/run stream":
+        raise ValueError("CUDA preparation and execution must share the declared stream policy")
     if execution["requested_mode"] != mode or execution["compiled"] != (mode != "eager"):
         raise ValueError("requested compiler mode did not execute")
     if execution["cuda_graphs"]["requested"] != graphs:

@@ -14,7 +14,7 @@ import torch
 from execution import capture_phase, profile_phase, synchronize
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-from p3hpc import (MODELS, TORCH_REVISION, TORCH_VERSION, check_torch_identity,
+from p3hpc import (MODELS, TORCH_REVISION, TORCH_VERSION, check_pair, check_torch_identity,
                   create_parser, gpu_matches, runner_bash, select_native_device)
 
 
@@ -29,6 +29,11 @@ class CampaignTest(unittest.TestCase):
         self.assertIsNone(defaults.gpu)
         self.assertIsNone(defaults.results_dir)
         self.assertFalse(create_parser().parse_args(["--qualify-only"]).collect)
+        with self.assertRaisesRegex(ValueError, "pytorch failed: capture traceback"):
+            check_pair([
+                {"framework": "meganeura", "status": "ok"},
+                {"framework": "pytorch", "status": "error", "error": "capture traceback"},
+            ], defaults, "default", True, 1, "source")
         intel = {"name": "Intel Arc B570 Graphics", "device_id": 0xe20c,
                  "available": True, "software_emulated": False}
         nvidia = {**intel, "name": "NVIDIA GeForce RTX 5070", "device_id": 0x2f04}
@@ -70,7 +75,7 @@ class CampaignTest(unittest.TestCase):
                     runner_bash()
 
     def test_explicit_backend_is_probed_and_synchronized_without_fallback(self):
-        from bench import detect_device
+        from bench import bench, detect_device
         with patch.dict("os.environ", {"INFERENA_TORCH_BACKEND": "xpu"}), \
              patch("torch.xpu.is_available", return_value=True), \
              patch("bench._xpu_actually_works", return_value=False) as probe:
@@ -82,6 +87,11 @@ class CampaignTest(unittest.TestCase):
             synchronize("xpu:1")
             xpu.assert_called_once_with("xpu:1")
             cuda.assert_not_called()
+        with patch("bench.detect_device", return_value="xpu:0"), \
+             patch("bench._bench") as run, patch("torch.cuda.stream") as stream:
+            bench("model", {})
+            run.assert_called_once_with("model", {}, "xpu:0", None)
+            stream.assert_not_called()
 
 
 @unittest.skipUnless(torch.cuda.is_available() and torch.version.cuda, "NVIDIA CUDA required")
@@ -107,8 +117,14 @@ class ReplayTest(unittest.TestCase):
             loss.backward()
             return output, loss
 
-        forward, _ = capture_phase(inference)
-        backward, report = capture_phase(training, model)
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            # Keep this graph alive across capture, like compiled model caches.
+            warmup = compiled(inputs)
+            warmup.square().mean().backward()
+        forward, _ = capture_phase(inference, stream=stream)
+        backward, report = capture_phase(training, model, stream=stream)
         self.assertEqual(report["validation"]["gradient_tensors"], 4)
         captured_gradients = [p.grad for p in model.parameters()]
         with torch.no_grad():

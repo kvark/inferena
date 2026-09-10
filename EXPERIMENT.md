@@ -55,6 +55,17 @@ options, compile status and per-phase capture/validation reports are in
 `execution`, not inferred from the mode's name. Requested compilation or
 capture failures abort the runner; no eager timings replace them.
 
+All CUDA conditions use one dedicated stream for model preparation,
+compilation, warmup, capture and execution, including the no-graph control.
+This avoids retained autograd nodes referring to a different/default warmup
+stream. `execution.stream_policy` records it. The September 10 qualification
+at `59d4cab` passed 13 strict pairs, then exposed this pre-existing capture
+failure on Whisper training; the failed campaign is retained, not relabelled.
+The corrected source needs fresh qualification. Capture checks still compare
+every participating output/gradient element over consecutive replays, with
+the original tolerances. Full failed-run tracebacks now survive in records and
+logs; capture errors cannot be classified as unsupported models by substring.
+
 Timings remain synchronized **host wall time** around one full call/replay,
 with resident inputs, no readback and no optimizer update. Compilation,
 capture and qualification are reported separately. Each process gets an empty
@@ -588,6 +599,64 @@ source with the documented mode switches; binaries are not retained in Git.
 The branch subsequently removed the unused legacy runner and made the replay
 object explicitly own its callable/model as well as its graph/output storage.
 Max-autotune and the full replicated campaign remain unmeasured.
+
+## September 10 dependency regression check
+
+The one-command collector is implemented at Inferena `59d4cab`, updating
+Meganeura `43b606ff` → `e59bd32d` while retaining Blade 0.9 and the common
+PyTorch source. The Windows PowerShell setup commit is preserved.
+
+The source review covers the softplus negative-tail correction, added multimodal
+primitives, and weighted epilogues. The common workloads keep f32 storage, but
+the epilogue change also repairs small-tile f32 shader/grid consistency, so it
+cannot be dismissed as quantization-only.
+
+On the RTX 5070 / driver 595.71.05, a native dependency regression screen ran
+all five common models in strict and accelerated modes: three paired fresh
+processes per condition, 5 warmups and 20 samples per phase, no profiling or
+measured tuning. All 30 old/new pairs have identical full-output hashes, losses,
+total gradient norms and per-parameter gradient-norm records. This is not an
+elementwise-gradient or convergence check.
+
+Median paired change in ordinary wall time (new/old − 1; positive is slower):
+
+| Model | Precision | Inference | Minimal shape | F+L+B |
+|---|---|---:|---:|---:|
+| SmolLM2-135M | strict | −0.1% | +2.6% | +0.0% |
+| SmolVLA | strict | −1.2% | −1.2% | −0.5% |
+| Diffusion U-Net | strict | −3.3% | −0.6% | −0.7% |
+| ResNet-50 | strict | +0.0% | −0.1% | +0.0% |
+| Whisper-tiny | strict | +0.0% | +0.0% | +0.0% |
+| SmolLM2-135M | accelerated | −0.0% | +0.2% | +0.1% |
+| SmolVLA | accelerated | +0.2% | −0.6% | +0.0% |
+| Diffusion U-Net | accelerated | +2.0% | −1.2% | +1.2% |
+| ResNet-50 | accelerated | +0.0% | −0.0% | −0.1% |
+| Whisper-tiny | accelerated | +0.1% | −0.2% | −0.0% |
+
+No large steady-state regression appears in this screen; this is not a
+statistical equivalence test or a new PyTorch performance comparison. Order
+alternates across model/precision pairs, not within each condition's three
+repeats. Retain the noisy single-token SmolLM2 observations (one pair is +9.2%),
+not only the median.
+
+Preparation is separate: Whisper's medians rise 0.694→0.732 s strict and
+1.223→1.312 s accelerated. Driver caches were left as found, so these are
+startup-cost observations, not controlled cold-compile attribution or a reason
+to undo the correctness fixes.
+
+Rebuild the native binaries at Inferena `6fcdbc4` and `59d4cab` with
+`cargo build --release --locked -j1 -p inferena-harness -p inferena-meganeura`.
+Run each binary from the prepared checkout for the five common models, strict
+then accelerated, repeated three times in that order. Set `INFERENA_STRICT`
+to 1/0, `INFERENA_WARMUP_RUNS=5`, `INFERENA_MEASUREMENT_RUNS=20`,
+`INFERENA_REQUIRE_LOCAL_WEIGHTS=1`, `HF_HUB_OFFLINE=1`,
+`MEGANEURA_DEVICE_ID` to the enumerated adapter ID and `FRAMEWORK_REV` to
+the corresponding pin. Start old/new, reverse order for each following pair.
+This screen used a 6144 MiB/no-swap process-tree limit; GPU/driver allocations
+are not all charged to it. Rust builds finished before measurement. Native
+records and the local comparison script are outside Git at
+`/mnt/data/inferena-uprev-2026-09-10.qj6ufb/`; binaries are reproducible from
+the two revisions and do not belong in the source archive.
 
 ## Collection-handoff qualification
 

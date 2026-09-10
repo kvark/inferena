@@ -63,15 +63,16 @@ class CapturedPhase:
         return self.outputs
 
 
-def capture_phase(fn, model=None):
+def capture_phase(fn, model=None, stream=None):
     """Return a replay callable retaining its graph, outputs and gradient storage.
 
     fn returns a tensor or a tuple of tensors. Inputs and parameters must keep
     their addresses. Training is forward/loss/backward, without an optimizer.
     Capture errors and validation failures propagate; never time a fallback.
+    Reuse the preparation stream when compilation retains autograd nodes.
     """
     start = time.perf_counter()
-    stream = torch.cuda.Stream()
+    stream = stream if stream is not None else torch.cuda.Stream()
     stream.wait_stream(torch.cuda.current_stream())
     with torch.cuda.stream(stream):
         for _ in range(3):

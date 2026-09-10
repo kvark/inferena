@@ -11,6 +11,7 @@ Features inspired by meganeura's bench/compare.sh (PR #30):
 - torch version in output
 """
 
+from contextlib import nullcontext
 import hashlib
 import json
 import os
@@ -1309,6 +1310,18 @@ def _configure_benchmark_precision(dev: str, strict: bool):
 def bench(model_name: str, spec: dict):
     """Matched benchmark: symmetric samples and full forward/loss/backward."""
     dev = detect_device()
+    stream = torch.cuda.Stream(device=dev) if dev.startswith("cuda") and torch.version.cuda else None
+    if stream is not None:
+        stream.wait_stream(torch.cuda.current_stream(dev))
+    # Compilation can retain AccumulateGrad nodes. Their stream must remain
+    # valid for capture, so all CUDA conditions use one preparation/run stream.
+    with torch.cuda.stream(stream) if stream is not None else nullcontext():
+        _bench(model_name, spec, dev, stream)
+    if stream is not None:
+        torch.cuda.current_stream(dev).wait_stream(stream)
+
+
+def _bench(model_name, spec, dev, stream):
     dev_name = device_name(dev)
     backend = backend_name(dev)
     model_type = spec["type"]
@@ -1336,6 +1349,7 @@ def bench(model_name: str, spec: dict):
     execution = {
         "requested_mode": mode,
         "compiled": False,
+        "stream_policy": "single dedicated CUDA preparation/run stream" if stream is not None else "backend default",
         "cuda_graphs": {"requested": use_graphs, "phases": {}},
     }
 
@@ -1409,7 +1423,7 @@ def bench(model_name: str, spec: dict):
 
     def prepare_phase(name, fn, training_model=None):
         if use_graphs:
-            fn, report = capture_phase(fn, training_model)
+            fn, report = capture_phase(fn, training_model, stream=stream)
         else:
             report = {"status": "not-requested"}
         execution["cuda_graphs"]["phases"][name] = report

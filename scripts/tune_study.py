@@ -29,6 +29,8 @@ def main():
                         help="use a new private driver disk cache for each process")
     parser.add_argument("--trace-setup", action="store_true",
                         help="separate CPU compilation and parameter-preparation spans (diagnostic)")
+    parser.add_argument("--stream-weights", action="store_true",
+                        help="bound SmolLM2 checkpoint residency to one stored tensor plus conversion")
     args = parser.parse_args()
     if args.replicates < 1 or subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT).strip():
         parser.error("positive replicate count and committed source required")
@@ -65,6 +67,7 @@ def main():
                                 "INFERENA_INFERENCE_ONLY": str(int(model.startswith("SmolLM2-"))),
                                 "INFERENA_WARMUP_RUNS": "5", "INFERENA_MEASUREMENT_RUNS": "20",
                                 "INFERENA_REQUIRE_LOCAL_WEIGHTS": "1", "MEGANEURA_DEVICE_ID": str(device["device_id"]),
+                                "INFERENA_STREAM_WEIGHTS": str(int(args.stream_weights)),
                                 "MEGANEURA_TUNE": str(int(variant in ("default", "expanded"))),
                                 "MEGANEURA_SPECIALIZE_CONV": specializations.get(variant, "0"),
                                 "MEGANEURA_DEVICE_PARAMETERS": str(int(variant == "device-params")),

@@ -3,12 +3,12 @@
 //! Supports SmolLM2 (text LLM) and SmolVLA (action expert) models
 //! using the meganeura crate (e-graph optimized NN on blade-graphics).
 
-use meganeura::data::safetensors::SafeTensorsModel;
 use meganeura::{CoopPolicy, Graph, Mode, Session, SessionConfig};
 use sha2::{Digest, Sha256};
 use std::time::Instant;
 
 mod compilation;
+mod stream_weights;
 
 thread_local! {
     static CAPTURE_GPU: std::cell::RefCell<Option<std::sync::Arc<blade_graphics::Context>>> =
@@ -191,37 +191,24 @@ fn init_params(session: &mut meganeura::Session) {
 
 fn load_weights(
     session: &mut meganeura::Session,
-    model: &SafeTensorsModel,
+    model: &mut stream_weights::Weights,
     transposed_set: &std::collections::HashSet<&str>,
 ) {
     let _span = tracing::info_span!("parameter_preparation").entered();
     let _range = nsys_range("meganeura/parameter_preparation");
     for (name, _) in session.plan().param_buffers.clone() {
         // Skip derived (fused) params — auto-populated when source params are loaded.
-        if !model.tensor_info().contains_key(&name) && name != "lm_head.weight" {
+        if !model.contains(&name) && name != "lm_head.weight" {
             continue;
         }
-        if name == "lm_head.weight" {
-            if model.tensor_info().contains_key("lm_head.weight") {
-                let data = if transposed_set.contains(name.as_str()) {
-                    model.tensor_f32_auto_transposed(&name)
-                } else {
-                    model.tensor_f32_auto(&name)
-                };
-                session.set_parameter(&name, &data.unwrap());
-            } else {
-                let data = model
-                    .tensor_f32_auto_transposed("model.embed_tokens.weight")
-                    .unwrap();
-                session.set_parameter("lm_head.weight", &data);
-            }
-        } else if transposed_set.contains(name.as_str()) {
-            let data = model.tensor_f32_auto_transposed(&name).unwrap();
-            session.set_parameter(&name, &data);
+        let tied_head = name == "lm_head.weight" && !model.contains(&name);
+        let source = if tied_head {
+            "model.embed_tokens.weight"
         } else {
-            let data = model.tensor_f32_auto(&name).unwrap();
-            session.set_parameter(&name, &data);
-        }
+            &name
+        };
+        let data = model.tensor_f32(source, tied_head || transposed_set.contains(name.as_str()));
+        session.set_parameter(&name, &data);
     }
 }
 
@@ -566,9 +553,12 @@ fn bench_smollm2(model_name: &str) {
 
     // --- Load weights ---
     eprintln!("[meganeura] loading from {}", path.display());
-    let model = {
+    let mut model = {
         let _span = tracing::info_span!("checkpoint_file_load").entered();
-        SafeTensorsModel::load(path).expect("local model load failed")
+        stream_weights::Weights::open(
+            path,
+            std::env::var("INFERENA_STREAM_WEIGHTS").as_deref() == Ok("1"),
+        )
     };
 
     // --- Build & compile ---
@@ -586,7 +576,7 @@ fn bench_smollm2(model_name: &str) {
     let transposed = smollm2::transposed_weight_names(&config);
     let transposed_set: std::collections::HashSet<&str> =
         transposed.iter().map(|s| s.as_str()).collect();
-    load_weights(&mut session, &model, &transposed_set);
+    load_weights(&mut session, &mut model, &transposed_set);
 
     eprintln!("[meganeura] ready (compile: {compile_s:.2}s)");
 
@@ -641,7 +631,7 @@ fn bench_smollm2(model_name: &str) {
     let mut lat_session = build_inference_session(&lat_g);
     compile_s += lat_compile_start.elapsed().as_secs_f64();
     // Load the same checkpoint for the single-token shape.
-    load_weights(&mut lat_session, &model, &transposed_set);
+    load_weights(&mut lat_session, &mut model, &transposed_set);
     let latency = bench_session("latency", &mut lat_session, &|s| {
         s.set_input_u32("token_ids", &[0u32]);
     });
@@ -686,7 +676,7 @@ fn bench_smollm2(model_name: &str) {
     eprintln!("[meganeura] compiling training session...");
     let mut train_session = build_session(&training_g);
     compile_s += train_compile_start.elapsed().as_secs_f64();
-    load_weights(&mut train_session, &model, &transposed_set);
+    load_weights(&mut train_session, &mut model, &transposed_set);
 
     // `labels[pos]` is already the target for position `pos` (see the
     // inference loss above) — every position has a target, so no scale

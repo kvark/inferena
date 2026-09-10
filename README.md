@@ -167,7 +167,7 @@ on every machine; each machine still qualifies itself before collecting data:
 
 ```sh
 git fetch origin --tags
-git switch --detach p3hpc-collection-2026-09-10
+git switch --detach p3hpc-collection-2026-09-10-r2
 ```
 
 The [readiness findings](EXPERIMENT.md#current-collection-readiness-september-10)

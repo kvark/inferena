@@ -8,7 +8,7 @@ floating sibling checkout.
 
 ## Current collection readiness, September 10
 
-**Ready for collection at `p3hpc-collection-2026-09-10`.** At source `24160533`,
+**Ready for collection at `p3hpc-collection-2026-09-10-r2`.** At source `db048638`,
 all 30 paired CUDA qualification conditions pass on RTX 5070 / driver
 595.71.05: five common models, strict and accelerated precision, each with
 default/no-graph, default/graph and max-autotune/graph. Python 3.13.13 and the
@@ -21,11 +21,10 @@ this is not a new cross-engine performance table or a guarantee of their results
 Reproduce with `python scripts/p3hpc.py --qualify-only`; omit that option to
 qualify and then collect three fresh-process replicates per condition. The
 complete local qualification manifest is outside Git at
-`../inferena-results/zork-20260910T054650692744Z-24160533/campaign.json`.
-The worst full-gradient check uses 29.3% of its independent ceiling; the
-largest frozen per-tensor bound fraction is 87.5%, in an uncaptured holdout.
-No condition was retried or excluded. The broad Python tests pass, including
-live input/weight changes and rejection of excessive calibrated drift.
+`../inferena-results/zork-20260910T161443333460Z-db048638/campaign.json`.
+No condition was retried or excluded, and the bounded run used no swap. The
+broad Python tests pass, including live input/weight changes and rejection of
+excessive calibrated drift.
 
 The old/new Meganeura screen below found no large steady-state regression.
 Getting the reference qualified required addressing two pre-existing problems:

@@ -285,6 +285,56 @@ floor as the resident Systems recipe. These environment-driven prototypes
 remain source-only experiments, not a new public configuration contract or a
 change to the collection tag.
 
+## Packing, layout and warmup controls — September 10
+
+The source-only `experiment/packing-layout-2026-09-10` tag pins Meganeura
+`3024539` and Blade `7b6d97a`. All arms stream weights into device-buddy
+allocations, reuse bounded upload staging and use CPU transpose tile 16.
+The six-arm, five-model pilot passes the ordinary forward/gradient gates.
+Interleaving scalar-matmul output columns is slower (about 8–18% for the
+SmolLM2 prefills); it is not a promoted bank-layout fix. It separately passes
+21 CPU shader checks, the existing rectangular tile qualification, 83 broad
+smoke checks and 599,492 full-f64 GEMM output checks, including tiny inputs.
+
+Disabling the greedy SwiGLU packed-weight copy leaves original parameters
+intact. Prefill plan requests fall from 742→540 MiB (135M), 2009→1409 MiB
+(360M) and 9640→6567 MiB (1.7B). The 1.7B process-driver peak falls from
+9704→6632 MiB. This is a graph representation choice, not allocator rounding.
+The runtime can still horizontally group the unpacked prefill projections.
+
+Six three-arm fresh-process repetitions (untuned / default tuning / unpacked,
+all six orders; 5 warmups, 20 samples) preserve all recorded output fields and
+the full stateless-token hash. Default tuning again improves 135M prefill
+12.689→11.596 ms, but changes no 360M/1.7B tile. Unpacking changes 1.7B token
+latency 16.258→14.520 ms; it does not establish a small-model latency gain.
+Increasing tuning scratch to 256 MiB in the pilot admits another 1.7B class,
+which retains its baseline. Packed-up and vocabulary classes still exceed
+that budget; GEMV remains outside the current tuner. This is not exhaustive
+evidence against larger-model tuning.
+
+The source-only `experiment/packing-warmup-2026-09-10` tag (`ab60d02`) repeats
+packed/unpacked with **100 warmups and 100 samples**, six AB/BA process pairs
+per model. All full prefill and token hashes still match exactly. The 1.7B
+token gain survives: 16.316→14.558 ms, 1.121×, median paired gain 1.772 ms
+versus twice its MAD 0.033 ms. Prefill stays about 54.8 ms. The other models
+do not clear the whole-step guard. No default or collection revision changes.
+
+This control also exposes a timing transient: ordinary 135M token latency is
+about 2.56 ms in the short protocol versus 3.58 ms after sustained execution;
+prefill changes little. Some short 360M-unpacked windows drift from about
+3.9 to 5.5 ms; long-warmup quarters stay near 5.47 ms. Do not call the fastest
+short-window result steady-state throughput. Clock/CPU/GPU correlation is a
+separate diagnostic; these observations alone do not identify its cause.
+All 36 longer runs finish with at least 9066 MiB globally available and no new
+kernel warnings. The earlier 54-run confirmation also retains every sample.
+
+Reproduce with `scripts/tune_study.py --resident --stream-weights --models
+SmolLM2-135M SmolLM2-360M SmolLM2-1.7B --variants untuned unpacked
+--replicates 6 --warmup-runs 100 --measurement-runs 100 --output <new-dir>`,
+under the same 3 GiB scope and global floor. Add `default` and use the earlier
+5/20 counts to reproduce the three-arm confirmation. `--profile` is a separate
+serialized-pass diagnostic, not another set of publication timings.
+
 ## Qualified Graphics source correlation — September 10
 
 The short resident-model captures now have complete runner output, matching

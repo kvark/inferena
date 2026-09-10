@@ -33,6 +33,7 @@ def main():
     parser.add_argument("--gemv-threads", type=int, choices=(32, 64, 128, 256), default=256)
     parser.add_argument("--warmup-runs", type=int, default=5)
     parser.add_argument("--measurement-runs", type=int, default=3)
+    parser.add_argument("--sample-clocks", action="store_true", help="diagnostic nvidia-smi clock/power samples at 20 ms")
     parser.add_argument("--nsys", default=os.environ.get("NSYS") or shutil.which("nsys"), help="Nsight Systems executable (or NSYS/PATH)")
     args = parser.parse_args()
     if args.transpose_tile < 0 or min(args.warmup_runs, args.measurement_runs) < 1:
@@ -83,7 +84,14 @@ def main():
         (destination / "capture.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
     save()
+    clock_process = clock_log = None
     try:
+        if args.sample_clocks:
+            clock_log = (destination / "clocks.csv").open("x")
+            clock_process = subprocess.Popen([
+                "nvidia-smi", "--query-gpu=timestamp,index,name,uuid,pstate,clocks.current.graphics,clocks.current.sm,clocks.current.memory,power.draw.instant,temperature.gpu,utilization.gpu,clocks_event_reasons.active",
+                "--format=csv,noheader,nounits", "--loop-ms=20",
+            ], stdout=clock_log, stderr=subprocess.STDOUT)
         with (destination / "runner.log").open("w") as log:
             subprocess.run(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
         args.backend = "cuda"
@@ -116,11 +124,22 @@ def main():
                         raise ValueError(f"{engine}/{phase}: no GPU events in the measurement range")
                     counts[f"{phase}_gpu_events"] = events
         manifest["status"] = "complete"
+        if clock_process is not None and clock_process.poll() is not None:
+            raise ValueError("clock sampler exited early; inspect clocks.csv")
     except (Exception, KeyboardInterrupt) as error:
         manifest["status"] = "incomplete"
         manifest["error"] = str(error)
         raise
     finally:
+        if clock_process is not None:
+            clock_process.terminate()
+            try:
+                clock_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                clock_process.kill()
+                clock_process.wait()
+        if clock_log is not None:
+            clock_log.close()
         save()
     print(f"Open pytorch.nsys-rep and meganeura.nsys-rep in {destination}")
 

@@ -178,9 +178,8 @@ is 32.37% of peak. The sampled instruction mix attributes 22.28% of samples to
 shared stores, 13.00% to FP32 FMA and 11.34% to integer FMA; these are not
 dynamic instruction counts. This is evidence to investigate staging and
 index calculation; counters alone do not prove which transformation will help.
-An immutable-parameter specialization ablation is retained separately, with
-the same arithmetic, buffers and schedule. The existing full f64 convolution
-oracles pass; whole-model timing and native-tool follow-up are separate gates.
+The immutable-parameter ablation below tests that hypothesis with unchanged
+arithmetic, buffers and schedule.
 
 For this tool version, the pipeline CSV's early sample/register/shared-memory
 columns agree with the UI, but some later headers do not align with their data.
@@ -193,6 +192,65 @@ context's complete outputs and gradient norms. Its training host sample is
 46.585 ms: host `step` 4.308 ms, `wait` 41.922 ms, grouped GPU work 41.539 ms.
 Those nested/overlapping intervals must not be added or subtracted to invent
 a CPU-utilization or barrier-overpayment metric.
+
+## Immutable convolution parameters — September 10
+
+The source-only `experiment/conv-specialization-2026-09-10` tags in Inferena
+and Meganeura replace the scalar convolution's immutable u32 parameter uniform
+with a WGSL constant struct. This permits ordinary driver constant folding;
+there is no model/card-name rule. Exact parameter values and tile geometry key
+each pipeline. A later `experiment/conv-native-division-2026-09-10` tag also
+uses native u32 division with those constant divisors, retaining exact indexing.
+These are whole-model implementation ablations, **not automatic selections**.
+They do not combine with the current tile tuner or change the collection tag.
+
+Run `scripts/tune_study.py --models ResNet-50 Whisper-tiny --variants untuned
+fixed-params fixed-native-div --replicates 6 --output <new-dir>`. Five warmups
+and twenty samples per fresh process, strict f32, no tracing, normal per-session
+contexts. The six-process three-arm cohort rotates execution order. Preparation
+includes both the ordinary fallback pipelines and additional exact variants.
+
+| ResNet F+loss+backward | Untuned | Constant parameters | Constants + native division |
+|---|---:|---:|---:|
+| Median step, ms | 44.153 | 34.444 | 33.329 |
+| Median preparation, s, warm driver cache | 0.716 | 0.8235 | 0.826 |
+
+All recorded logits hashes, loss and gradient norms repeat exactly in both
+models across all 36 processes. Both variants separately pass the existing
+full-f64 forward/dX/dW regression oracles, including ordinary/tiny inputs,
+padding, stride and tile edges. ResNet's roughly 1.28× / 1.325× speedups clear
+the 5% plus paired-noise guard. Whisper improves by only about 1%, below it.
+The incremental native-division gain is about 1.1 ms, less than the same 5%
+guard relative to constant parameters; it is not another large independent win.
+
+The earlier constant-parameter-only six-pair confirmation agrees. Repeating it
+with `--fresh-driver-cache` gives ResNet 44.151→34.497 ms, but adds a median
+3.067 seconds of preparation: about **319 training steps to amortize**. Warm
+cache extra preparation was about 113 ms, or 12 steps. Do not use frontend-only
+compilation time to erase that first-use cost. The unchanged 135M control has
+no qualifying convolution and no guarded gain.
+
+A qualified constant-parameter Graphics capture follows the same short-window
+recipe as the baseline: three steps in 98.42 ms, one complete training GPU
+range of 32.21 ms versus 42.09 ms in the earlier baseline capture. Runner output
+matches its ordinary control and the baseline; no hardware-event overflow.
+This independently places the improvement on the GPU, but these diagnostic
+intervals are not the unprofiled performance estimate. The sampled integer-FMA
+share changes from 11.34% to 7.95%; **that is not an executed-instruction count**.
+Stalls on a consumer instruction can reflect earlier loads or synchronization.
+Shared-store samples alone do not prove that shared stores caused the delay.
+
+The follow-up `experiment/conv-k-stage-2026-09-10` tags double K staging from
+16 to 32, preserving the accumulator order while roughly halving loop/barrier
+rounds and doubling shared storage. Both integer-division forms pass the same
+full-f64 convolution oracles. Six three-arm process replicates (all six order
+permutations) confirm that the native-division K=32 arm **regresses ResNet
+training**: 33.340→36.834 ms, versus 44.133 ms untuned. Recorded output fields
+remain exact across all 36 processes. Minimal-forward latency goes the other
+way, 4.281→4.053 ms; Whisper changes negligibly. No global K=32 promotion is
+justified, and fewer barrier rounds alone do not predict a faster model.
+Reproduce with `--variants untuned fixed-native-div fixed-native-div-k32` and
+the same models/replicate count. These are warm-driver-cache results.
 
 ## Earlier Graphics pilot and incident disposition
 

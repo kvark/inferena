@@ -29,6 +29,7 @@ def main():
     parser.add_argument("--profile", action="store_true", help="separate serialized GPU pass diagnostics")
     parser.add_argument("--host-trace", action="store_true", help="separate Linux thread-CPU/frequency diagnostic")
     parser.add_argument("--cpu", type=int, help="Linux process-local CPU affinity control (not a system setting)")
+    parser.add_argument("--cpu-util-min", type=int, help="Linux per-task utilization hint, 0..1024; diagnostic only")
     parser.add_argument("--baseline", default="untuned", help="reference variant present in every replicate")
     parser.add_argument("--precision", choices=("strict", "accelerated"), default="strict")
     parser.add_argument("--variants", nargs="+",
@@ -55,6 +56,8 @@ def main():
         parser.error("--resident is a common kernel-study setup, not a parameter-placement arm")
     if args.cpu is not None and (not hasattr(os, "sched_getaffinity") or args.cpu not in os.sched_getaffinity(0)):
         parser.error("--cpu must be a currently allowed Linux logical CPU")
+    if args.cpu_util_min is not None and (not hasattr(os, "sched_getaffinity") or not 0 <= args.cpu_util_min <= 1024):
+        parser.error("--cpu-util-min requires Linux and a value in 0..1024")
     args.output = args.output.resolve()
     if args.output == ROOT or ROOT in args.output.parents:
         parser.error("keep artifacts outside the checkout")
@@ -121,6 +124,8 @@ def main():
                         command = [runner, model]
                         if args.cpu is not None:
                             command = ["taskset", "--cpu-list", str(args.cpu), *command]
+                        if args.cpu_util_min is not None:
+                            command = ["uclampset", "-m", str(args.cpu_util_min), "--", *command]
                         subprocess.run(command, cwd=ROOT, env=env, stdout=output, stderr=log, check=True)
                     row["process_elapsed_s"] = time.monotonic() - start
                     results[variant] = json.loads((destination / "runner.json").read_text())

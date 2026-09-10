@@ -23,6 +23,9 @@ def main():
     parser.add_argument("--models", nargs="+", choices=SUPPORTED_MODELS,
                         default=["SmolLM2-135M", "ResNet-50", "Whisper-tiny"])
     parser.add_argument("--replicates", type=int, default=3)
+    parser.add_argument("--warmup-runs", type=int, default=5)
+    parser.add_argument("--measurement-runs", type=int, default=20)
+    parser.add_argument("--profile", action="store_true", help="separate serialized GPU pass diagnostics")
     parser.add_argument("--baseline", default="untuned", help="reference variant present in every replicate")
     parser.add_argument("--precision", choices=("strict", "accelerated"), default="strict")
     parser.add_argument("--variants", nargs="+",
@@ -41,7 +44,7 @@ def main():
     parser.add_argument("--resident", action="store_true",
                         help="kernel studies: device-buddy parameters, reused uploads, CPU transpose tile 16")
     args = parser.parse_args()
-    if args.replicates < 1 or subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT).strip():
+    if min(args.replicates, args.warmup_runs, args.measurement_runs) < 1 or subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT).strip():
         parser.error("positive replicate count and committed source required")
     if args.baseline not in args.variants or len(set(args.variants)) != len(args.variants) or min(args.expanded_scratch_mib, args.transpose_tile) < 1:
         parser.error("distinct variants including the baseline, and positive scratch budget required")
@@ -76,7 +79,8 @@ def main():
                            if not key.startswith(("INFERENA_", "MEGANEURA_"))}
                     env.update({"INFERENA_STRICT": str(int(args.precision == "strict")),
                                 "INFERENA_INFERENCE_ONLY": str(int(model.startswith("SmolLM2-"))),
-                                "INFERENA_WARMUP_RUNS": "5", "INFERENA_MEASUREMENT_RUNS": "20",
+                                "INFERENA_WARMUP_RUNS": str(args.warmup_runs),
+                                "INFERENA_MEASUREMENT_RUNS": str(args.measurement_runs),
                                 "INFERENA_REQUIRE_LOCAL_WEIGHTS": "1", "MEGANEURA_DEVICE_ID": str(device["device_id"]),
                                 "INFERENA_STREAM_WEIGHTS": str(int(args.stream_weights)),
                                 "MEGANEURA_TUNE": str(int(variant in ("default", "expanded"))),
@@ -90,6 +94,8 @@ def main():
                                 "RUST_LOG": "warn,meganeura::runtime::tuning=info"})
                     if args.trace_setup:
                         env["INFERENA_COMPILE_TRACE"] = str(destination / "compilation.jsonl")
+                    if args.profile:
+                        env["INFERENA_PROFILE_DIR"] = str(destination / "profiles")
                     if args.fresh_driver_cache:
                         cache = destination / "driver-cache"
                         cache.mkdir()

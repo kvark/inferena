@@ -2,6 +2,7 @@
 
 use blade_graphics::{self as gpu, ShaderData as _};
 use meganeura::codegen::{self, ShaderGroup};
+use sha2::{Digest, Sha256};
 use std::time::Instant;
 
 #[path = "../compilation.rs"]
@@ -192,7 +193,10 @@ fn main() {
         assert!(context.wait_for(&done, !0).unwrap());
         let result = unsafe { std::slice::from_raw_parts(download.data().cast::<f32>(), sizes[2]) };
         let (mut failures, mut max_error) = (0usize, 0.0f64);
+        let mut output_hash = Sha256::new();
+        let mut first_failure = None;
         for (index, &actual) in result.iter().enumerate() {
+            output_hash.update(actual.to_le_bytes());
             let (row, col) = (index / n as usize, index % n as usize);
             let reference: f64 = (0..k as usize)
                 .map(|inner| {
@@ -206,12 +210,23 @@ fn main() {
                     0.0
                 };
             let error = (reference - actual as f64).abs();
+            let bound = scale as f64 * 1.0e-5 + reference.abs() * 2.0e-4;
             max_error = max_error.max(error);
-            failures += usize::from(
-                !actual.is_finite() || error > scale as f64 * 1.0e-5 + reference.abs() * 2.0e-4,
-            );
+            if !actual.is_finite() || error > bound {
+                failures += 1;
+                first_failure.get_or_insert_with(|| {
+                    serde_json::json!({
+                        "index": index, "reference_f64": reference, "actual": actual,
+                        "absolute_error": error, "bound": bound,
+                    })
+                });
+            }
         }
-        validation.push(serde_json::json!({"scale": scale, "failures": failures, "max_abs_error": max_error, "elements": result.len()}));
+        validation.push(serde_json::json!({
+            "scale": scale, "failures": failures, "max_abs_error": max_error, "elements": result.len(),
+            "output_hash": format!("sha256:{}", hex::encode(output_hash.finalize())),
+            "first_failure": first_failure,
+        }));
     }
     println!(
         "{}",

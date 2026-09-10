@@ -8,11 +8,27 @@ floating sibling checkout.
 
 ## Current collection readiness, September 10
 
-The no-argument workflow, checkpoint preparation, source pin and native device
-selection are implemented. **The full default CUDA campaign is not yet
-qualified; do not begin the multi-machine performance sweep.** The old/new
-Meganeura screen below found no large steady-state regression, but the broader
-reference qualification exposed two distinct pre-existing problems:
+**Ready for collection at `p3hpc-collection-2026-09-10`.** At source `24160533`,
+all 30 paired CUDA qualification conditions pass on RTX 5070 / driver
+595.71.05: five common models, strict and accelerated precision, each with
+default/no-graph, default/graph and max-autotune/graph. Python 3.13.13 and the
+common torch 2.13.0+cu130 source pin are unchanged. All runs retain default
+algorithms (`deterministic=false`, no cuBLAS workspace override), and all
+cross-engine gates pass. The collection tag adds only this documentation to
+the qualified implementation. Other machines must pass their own preflight;
+this is not a new cross-engine performance table or a guarantee of their results.
+
+Reproduce with `python scripts/p3hpc.py --qualify-only`; omit that option to
+qualify and then collect three fresh-process replicates per condition. The
+complete local qualification manifest is outside Git at
+`../inferena-results/zork-20260910T054650692744Z-24160533/campaign.json`.
+The worst full-gradient check uses 29.3% of its independent ceiling; the
+largest frozen per-tensor bound fraction is 87.5%, in an uncaptured holdout.
+No condition was retried or excluded. The broad Python tests pass, including
+live input/weight changes and rejection of excessive calibrated drift.
+
+The old/new Meganeura screen below found no large steady-state regression.
+Getting the reference qualified required addressing two pre-existing problems:
 
 1. At `59d4cab`, 13 strict pairs passed before Whisper training capture failed
    because an autograd node retained the default compilation stream. `50d10f2`
@@ -28,23 +44,26 @@ The default diagnostic fails; cuDNN determinism alone also fails. Full PyTorch
 determinism plus `CUBLAS_WORKSPACE_CONFIG=:4096:8` passes the diagnostic's eight
 repeat checks and all capture phases, including 181 gradient tensors. This is
 a possible **separate** reference condition, not a silently adopted baseline:
-it can change algorithms and performance. We have neither increased tolerance,
-automatically excluded diffusion, nor retried an unchanged campaign until lucky.
+it can change algorithms and performance. We did not adopt this restricted
+baseline or automatically exclude diffusion. Instead, the replay acceptance
+policy was revised using the reference-repeat controls below; original failures
+remain preserved, not retried unchanged until lucky.
 The first tensor-scale policy at `f2bb048` qualified all 15 strict conditions
 and seven accelerated conditions before accelerated diffusion failed an
 **uncaptured** gradient check. Its 16-call diagnostic shows ordinary versus
 captured variability, with worst full-gradient relative L2 differences of
-0.224% and 0.305%. Full deterministic mode is bit-identical in both sets of
+0.224% and 0.305%. Full deterministic mode has zero measured difference in both sets of
 16 calls. Local small-gradient tensors can vary more than the full vector;
 merely applying one larger percentage to every tensor is inappropriate.
-The precision/noise-aware policy below still needs fresh full qualification.
+The precision/noise-aware policy below passes the fresh full qualification.
 
 Diagnostic source and concise results are preserved on
 [`experiment/p3hpc-replay-stability-2026-09-10`](https://github.com/kvark/inferena/tree/experiment/p3hpc-replay-stability-2026-09-10)
-(`231bd1a`). It is an evidence branch, **not a collection-ready tag**. The two
+(`231bd1a`). It is an evidence branch, **not a collection-ready tag**. The three
 failed campaign manifests remain outside Git at
-`../inferena-results/zork-20260910T040555218867Z-59d4cab0/campaign.json` and
-`../inferena-results/zork-20260910T042613175806Z-50d10f28/campaign.json`.
+`../inferena-results/zork-20260910T040555218867Z-59d4cab0/campaign.json`,
+`../inferena-results/zork-20260910T042613175806Z-50d10f28/campaign.json` and
+`../inferena-results/zork-20260910T051440799518Z-f2bb048a/campaign.json`.
 Their qualification samples are not publication timings. No Nsight or RAM
 investigation was resumed, and no driver/sysctl setting was changed.
 

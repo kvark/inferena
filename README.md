@@ -161,11 +161,18 @@ install hints for anything missing.
 
 ## Quick start
 
-**September 10 status:** the one-command workflow is implemented, but hold off
-on the full multi-machine campaign. CUDA qualification currently stops on
-diffusion's PyTorch gradient repeatability; see the
-[readiness findings](EXPERIMENT.md#current-collection-readiness-september-10).
-No collection-ready tag has been issued, and validation has not been relaxed.
+**September 10 status:** all 30 common-model CUDA qualification conditions pass
+on the RTX 5070, with default PyTorch algorithms. Use the same collection tag
+on every machine; each machine still qualifies itself before collecting data:
+
+```sh
+git fetch origin --tags
+git switch --detach p3hpc-collection-2026-09-10
+```
+
+The [readiness findings](EXPERIMENT.md#current-collection-readiness-september-10)
+explain the precision-aware replay checks. Cross-engine accuracy gates are
+unchanged; measured noise does not grant an unlimited allowance.
 
 For the paired P3HPC campaign, install [uv](https://docs.astral.sh/uv/getting-started/installation/)
 once, then let the setup script install Python and the pinned requirements:

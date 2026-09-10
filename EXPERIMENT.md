@@ -30,9 +30,14 @@ repeat checks and all capture phases, including 181 gradient tensors. This is
 a possible **separate** reference condition, not a silently adopted baseline:
 it can change algorithms and performance. We have neither increased tolerance,
 automatically excluded diffusion, nor retried an unchanged campaign until lucky.
-The revised policy below keeps the default reference algorithms and checks
-gradient repeatability at the tensor scale. It needs a fresh complete
-qualification before the collection hold can be lifted.
+The first tensor-scale policy at `f2bb048` qualified all 15 strict conditions
+and seven accelerated conditions before accelerated diffusion failed an
+**uncaptured** gradient check. Its 16-call diagnostic shows ordinary versus
+captured variability, with worst full-gradient relative L2 differences of
+0.224% and 0.305%. Full deterministic mode is bit-identical in both sets of
+16 calls. Local small-gradient tensors can vary more than the full vector;
+merely applying one larger percentage to every tensor is inappropriate.
+The precision/noise-aware policy below still needs fresh full qualification.
 
 Diagnostic source and concise results are preserved on
 [`experiment/p3hpc-replay-stability-2026-09-10`](https://github.com/kvark/inferena/tree/experiment/p3hpc-replay-stability-2026-09-10)
@@ -52,9 +57,9 @@ this documented behavior. They do not identify a particular offending kernel.
 [PyTorch reproducibility](https://docs.pytorch.org/docs/main/notes/randomness.html),
 [cuDNN determinism](https://docs.nvidia.com/deeplearning/cudnn/backend/latest/developer/misc.html#reproducibility-determinism).
 
-`full-tensor-rms-linf-v1` retains elementwise output/loss comparison at
+`bounded-repeat-noise-v2` retains elementwise output/loss comparison at
 `rtol=1e-4, atol=1e-6`. For **each** participating parameter gradient, let
-`d = actual - reference`. Both conditions must pass:
+`d = actual - reference`. Strict-f32 uses these fixed bounds:
 
 ```
 max(abs(d)) <= 1e-6 + 1e-4 * max(abs(reference))
@@ -69,14 +74,35 @@ explicit experiment acceptance policy, not a PyTorch error guarantee or a
 proof of correct gradients. The cross-engine output/loss/gradient-norm gates
 are unchanged; these within-engine checks are additional replay qualification.
 
-The three existing uncaptured warmups now supply one fixed reference and two
-repeat comparisons. Two consecutive captured replays must satisfy the same
-fixed bounds against that reference. The bounds are not fitted to either set
-of observations; no outliers are dropped or retries used. Per-tensor errors,
-scales and bounds for both uncaptured and captured calls are saved in the
-execution metadata. Their readback/CPU validation cost is untimed and charged
-to `validation_s`, not ordinary step timings. Full deterministic algorithms
-remain off; their effective settings are recorded in every reference run.
+Accelerated-f32 allows reduced input precision, including TF32's ten input
+mantissa bits. Small preceding roundoff can cross later quantization boundaries;
+the much larger observed variation is consistent with this arithmetic, but
+the controls do not localize the responsible kernel.
+[PyTorch TF32 accuracy](https://docs.pytorch.org/docs/main/notes/numerical_accuracy.html#tensorfloat-32-tf32-on-nvidia-ampere-and-later-devices).
+For accelerated **gradients only**, eight uncaptured calls supply a fixed
+reference and the largest observed RMS/maximum errors for each parameter.
+Twice those observed errors is added to the corresponding strict bound.
+Two additional uncaptured holdouts and two captured replays must then pass
+the frozen bounds. They cannot enlarge the allowance. No samples are dropped.
+Strict training and all inference phases still use three ordinary calls
+(one reference, two holdouts) and no noise allowance.
+
+Every calibration, holdout and replay also has an independent full-gradient
+RMS ceiling: `RMS(d) <= 1e-6 + 0.01 * RMS(reference)`, weighted by element
+count across all participating parameters. Excessive reference variability
+fails rather than teaching an unlimited tolerance. This declared 1% ceiling
+is a policy limit, not a measured confidence interval or a PyTorch guarantee;
+unseen variability may still fail qualification. The per-parameter maximum
+and RMS checks remain additional constraints, not just this pooled check.
+
+Errors, reference scales, frozen allowances and full-gradient checks are saved
+in execution metadata. Readback/CPU validation is outside ordinary timings
+and charged to `validation_s`. Full deterministic algorithms remain off;
+effective settings are recorded. The prospective campaign is not a retry of
+unchanged policy, and the earlier failed campaigns remain incomplete.
+Diagnostic source is on
+[`experiment/p3hpc-precision-stability-2026-09-10`](https://github.com/kvark/inferena/tree/experiment/p3hpc-precision-stability-2026-09-10)
+at `0734dd7`; its ungated gradient measurements are not qualification records.
 
 ## What was missing
 
@@ -108,7 +134,8 @@ is included, just as in the frozen workload contract.
 
 Before any phase is timed, compare **all output and participating gradient
 elements** with the same uncaptured implementation over two consecutive
-replays (`rtol=1e-4`, `atol=1e-6`, finite values required). This validates the
+replays under the [declared noise policy](#replay-qualification-policy), with
+finite values required. This validates the
 capture transformation, not PyTorch-versus-Meganeura accuracy; the existing
 cross-engine sampled-output/loss/gradient-norm gates remain unchanged.
 The single broad regression also mutates inputs and parameters in place and

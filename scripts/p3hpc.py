@@ -129,8 +129,11 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False):
             raise ValueError(f"{phase} did not execute the requested capture mode")
         if graphs:
             validation = report["validation"]
-            if (validation.get("policy") != "full-tensor-rms-linf-v1"
-                    or validation.get("uncaptured_repeats") != 3
+            calibration = 8 if phase == "training" and pt["precision"]["reduced_precision_allowed"] else 1
+            if (validation.get("policy") != "bounded-repeat-noise-v2"
+                    or validation.get("calibration_samples") != calibration
+                    or validation.get("uncaptured_repeats") != calibration + 2
+                    or validation.get("uncaptured_holdouts") != 2
                     or validation.get("consecutive_replays") != 2):
                 raise ValueError(f"{phase} did not use the declared replay qualification policy")
     return by_engine

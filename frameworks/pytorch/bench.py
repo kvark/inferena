@@ -1430,7 +1430,8 @@ def _bench(model_name, spec, dev, stream):
 
     def prepare_phase(name, fn, training_model=None):
         if use_graphs:
-            fn, report = capture_phase(fn, training_model, stream=stream)
+            fn, report = capture_phase(fn, training_model, stream=stream,
+                                       reduced_precision=precision["reduced_precision_allowed"])
         else:
             report = {"status": "not-requested"}
         execution["cuda_graphs"]["phases"][name] = report

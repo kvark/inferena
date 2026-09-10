@@ -10,11 +10,14 @@ import torch
 
 REPLAY_RTOL = 1e-4
 REPLAY_ATOL = 1e-6
-REPLAY_POLICY = "full-tensor-rms-linf-v1"
+REPLAY_POLICY = "bounded-repeat-noise-v2"
+NOISE_SAMPLES = 8
+NOISE_MARGIN = 2.0
+GRADIENT_RMS_CEILING = 0.01
 
 
-def compare_tensors(actual, reference, *, gradient=False):
-    """Fixed replay bounds, not a tolerance learned from observed differences."""
+def compare_tensors(actual, reference, *, gradient=False, noise=None, calibrating=False):
+    """Compare full tensors; only uncaptured calibration may set noise bounds."""
     actual = actual.detach().cpu()
     if actual.shape != reference.shape or actual.dtype != reference.dtype:
         raise ValueError("tensor shape or dtype changed")
@@ -27,6 +30,7 @@ def compare_tensors(actual, reference, *, gradient=False):
         return float(torch.linalg.vector_norm(value, dtype=torch.float64) / math.sqrt(value.numel()))
 
     report = {
+        "elements": actual.numel(),
         "max_abs_error": float(error.abs().max()),
         "rms_error": rms(error),
         "max_abs_reference": float(reference.abs().max()),
@@ -40,11 +44,28 @@ def compare_tensors(actual, reference, *, gradient=False):
         # Cancellation makes elementwise relative gradient errors misleading.
         # Require both a worst-element and a full-vector error bound, separately
         # for every parameter; no pooling across tensors or discarded elements.
-        if report["max_abs_error"] > report["max_abs_bound"] or report["rms_error"] > report["rms_bound"]:
+        if noise is not None:
+            report["max_abs_bound"] += NOISE_MARGIN * noise["max_abs_error"]
+            report["rms_bound"] += NOISE_MARGIN * noise["rms_error"]
+        if not calibrating and (report["max_abs_error"] > report["max_abs_bound"]
+                                or report["rms_error"] > report["rms_bound"]):
             raise ValueError(f"gradient repeatability exceeds fixed bounds: {report}")
     else:
         torch.testing.assert_close(actual, reference, rtol=REPLAY_RTOL, atol=REPLAY_ATOL)
     return report
+
+
+def check_gradient_ceiling(rows):
+    """A noisy reference must not grant an unbounded replay allowance."""
+    elements = sum(row["elements"] for row in rows)
+    if not elements:
+        raise ValueError("training qualification has no participating gradients")
+    error = math.sqrt(sum(row["rms_error"] ** 2 * row["elements"] for row in rows) / elements)
+    reference = math.sqrt(sum(row["rms_reference"] ** 2 * row["elements"] for row in rows) / elements)
+    bound = REPLAY_ATOL + GRADIENT_RMS_CEILING * reference
+    if error > bound:
+        raise ValueError(f"full-gradient RMS error {error} exceeds independent ceiling {bound}")
+    return {"rms_error": error, "rms_reference": reference, "rms_bound": bound}
 
 
 def nsys_range(name):
@@ -102,7 +123,7 @@ class CapturedPhase:
         return self.outputs
 
 
-def capture_phase(fn, model=None, stream=None):
+def capture_phase(fn, model=None, stream=None, reduced_precision=False):
     """Return a replay callable retaining its graph, outputs and gradient storage.
 
     fn returns a tensor or a tuple of tensors. Inputs and parameters must keep
@@ -121,7 +142,10 @@ def capture_phase(fn, model=None, stream=None):
         return {name: parameter.grad for name, parameter in model.named_parameters()
                 if parameter.grad is not None} if model is not None else {}
 
-    def check(values, stage):
+    noise = {}
+    totals = {"uncaptured": [], "replays": []}
+
+    def check(values, stage, calibrating=False):
         rows = {}
         actual_gradients = parameter_gradients()
         if actual_gradients.keys() != gradients.keys():
@@ -132,15 +156,20 @@ def capture_phase(fn, model=None, stream=None):
                      for name, reference in gradients.items())
         for label, actual, reference, gradient in pairs:
             try:
-                rows[label] = compare_tensors(actual, reference, gradient=gradient)
+                rows[label] = compare_tensors(actual, reference, gradient=gradient,
+                                             noise=noise.get(label), calibrating=calibrating and gradient)
             except (ValueError, AssertionError) as error:
                 raise ValueError(f"{stage} {label}: {error}") from error
+        if model is not None:
+            totals["replays" if stage == "CUDA graph replay" else "uncaptured"].append(
+                check_gradient_ceiling([row for label, row in rows.items() if label.startswith("gradient ")]))
         return rows
 
     ordinary = []
     ordinary_validation_s = 0.0
+    calibration_samples = NOISE_SAMPLES if reduced_precision and model is not None else 1
     with torch.cuda.stream(stream):
-        for index in range(3):
+        for index in range(calibration_samples + 2):
             if model is not None:
                 model.zero_grad(set_to_none=True)
             outputs = fn()
@@ -150,7 +179,14 @@ def capture_phase(fn, model=None, stream=None):
                 expected = tuple(t.detach().cpu().clone() for t in tensors(outputs))
                 gradients = {name: grad.detach().cpu().clone() for name, grad in parameter_gradients().items()}
             else:
-                ordinary.append(check(outputs, "uncaptured repeat"))
+                calibrating = index < calibration_samples
+                rows = check(outputs, "uncaptured repeat", calibrating=calibrating)
+                ordinary.append(rows)
+                if calibrating:
+                    for label, row in rows.items():
+                        if label.startswith("gradient "):
+                            previous = noise.get(label, {"max_abs_error": 0.0, "rms_error": 0.0})
+                            noise[label] = {key: max(row[key], previous[key]) for key in previous}
             ordinary_validation_s += time.perf_counter() - validation_start
             del outputs
     torch.cuda.current_stream().wait_stream(stream)
@@ -184,10 +220,16 @@ def capture_phase(fn, model=None, stream=None):
             "gradient_tensors": len(gradients),
             "gradients": "all elements of every participating parameter",
             "gradient_metric": "per-tensor RMS and maximum absolute error",
-            "uncaptured_repeats": 3,
+            "uncaptured_repeats": calibration_samples + 2,
+            "calibration_samples": calibration_samples,
+            "uncaptured_holdouts": 2,
             "consecutive_replays": 2,
             "rtol": REPLAY_RTOL,
             "atol": REPLAY_ATOL,
+            "noise_margin": NOISE_MARGIN,
+            "noise": noise,
+            "gradient_rms_ceiling": GRADIENT_RMS_CEILING,
+            "full_gradient": totals,
             "uncaptured": ordinary,
             "replays": replays,
         },

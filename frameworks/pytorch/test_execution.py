@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import torch
 
-from execution import capture_phase, compare_tensors, profile_phase, synchronize
+from execution import capture_phase, check_gradient_ceiling, compare_tensors, profile_phase, synchronize
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from p3hpc import (MODELS, TORCH_REVISION, TORCH_VERSION, check_pair, check_torch_identity,
@@ -41,6 +41,15 @@ class CampaignTest(unittest.TestCase):
         compare_tensors(torch.zeros(3), torch.zeros(3), gradient=True)
         with self.assertRaises(ValueError):
             compare_tensors(torch.full((3,), 1e-3), torch.zeros(3), gradient=True)
+        reference = torch.tensor([1.0, -1.0, 0.0])
+        noise = {"max_abs_error": 1e-3, "rms_error": 1e-3}
+        rounded = reference + torch.tensor([0.0, 0.0, 2e-3])
+        check_gradient_ceiling([compare_tensors(rounded, reference, gradient=True, noise=noise)])
+        with self.assertRaises(ValueError):
+            compare_tensors(rounded * 2, reference, gradient=True, noise=noise)
+        # Even calibration cannot learn an unlimited allowance from bad data.
+        with self.assertRaisesRegex(ValueError, "independent ceiling"):
+            check_gradient_ceiling([compare_tensors(reference * 1.02, reference, gradient=True, calibrating=True)])
         defaults = create_parser().parse_args([])
         self.assertTrue(defaults.collect)
         self.assertEqual(defaults.models, list(MODELS))
@@ -145,9 +154,10 @@ class ReplayTest(unittest.TestCase):
             warmup = compiled(inputs)
             warmup.square().mean().backward()
         forward, _ = capture_phase(inference, stream=stream)
-        backward, report = capture_phase(training, model, stream=stream)
+        backward, report = capture_phase(training, model, stream=stream, reduced_precision=True)
         self.assertEqual(report["validation"]["gradient_tensors"], 4)
-        self.assertEqual(len(report["validation"]["uncaptured"]), 2)
+        self.assertEqual(len(report["validation"]["uncaptured"]), 9)
+        self.assertEqual(report["validation"]["calibration_samples"], 8)
         self.assertEqual(len(report["validation"]["replays"]), 2)
         captured_gradients = [p.grad for p in model.parameters()]
         with torch.no_grad():

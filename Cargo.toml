@@ -20,7 +20,7 @@ luminal_nn = { git = "https://github.com/luminal-ai/luminal", rev = "324d6017238
 luminal_cuda_lite = { git = "https://github.com/luminal-ai/luminal", rev = "324d60172381c2a014e40cac602ca8ee377a3f32" }
 luminal_metal = { git = "https://github.com/luminal-ai/luminal", rev = "324d60172381c2a014e40cac602ca8ee377a3f32" }
 inferi = { git = "https://github.com/dimforge/inferi" }
-meganeura = { git = "https://github.com/kvark/meganeura", rev = "e59bd32d2aeb200eb00b1a15698a777d7df8db4f", features = ["hub"] }
+meganeura = { git = "https://github.com/kvark/meganeura", rev = "ce80e9cd6056c230590b8b7e1eb9ffe9bbce08bc", features = ["hub"] }
 
 # Shared dependencies.
 serde = { version = "1", features = ["derive"] }

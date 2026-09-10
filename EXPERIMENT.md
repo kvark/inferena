@@ -3,7 +3,7 @@
 Source branch: `experiment/p3hpc-cuda-graphs`, based on Inferena main.
 The submitted source remains tagged `paper-arxiv-1`. Git records both bases;
 do not copy binaries or experimental raw records into this branch or main.
-The Meganeura dependency is pinned to merged main `e59bd32d` (0.3.0); it is not a
+The Meganeura dependency is pinned to merged main `ce80e9cd` (0.3.0); it is not a
 floating sibling checkout.
 
 ## Current collection readiness, September 10

@@ -4541,6 +4541,7 @@ name = "inferena-meganeura"
 version = "0.1.0"
 dependencies = [
  "blade-graphics",
+ "blade-macros",
  "env_logger",
  "hex",
  "hf-hub",

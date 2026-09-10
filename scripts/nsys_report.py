@@ -20,7 +20,8 @@ def report(database, top, launches=False):
                 raise ValueError(f"{name}: incomplete measurement range")
             engine = name.split("/")[0]
             samples = [(a, b) for a, b, label in ranges
-                       if label == f"{engine}/sample" and b is not None and start <= a < b <= end]
+                       if label in (f"{engine}/sample", name.removesuffix("/measure") + "/sample")
+                       and b is not None and start <= a < b <= end]
             if not samples or any(b > c for (_, b), (c, _) in zip(samples, samples[1:])):
                 raise ValueError(f"{name}: missing or overlapping samples")
             count = len(samples)

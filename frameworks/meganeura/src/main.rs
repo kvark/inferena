@@ -414,9 +414,10 @@ fn bench_session(
     }
     drop(warmup_range);
     let _measure_range = nsys_range(&format!("meganeura/{phase}/measure"));
+    let sample_label = format!("meganeura/{phase}/sample");
     let mut samples_ms = Vec::with_capacity(samples);
     for _ in 0..samples {
-        let _sample_range = nsys_range("meganeura/sample");
+        let _sample_range = nsys_range(&sample_label);
         set_inputs(session);
         let t0 = Instant::now();
         let step_range = nsys_range("meganeura/step");

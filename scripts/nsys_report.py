@@ -6,7 +6,7 @@ from pathlib import Path
 import sqlite3
 
 
-def report(database, top, launches=False):
+def report(database, top, launches=False, setup=False):
     with sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True) as db:
         ranges = db.execute(
             "SELECT start, end, coalesce(text, value) FROM NVTX_EVENTS "
@@ -15,6 +15,28 @@ def report(database, top, launches=False):
         phases = [row for row in ranges if row[2] and row[2].endswith("/measure")]
         if not phases:
             raise ValueError("no measurement ranges; API-only traces are insufficient")
+        if setup:
+            preparation = [(a, b) for a, b, name in ranges if name == "meganeura/parameter_preparation"]
+            if not preparation or any(b is None for _, b in preparation):
+                raise ValueError("setup reporting needs complete native parameter-preparation ranges")
+            for index, (a, b) in enumerate(preparation, 1):
+                print(f"\nParameter preparation {index}: {(b-a)/1e6:.3f} ms host elapsed")
+                for label in ("tensor_preparation", "parameter_upload"):
+                    spans = [(x, y) for x, y, name in ranges
+                             if name == f"meganeura/{label}" and y is not None and a <= x < y <= b]
+                    print(f"  {label}: {len(spans)} calls, {sum(y-x for x,y in spans)/1e6:.3f} ms host elapsed")
+                print("  Vulkan API calls, summed host ms, name (nested in preparation):")
+                for count, elapsed, name in db.execute(
+                    "SELECT count(*), sum(end-start)/1e6, value FROM VULKAN_API "
+                    "JOIN StringIds ON nameId=StringIds.id WHERE start>=? AND end<=? "
+                    "GROUP BY nameId ORDER BY sum(end-start) DESC LIMIT ?", (a, b, top),
+                ):
+                    print(f"  {count:6} {elapsed:10.3f} {name}")
+                count, elapsed = db.execute(
+                    "SELECT count(*), coalesce(sum(end-start), 0)/1e6 FROM VULKAN_WORKLOAD "
+                    "WHERE start>=? AND end<=?", (a, b),
+                ).fetchone()
+                print(f"  {count} grouped GPU intervals, summed {elapsed:.3f} ms (not additive to host)")
         for start, end, name in phases:
             if end is None:
                 raise ValueError(f"{name}: incomplete measurement range")
@@ -82,10 +104,11 @@ def main():
     parser.add_argument("database", type=Path)
     parser.add_argument("--top", type=int, default=8)
     parser.add_argument("--launches", action="store_true", help="rank CUDA graph nodes separately")
+    parser.add_argument("--setup", action="store_true", help="native parameter preparation and Vulkan allocation calls")
     args = parser.parse_args()
     if args.top < 1:
         parser.error("--top must be positive")
-    report(args.database, args.top, args.launches)
+    report(args.database, args.top, args.launches, args.setup)
 
 
 if __name__ == "__main__":

@@ -207,7 +207,13 @@ fn load_weights(
         } else {
             &name
         };
-        let data = model.tensor_f32(source, tied_head || transposed_set.contains(name.as_str()));
+        let data = {
+            let _span = tracing::info_span!("tensor_preparation", name).entered();
+            let _range = nsys_range("meganeura/tensor_preparation");
+            model.tensor_f32(source, tied_head || transposed_set.contains(name.as_str()))
+        };
+        let _span = tracing::info_span!("parameter_upload", name).entered();
+        let _range = nsys_range("meganeura/parameter_upload");
         session.set_parameter(&name, &data);
     }
 }

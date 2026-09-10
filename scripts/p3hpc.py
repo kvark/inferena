@@ -127,6 +127,12 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False):
         expected = "captured-and-validated" if graphs else "not-requested"
         if report["status"] != expected:
             raise ValueError(f"{phase} did not execute the requested capture mode")
+        if graphs:
+            validation = report["validation"]
+            if (validation.get("policy") != "full-tensor-rms-linf-v1"
+                    or validation.get("uncaptured_repeats") != 3
+                    or validation.get("consecutive_replays") != 2):
+                raise ValueError(f"{phase} did not use the declared replay qualification policy")
     return by_engine
 
 

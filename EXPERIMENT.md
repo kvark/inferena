@@ -30,10 +30,9 @@ repeat checks and all capture phases, including 181 gradient tensors. This is
 a possible **separate** reference condition, not a silently adopted baseline:
 it can change algorithms and performance. We have neither increased tolerance,
 automatically excluded diffusion, nor retried an unchanged campaign until lucky.
-The remaining choice is a labelled deterministic reference versus a reviewed
-replay-validation policy that accounts for ordinary nondeterministic arithmetic
-while preserving the cross-engine accuracy gates. The strongest default
-reference should not be silently constrained to obtain a passing result.
+The revised policy below keeps the default reference algorithms and checks
+gradient repeatability at the tensor scale. It needs a fresh complete
+qualification before the collection hold can be lifted.
 
 Diagnostic source and concise results are preserved on
 [`experiment/p3hpc-replay-stability-2026-09-10`](https://github.com/kvark/inferena/tree/experiment/p3hpc-replay-stability-2026-09-10)
@@ -43,6 +42,41 @@ failed campaign manifests remain outside Git at
 `../inferena-results/zork-20260910T042613175806Z-50d10f28/campaign.json`.
 Their qualification samples are not publication timings. No Nsight or RAM
 investigation was resumed, and no driver/sysctl setting was changed.
+
+### Replay qualification policy
+
+PyTorch explicitly permits nondeterministic CUDA backward implementations;
+NVIDIA documents atomic rounding variability in some cuDNN backward algorithms.
+The uncaptured/default versus full-deterministic controls above agree with
+this documented behavior. They do not identify a particular offending kernel.
+[PyTorch reproducibility](https://docs.pytorch.org/docs/main/notes/randomness.html),
+[cuDNN determinism](https://docs.nvidia.com/deeplearning/cudnn/backend/latest/developer/misc.html#reproducibility-determinism).
+
+`full-tensor-rms-linf-v1` retains elementwise output/loss comparison at
+`rtol=1e-4, atol=1e-6`. For **each** participating parameter gradient, let
+`d = actual - reference`. Both conditions must pass:
+
+```
+max(abs(d)) <= 1e-6 + 1e-4 * max(abs(reference))
+RMS(d)      <= 1e-6 + 1e-4 * RMS(reference)
+```
+
+This changes the relative-error scale, not the numerical constants. It avoids
+dividing by individual near-zero cancellation results, checks every element
+for sparse corruption, and also bounds diffuse error. Shapes, dtypes,
+finiteness and the complete participating-gradient set must match. This is an
+explicit experiment acceptance policy, not a PyTorch error guarantee or a
+proof of correct gradients. The cross-engine output/loss/gradient-norm gates
+are unchanged; these within-engine checks are additional replay qualification.
+
+The three existing uncaptured warmups now supply one fixed reference and two
+repeat comparisons. Two consecutive captured replays must satisfy the same
+fixed bounds against that reference. The bounds are not fitted to either set
+of observations; no outliers are dropped or retries used. Per-tensor errors,
+scales and bounds for both uncaptured and captured calls are saved in the
+execution metadata. Their readback/CPU validation cost is untimed and charged
+to `validation_s`, not ordinary step timings. Full deterministic algorithms
+remain off; their effective settings are recorded in every reference run.
 
 ## What was missing
 

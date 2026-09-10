@@ -2,10 +2,49 @@
 
 import time
 import os
+import math
 from contextlib import nullcontext
 from pathlib import Path
 
 import torch
+
+REPLAY_RTOL = 1e-4
+REPLAY_ATOL = 1e-6
+REPLAY_POLICY = "full-tensor-rms-linf-v1"
+
+
+def compare_tensors(actual, reference, *, gradient=False):
+    """Fixed replay bounds, not a tolerance learned from observed differences."""
+    actual = actual.detach().cpu()
+    if actual.shape != reference.shape or actual.dtype != reference.dtype:
+        raise ValueError("tensor shape or dtype changed")
+    if not torch.isfinite(actual).all() or not torch.isfinite(reference).all():
+        raise ValueError("non-finite values")
+    if not actual.numel():
+        raise ValueError("empty qualification tensor")
+    error = actual - reference
+    def rms(value):
+        return float(torch.linalg.vector_norm(value, dtype=torch.float64) / math.sqrt(value.numel()))
+
+    report = {
+        "max_abs_error": float(error.abs().max()),
+        "rms_error": rms(error),
+        "max_abs_reference": float(reference.abs().max()),
+        "rms_reference": rms(reference),
+    }
+    report["max_abs_bound"] = REPLAY_ATOL + REPLAY_RTOL * report["max_abs_reference"]
+    report["rms_bound"] = REPLAY_ATOL + REPLAY_RTOL * report["rms_reference"]
+    if not all(math.isfinite(value) for value in report.values()):
+        raise ValueError(f"non-finite error metric: {report}")
+    if gradient:
+        # Cancellation makes elementwise relative gradient errors misleading.
+        # Require both a worst-element and a full-vector error bound, separately
+        # for every parameter; no pooling across tensors or discarded elements.
+        if report["max_abs_error"] > report["max_abs_bound"] or report["rms_error"] > report["rms_bound"]:
+            raise ValueError(f"gradient repeatability exceeds fixed bounds: {report}")
+    else:
+        torch.testing.assert_close(actual, reference, rtol=REPLAY_RTOL, atol=REPLAY_ATOL)
+    return report
 
 
 def nsys_range(name):
@@ -74,24 +113,47 @@ def capture_phase(fn, model=None, stream=None):
     start = time.perf_counter()
     stream = stream if stream is not None else torch.cuda.Stream()
     stream.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(stream):
-        for _ in range(3):
-            if model is not None:
-                model.zero_grad(set_to_none=True)
-            outputs = fn()
-    torch.cuda.current_stream().wait_stream(stream)
-    torch.cuda.synchronize()
 
     def tensors(values):
         return (values,) if isinstance(values, torch.Tensor) else values
 
-    expected = tuple(t.detach().cpu().clone() for t in tensors(outputs))
-    gradients = {
-        name: parameter.grad.detach().cpu().clone()
-        for name, parameter in model.named_parameters()
-        if parameter.grad is not None
-    } if model is not None else {}
-    del outputs
+    def parameter_gradients():
+        return {name: parameter.grad for name, parameter in model.named_parameters()
+                if parameter.grad is not None} if model is not None else {}
+
+    def check(values, stage):
+        rows = {}
+        actual_gradients = parameter_gradients()
+        if actual_gradients.keys() != gradients.keys():
+            raise ValueError(f"{stage}: changed the set of parameter gradients")
+        pairs = [(f"output {index}", value, reference, False)
+                 for index, (value, reference) in enumerate(zip(tensors(values), expected, strict=True))]
+        pairs.extend((f"gradient {name}", actual_gradients[name], reference, True)
+                     for name, reference in gradients.items())
+        for label, actual, reference, gradient in pairs:
+            try:
+                rows[label] = compare_tensors(actual, reference, gradient=gradient)
+            except (ValueError, AssertionError) as error:
+                raise ValueError(f"{stage} {label}: {error}") from error
+        return rows
+
+    ordinary = []
+    ordinary_validation_s = 0.0
+    with torch.cuda.stream(stream):
+        for index in range(3):
+            if model is not None:
+                model.zero_grad(set_to_none=True)
+            outputs = fn()
+            torch.cuda.synchronize()
+            validation_start = time.perf_counter()
+            if index == 0:
+                expected = tuple(t.detach().cpu().clone() for t in tensors(outputs))
+                gradients = {name: grad.detach().cpu().clone() for name, grad in parameter_gradients().items()}
+            else:
+                ordinary.append(check(outputs, "uncaptured repeat"))
+            ordinary_validation_s += time.perf_counter() - validation_start
+            del outputs
+    torch.cuda.current_stream().wait_stream(stream)
 
     if model is not None:
         # Allocate gradients during capture; backward then overwrites them on
@@ -102,45 +164,31 @@ def capture_phase(fn, model=None, stream=None):
         outputs = fn()
 
     replay = CapturedPhase(fn, model, graph, outputs)
-    capture_s = time.perf_counter() - start
+    capture_s = time.perf_counter() - start - ordinary_validation_s
     validation_start = time.perf_counter()
 
-    def check(label, actual, reference):
-        actual = actual.detach().cpu()
-        if not torch.isfinite(actual).all() or not torch.isfinite(reference).all():
-            raise ValueError(f"CUDA graph {label}: non-finite values")
-        torch.testing.assert_close(
-            actual, reference, rtol=1e-4, atol=1e-6,
-            msg=lambda message: f"CUDA graph {label}: {message}",
-        )
-
+    replays = []
     for _ in range(2):
-        actual = tensors(replay())
+        actual = replay()
         torch.cuda.synchronize()
-        for index, (value, reference) in enumerate(zip(actual, expected, strict=True)):
-            check(f"output {index}", value, reference)
-        if model is not None:
-            actual_gradients = {
-                name: parameter.grad
-                for name, parameter in model.named_parameters()
-                if parameter.grad is not None
-            }
-            if actual_gradients.keys() != gradients.keys():
-                raise ValueError("CUDA graph changed the set of parameter gradients")
-            for name, reference in gradients.items():
-                check(f"gradient {name}", actual_gradients[name], reference)
+        replays.append(check(actual, "CUDA graph replay"))
 
     return replay, {
         "status": "captured-and-validated",
         "scope": "forward + loss + backward" if model is not None else "forward",
         "capture_s": capture_s,
-        "validation_s": time.perf_counter() - validation_start,
+        "validation_s": ordinary_validation_s + time.perf_counter() - validation_start,
         "validation": {
+            "policy": REPLAY_POLICY,
             "outputs": "all elements",
             "gradient_tensors": len(gradients),
             "gradients": "all elements of every participating parameter",
+            "gradient_metric": "per-tensor RMS and maximum absolute error",
+            "uncaptured_repeats": 3,
             "consecutive_replays": 2,
-            "rtol": 1e-4,
-            "atol": 1e-6,
+            "rtol": REPLAY_RTOL,
+            "atol": REPLAY_ATOL,
+            "uncaptured": ordinary,
+            "replays": replays,
         },
     }

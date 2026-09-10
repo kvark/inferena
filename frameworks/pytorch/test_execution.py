@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import torch
 
-from execution import capture_phase, profile_phase, synchronize
+from execution import capture_phase, compare_tensors, profile_phase, synchronize
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from p3hpc import (MODELS, TORCH_REVISION, TORCH_VERSION, check_pair, check_torch_identity,
@@ -20,6 +20,27 @@ from p3hpc import (MODELS, TORCH_REVISION, TORCH_VERSION, check_pair, check_torc
 
 class CampaignTest(unittest.TestCase):
     def test_common_source_with_platform_specific_builds(self):
+        # Full-vector bounds admit cancellation noise, not corrupt/stale data.
+        reference = torch.tensor([1.0, -1.0, 0.0])
+        rounded = reference + torch.tensor([0.0, 0.0, 2e-6])
+        compare_tensors(rounded, reference, gradient=True)
+        with self.assertRaises(AssertionError):
+            compare_tensors(rounded, reference)
+        for invalid in (reference * 2, -reference, torch.zeros_like(reference),
+                        torch.tensor([1.0, -1.0, 1e-3]), reference + float("nan"),
+                        reference + float("inf"), reference[:2], reference.double()):
+            with self.assertRaises(ValueError):
+                compare_tensors(invalid, reference, gradient=True)
+        # The maximum catches sparse corruption; RMS catches diffuse drift
+        # even when one large element would make a max-only gate permissive.
+        reference = torch.zeros(10000)
+        reference[0] = 1.0
+        diffuse = reference + 1e-5
+        with self.assertRaisesRegex(ValueError, "fixed bounds"):
+            compare_tensors(diffuse, reference, gradient=True)
+        compare_tensors(torch.zeros(3), torch.zeros(3), gradient=True)
+        with self.assertRaises(ValueError):
+            compare_tensors(torch.full((3,), 1e-3), torch.zeros(3), gradient=True)
         defaults = create_parser().parse_args([])
         self.assertTrue(defaults.collect)
         self.assertEqual(defaults.models, list(MODELS))
@@ -126,6 +147,8 @@ class ReplayTest(unittest.TestCase):
         forward, _ = capture_phase(inference, stream=stream)
         backward, report = capture_phase(training, model, stream=stream)
         self.assertEqual(report["validation"]["gradient_tensors"], 4)
+        self.assertEqual(len(report["validation"]["uncaptured"]), 2)
+        self.assertEqual(len(report["validation"]["replays"]), 2)
         captured_gradients = [p.grad for p in model.parameters()]
         with torch.no_grad():
             inputs.mul_(0.5)

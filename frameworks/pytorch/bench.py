@@ -1621,7 +1621,7 @@ def _bench(model_name, spec, dev, stream):
         "backend": backend,
         "environment": environment,
         "execution": execution,
-        "checkpoint_loading": "direct-to-device" if os.environ.get("INFERENA_STREAM_WEIGHTS") == "1" else "cpu-then-device",
+        "checkpoint_loading": ("direct-to-device" if os.environ.get("INFERENA_STREAM_WEIGHTS") == "1" else "cpu-then-device") if model_type == "causal_lm" else None,
         "profile_artifacts": profiles,
         "protocol": {
             "name": "inferena-cuda-graphs-v2",

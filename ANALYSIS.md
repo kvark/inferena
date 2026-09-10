@@ -230,6 +230,61 @@ warning-free driver. Local results live under `nsys-resident-*-20260910`,
 `parameter-allocation-1.7b-20260910-pilot` and the explicitly incomplete
 `parameter-placement-1.7b-20260910-confirm` in `/x/Code/inferena-results/`.
 
+### Bounded upload reuse and CPU transposition
+
+The `experiment/upload-reuse-2026-09-10` tags retain the allocation ablation
+and qualified Systems follow-up. One lazily grown upload buffer, capped at
+16 MiB, survives between writes and is destroyed with its session. Every copy
+still completes before its staging bytes can be reused. Existing smoke tests
+pass (83 active), as do device-local and cross-policy shared-parameter lifetime
+checks; no new test file was added. In the 135M trace, upload allocations drop
+272→1 per plan: preparation is 588 / 562 ms, tensor preparation 468 / 444 ms,
+and uploads 96 / 95 ms. GPU copy intervals remain about 39 ms. The new source
+separates those CPU ranges directly; run `scripts/nsys_report.py <native.sqlite>
+--setup`. Absent spans in an older trace are reported as unrecorded, not zero.
+
+The 1.7B reuse trace likewise makes one upload allocation per plan. Of 16.54 /
+16.81 s preparation, tensor reading/conversion/transposition takes 15.22 /
+15.48 s, while upload takes 1.01 s each. This motivated a separate cache-blocked
+CPU transpose, without changing arithmetic, decoded bytes or device layout.
+At Meganeura `experiment/checkpoint-transpose-2026-09-10`, compile
+`rustc --edition=2024 -O bench/transpose.rs -o /tmp/transpose-study`, then run
+the binary with a new output CSV path inside a bounded scope. It compares
+unchanged row-major traversal with 16/32/64 tiles; all 2,259,756,320 copied
+elements match bitwise, including non-finite patterns and edge shapes. This is
+one process with rotated trials, not four independent process replicates.
+Tile 16 is the conservative full-model candidate, not a universal CPU optimum.
+
+Inferena `experiment/parameter-preparation-2026-09-10` (`9464cc3`) pins
+Meganeura `854b5b6` and confirms three **resident-only** arms across six fresh
+processes per model/arm, using all six execution orders. Strict f32, streamed
+weights, five warmups/twenty samples, no profiler, ordinary warm driver caches:
+
+| Median complete runner process, seconds | Fresh upload allocations | Reused upload buffer | Reuse + CPU tile 16 |
+|---|---:|---:|---:|
+| 135M | 10.537 | 2.939 | 2.625 |
+| 360M | 14.164 | 5.718 | 4.521 |
+| 1.7B | 43.163 | 36.179 | 28.167 |
+
+These include both sequential plans, loading, warmup, measurement and cleanup;
+they are **not** `compile_s` or inference speedups. Paired process savings for
+reuse are 7.601 / 8.395 / 6.990 s, versus twice MAD 0.151 / 0.226 / 0.172 s.
+Tiling adds 0.314 / 1.221 / 7.990 s savings versus 0.039 / 0.079 / 0.260 s noise.
+All 54 processes complete and all recorded output fields repeat exactly.
+Steady-state prefill remains about 12.7 / 21.7 / 54.5 ms, and no step gain
+clears the 5%-plus-noise guard. The existing comparison tolerances are unchanged.
+The 15-minute study stayed above 8868 MiB globally available inside a 3 GiB,
+swap-disabled cgroup, with no new kernel log entries. Process records are under
+`/x/Code/inferena-results/parameter-preparation-20260910-confirm`.
+
+Reproduce with `scripts/tune_study.py --stream-weights --baseline
+device-params-buddy --variants device-params-buddy device-params-reuse
+device-params-tiled --models SmolLM2-135M SmolLM2-360M SmolLM2-1.7B
+--replicates 6 --output <new-dir>`. Use the same memory wrapper and global
+floor as the resident Systems recipe. These environment-driven prototypes
+remain source-only experiments, not a new public configuration contract or a
+change to the collection tag.
+
 ## Qualified Graphics source correlation — September 10
 
 The short resident-model captures now have complete runner output, matching

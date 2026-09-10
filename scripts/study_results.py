@@ -106,13 +106,18 @@ def tuning_report(root):
     manifest = json.loads((root / "study.json").read_text())
     if manifest["status"] != "complete" or any(row["status"] != "complete" for row in manifest["runs"]):
         raise ValueError("incomplete study")
-    groups, outputs = {}, {}
+    groups, outputs, token_hashes = {}, {}, {}
     reference_variant = manifest["args"].get("baseline", "untuned")
     for row in manifest["runs"]:
         path = Path(row["destination"])
         result = json.loads((path / "runner.json").read_text())
         baseline = json.loads((path.parent / reference_variant / "runner.json").read_text())
         compare(baseline, result)
+        token = result.get("environment", {}).get("stateless_validation")
+        if token is not None:
+            if not (0 <= token["prefill_prefix_relative_l2"] < 0.01):
+                raise ValueError("stateless/prefill full-vector gate failed")
+            token_hashes.setdefault(row["model"], []).append(token["logits_hash"])
         outputs.setdefault(row["model"], []).append(result["outputs"])
         groups.setdefault((row["model"], row["variant"]), []).append((baseline, result))
     report = []
@@ -132,6 +137,7 @@ def tuning_report(root):
                            "clears_5percent_plus_noise": median_gain > 0.05 * statistics.median(baseline) + noise}
         report.append({"model": model, "variant": variant, "process_pairs": len(pairs), "phases": phases})
     print(json.dumps({"source": manifest["source"], "groups": report,
+                      "stateless_hashes_exact": {model: len(set(values)) == 1 for model, values in token_hashes.items()},
                       "recorded_outputs_exact": {model: all(value == values[0] for value in values)
                                                  for model, values in outputs.items()}}, indent=2))
 

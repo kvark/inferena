@@ -622,7 +622,7 @@ fn bench_smollm2(model_name: &str) {
     let loss = total_loss / seq_len as f64;
 
     let gpu_name = session.device_information().device_name.clone();
-    let environment = environment_json(&session);
+    let mut environment = environment_json(&session);
     memory.record("inference", &session);
     // The next shape gets its own plan, but never a second resident copy of weights.
     drop(session);
@@ -652,6 +652,29 @@ fn bench_smollm2(model_name: &str) {
     // Record memory while the plans are still resident — dropping a session
     // releases the allocation this measures.
     memory.record("latency", &lat_session);
+
+    let token_output = lat_session.read_output(vocab);
+    assert!(token_output.iter().all(|value| value.is_finite()));
+    let reference = &all_logits[..vocab];
+    let squared_norm: f64 = reference.iter().map(|&value| (value as f64).powi(2)).sum();
+    let squared_error: f64 = reference
+        .iter()
+        .zip(&token_output)
+        .map(|(&a, &b)| (a as f64 - b as f64).powi(2))
+        .sum();
+    let relative_l2 = if squared_norm > 0.0 {
+        (squared_error / squared_norm).sqrt()
+    } else if squared_error == 0.0 {
+        0.0
+    } else {
+        f64::INFINITY
+    };
+    assert!(relative_l2 < 0.01, "stateless output disagrees with the causal prefill prefix: {relative_l2}");
+    environment["stateless_validation"] = serde_json::json!({
+        "reference": "first causal prefill position, full vocabulary",
+        "output_shape": [1, 1, vocab], "logits_hash": sha256_f32(&token_output),
+        "prefill_prefix_relative_l2": relative_l2,
+    });
 
     drop(lat_session);
 

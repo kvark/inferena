@@ -12,6 +12,8 @@ from study_results import compare
 
 
 def main():
+    specializations = {"fixed-params": "1", "fixed-native-div": "native-div",
+                       "fixed-k32": "k32", "fixed-native-div-k32": "native-div-k32"}
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--models", nargs="+", choices=SUPPORTED_MODELS,
@@ -19,7 +21,7 @@ def main():
     parser.add_argument("--replicates", type=int, default=3)
     parser.add_argument("--precision", choices=("strict", "accelerated"), default="strict")
     parser.add_argument("--variants", nargs="+",
-                        choices=("untuned", "default", "expanded", "fixed-params", "fixed-native-div"),
+                        choices=("untuned", "default", "expanded", *specializations),
                         default=["untuned", "default", "expanded"])
     parser.add_argument("--expanded-scratch-mib", type=int, default=64)
     parser.add_argument("--fresh-driver-cache", action="store_true",
@@ -49,7 +51,8 @@ def main():
             for model in args.models:
                 results = {}
                 start = replicate % len(args.variants)
-                variants = args.variants[start:] + args.variants[:start]
+                order = args.variants if (replicate // len(args.variants)) % 2 == 0 else args.variants[::-1]
+                variants = order[start:] + order[:start]
                 for variant in variants:
                     destination = args.output / f"r{replicate + 1}" / model / variant
                     destination.mkdir(parents=True)
@@ -60,8 +63,7 @@ def main():
                                 "INFERENA_WARMUP_RUNS": "5", "INFERENA_MEASUREMENT_RUNS": "20",
                                 "INFERENA_REQUIRE_LOCAL_WEIGHTS": "1", "MEGANEURA_DEVICE_ID": str(device["device_id"]),
                                 "MEGANEURA_TUNE": str(int(variant in ("default", "expanded"))),
-                                "MEGANEURA_SPECIALIZE_CONV": "native-div" if variant == "fixed-native-div"
-                                else str(int(variant == "fixed-params")),
+                                "MEGANEURA_SPECIALIZE_CONV": specializations.get(variant, "0"),
                                 "RUST_LOG": "warn,meganeura::runtime::tuning=info"})
                     if args.fresh_driver_cache:
                         cache = destination / "driver-cache"

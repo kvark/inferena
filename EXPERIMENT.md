@@ -586,6 +586,10 @@ For 135M prefill, `--start-after-submits 5 --limit-to-submits 3
 --max-duration-ms 100` allocated 400 MB PMA. For ResNet training, use
 `INFERENA_SHARED_CAPTURE_GPU=1` with `--start-after-submits 25
 --limit-to-submits 3 --max-duration-ms 200`; actual PMA was 800 MB.
+The exported `REPRO_INFO.xls` reports a 2000 KiB HES buffer even with the
+8000 KiB launch request. Treat HES allocation as unverified; the PMA sizes
+above are independently visible in the launch log. Neither retained trace
+reports hardware-event overflow.
 Both use a 6 GiB, no-swap, 300-second whole-tree cap. Counts are specific to
 this source and configuration: inspect phase-labelled NVTX ranges rather than
 assuming the same counts transfer. Each retained window has three steps and

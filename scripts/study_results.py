@@ -102,5 +102,43 @@ def compilation_report(root):
                       "groups": [{"key": key, **value} for key, value in grouped.items()]}, indent=2))
 
 
+def tuning_report(root):
+    manifest = json.loads((root / "study.json").read_text())
+    if manifest["status"] != "complete" or any(row["status"] != "complete" for row in manifest["runs"]):
+        raise ValueError("incomplete study")
+    groups, outputs = {}, {}
+    for row in manifest["runs"]:
+        path = Path(row["destination"])
+        result = json.loads((path / "runner.json").read_text())
+        baseline = json.loads((path.parent / "untuned/runner.json").read_text())
+        compare(baseline, result)
+        outputs.setdefault(row["model"], []).append(result["outputs"])
+        groups.setdefault((row["model"], row["variant"]), []).append((baseline, result))
+    report = []
+    for (model, variant), pairs in groups.items():
+        phases = {}
+        for key in pairs[0][0]["timings"]:
+            if pairs[0][0]["timings"][key] is None:
+                continue
+            baseline = [a["timings"][key] for a, _ in pairs]
+            candidate = [b["timings"][key] for _, b in pairs]
+            gain = [a - b for a, b in zip(baseline, candidate)]
+            median_gain = statistics.median(gain)
+            noise = 2 * statistics.median(abs(value - median_gain) for value in gain)
+            phases[key] = {"baseline_median": statistics.median(baseline),
+                           "candidate_median": statistics.median(candidate),
+                           "paired_gain_median": median_gain, "paired_gain_2mad": noise,
+                           "clears_5percent_plus_noise": median_gain > 0.05 * statistics.median(baseline) + noise}
+        report.append({"model": model, "variant": variant, "process_pairs": len(pairs), "phases": phases})
+    print(json.dumps({"source": manifest["source"], "groups": report,
+                      "recorded_outputs_exact": {model: all(value == values[0] for value in values)
+                                                 for model, values in outputs.items()}}, indent=2))
+
+
 if __name__ == "__main__":
-    compilation_report(Path(sys.argv[1]))
+    root = Path(sys.argv[1])
+    manifest = json.loads((root / "study.json").read_text())
+    if "variant" in manifest["runs"][0]:
+        tuning_report(root)
+    else:
+        compilation_report(root)

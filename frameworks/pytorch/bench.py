@@ -553,7 +553,7 @@ def load_model(model_name: str, spec: dict, dev: str):
     if os.path.isfile(os.path.join(local_dir, "config.json")):
         print(f"[pytorch] found local model at {local_dir}", file=sys.stderr)
         try:
-            model = _load_pretrained(model_type, local_dir)
+            model = _load_pretrained(model_type, local_dir, dev)
         except Exception as e:
             if os.environ.get("INFERENA_REQUIRE_LOCAL_WEIGHTS") == "1":
                 raise
@@ -565,7 +565,7 @@ def load_model(model_name: str, spec: dict, dev: str):
     # Try HF download.
     if model is None:
         try:
-            model = _load_pretrained(model_type, hf_id)
+            model = _load_pretrained(model_type, hf_id, dev)
         except Exception as e:
             print(f"[pytorch] HF load failed ({e}), using random-init", file=sys.stderr)
             model = _random_init(model_type, model_name)
@@ -573,13 +573,16 @@ def load_model(model_name: str, spec: dict, dev: str):
     return model
 
 
-def _load_pretrained(model_type: str, path_or_id: str):
+def _load_pretrained(model_type: str, path_or_id: str, dev: str):
     if model_type == "smolvla":
         # SmolVLA is a custom architecture — always random-init.
         return None
     else:
         from transformers import AutoModelForCausalLM
-        return AutoModelForCausalLM.from_pretrained(path_or_id, torch_dtype=torch.float32)
+        options = {}
+        if os.environ.get("INFERENA_STREAM_WEIGHTS") == "1":
+            options["device_map"] = {"": dev}
+        return AutoModelForCausalLM.from_pretrained(path_or_id, torch_dtype=torch.float32, **options)
 
 
 def _name_seed(name: str) -> float:
@@ -1618,6 +1621,7 @@ def _bench(model_name, spec, dev, stream):
         "backend": backend,
         "environment": environment,
         "execution": execution,
+        "checkpoint_loading": "direct-to-device" if os.environ.get("INFERENA_STREAM_WEIGHTS") == "1" else "cpu-then-device",
         "profile_artifacts": profiles,
         "protocol": {
             "name": "inferena-cuda-graphs-v2",

@@ -27,4 +27,4 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [patch.crates-io]
-blade-graphics = { git = "https://github.com/kvark/blade", rev = "ae46130bf29f9e2298b48605691cc5021d7b6108" }
+blade-graphics = { git = "https://github.com/kvark/blade", rev = "7b6d97ad797569951ffdd068104600baa3d1e22d" }

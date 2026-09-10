@@ -23,6 +23,10 @@ def main():
     parser.add_argument("--mode", choices=("default", "max-autotune", "eager"), default="max-autotune")
     parser.add_argument("--no-graphs", action="store_true")
     parser.add_argument("--inference-only", action="store_true")
+    parser.add_argument("--stream-weights", action="store_true",
+                        help="bound checkpoint host residency; PyTorch needs accelerate==1.15.0")
+    parser.add_argument("--device-parameters", choices=("0", "1", "device-buddy"), default="0",
+                        help="experiment-only native parameter placement")
     parser.add_argument("--nsys", default=os.environ.get("NSYS") or shutil.which("nsys"), help="Nsight Systems executable (or NSYS/PATH)")
     args = parser.parse_args()
     if not args.nsys:
@@ -54,6 +58,8 @@ def main():
                INFERENA_BASH=command[0], INFERENA_NSYS=args.nsys,
                INFERENA_NSYS_DIR=str(destination), INFERENA_TORCH_BACKEND="cuda",
                INFERENA_TORCH_MODE=args.mode, INFERENA_CUDA_GRAPHS=str(int(not args.no_graphs)),
+               INFERENA_STREAM_WEIGHTS=str(int(args.stream_weights)),
+               MEGANEURA_DEVICE_PARAMETERS=args.device_parameters,
                INFERENA_REQUIRE_LOCAL_WEIGHTS="1", HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
                TORCH_LOGS="graph_breaks,recompiles,perf_hints")
     env.pop("VIRTUAL_ENV", None)

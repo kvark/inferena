@@ -27,6 +27,8 @@ def main():
     parser.add_argument("--warmup-runs", type=int, default=5)
     parser.add_argument("--measurement-runs", type=int, default=20)
     parser.add_argument("--profile", action="store_true", help="separate serialized GPU pass diagnostics")
+    parser.add_argument("--host-trace", action="store_true", help="separate Linux thread-CPU/frequency diagnostic")
+    parser.add_argument("--cpu", type=int, help="Linux process-local CPU affinity control (not a system setting)")
     parser.add_argument("--baseline", default="untuned", help="reference variant present in every replicate")
     parser.add_argument("--precision", choices=("strict", "accelerated"), default="strict")
     parser.add_argument("--variants", nargs="+",
@@ -51,6 +53,8 @@ def main():
         parser.error("distinct variants including the baseline, and positive scratch budget required")
     if args.resident and any(variant in parameter_memory or variant == "shared-freelist" for variant in args.variants):
         parser.error("--resident is a common kernel-study setup, not a parameter-placement arm")
+    if args.cpu is not None and (not hasattr(os, "sched_getaffinity") or args.cpu not in os.sched_getaffinity(0)):
+        parser.error("--cpu must be a currently allowed Linux logical CPU")
     args.output = args.output.resolve()
     if args.output == ROOT or ROOT in args.output.parents:
         parser.error("keep artifacts outside the checkout")
@@ -96,6 +100,8 @@ def main():
                                 "RUST_LOG": "warn,meganeura::runtime::tuning=info"})
                     if args.trace_setup:
                         env["INFERENA_COMPILE_TRACE"] = str(destination / "compilation.jsonl")
+                    if args.host_trace:
+                        env["INFERENA_HOST_TRACE"] = str(destination / "host")
                     if args.profile:
                         env["INFERENA_PROFILE_DIR"] = str(destination / "profiles")
                         env["MEGANEURA_GPU_TIMING"] = "1"
@@ -112,7 +118,10 @@ def main():
                     manifest["runs"].append(row)
                     start = time.monotonic()
                     with (destination / "runner.json").open("x") as output, (destination / "runner.log").open("x") as log:
-                        subprocess.run([runner, model], cwd=ROOT, env=env, stdout=output, stderr=log, check=True)
+                        command = [runner, model]
+                        if args.cpu is not None:
+                            command = ["taskset", "--cpu-list", str(args.cpu), *command]
+                        subprocess.run(command, cwd=ROOT, env=env, stdout=output, stderr=log, check=True)
                     row["process_elapsed_s"] = time.monotonic() - start
                     results[variant] = json.loads((destination / "runner.json").read_text())
                     row["status"] = "complete"

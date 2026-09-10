@@ -77,6 +77,7 @@ def main():
                TORCH_LOGS="graph_breaks,recompiles,perf_hints")
     env.pop("VIRTUAL_ENV", None)
     manifest = {"source": revision, "nsys": version, "command": command, "sha256": hashes,
+                "cpu_affinity": sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
                 "args": {**vars(args), "results_dir": str(destination)},
                 "status": "in-progress", "purpose": "diagnostic, not benchmark or barrier-cost measurement"}
 

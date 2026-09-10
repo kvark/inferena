@@ -134,7 +134,8 @@ def tuning_report(root):
             phases[key] = {"baseline_median": statistics.median(baseline),
                            "candidate_median": statistics.median(candidate),
                            "paired_gain_median": median_gain, "paired_gain_2mad": noise,
-                           "clears_5percent_plus_noise": median_gain > 0.05 * statistics.median(baseline) + noise}
+                           "clears_5percent_plus_noise": (median_gain > 0.05 * statistics.median(baseline) + noise)
+                           if len(pairs) > 1 else None}
         report.append({"model": model, "variant": variant, "process_pairs": len(pairs), "phases": phases})
     print(json.dumps({"source": manifest["source"], "groups": report,
                       "stateless_hashes_exact": {model: len(set(values)) == 1 for model, values in token_hashes.items()},

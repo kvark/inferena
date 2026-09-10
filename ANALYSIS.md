@@ -230,6 +230,12 @@ cache extra preparation was about 113 ms, or 12 steps. Do not use frontend-only
 compilation time to erase that first-use cost. The unchanged 135M control has
 no qualifying convolution and no guarded gain.
 
+At Inferena `cbb1621`, a separate six-pair fresh-driver-cache confirmation of
+the native-division arm gives 44.091→33.304 ms, with 2.757 s median extra
+preparation: about **256 training steps to amortize**. All recorded outputs
+remain exact. This charges the native driver rather than extrapolating from
+the constants-only arm.
+
 A qualified constant-parameter Graphics capture follows the same short-window
 recipe as the baseline: three steps in 98.42 ms, one complete training GPU
 range of 32.21 ms versus 42.09 ms in the earlier baseline capture. Runner output

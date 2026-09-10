@@ -7,20 +7,25 @@ import os
 from pathlib import Path
 import subprocess
 
-from p3hpc import ROOT, MODELS, input_hashes, select_native_device
+from p3hpc import ROOT, SUPPORTED_MODELS, input_hashes, select_native_device
 from study_results import compare
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--models", nargs="+", choices=MODELS,
+    parser.add_argument("--models", nargs="+", choices=SUPPORTED_MODELS,
                         default=["SmolLM2-135M", "ResNet-50", "Whisper-tiny"])
     parser.add_argument("--replicates", type=int, default=3)
     parser.add_argument("--precision", choices=("strict", "accelerated"), default="strict")
+    parser.add_argument("--variants", nargs="+", choices=("untuned", "default", "expanded"),
+                        default=["untuned", "default", "expanded"])
+    parser.add_argument("--expanded-scratch-mib", type=int, default=64)
     args = parser.parse_args()
     if args.replicates < 1 or subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT).strip():
         parser.error("positive replicate count and committed source required")
+    if "untuned" not in args.variants or len(set(args.variants)) != len(args.variants) or args.expanded_scratch_mib < 1:
+        parser.error("distinct variants including untuned, and positive scratch budget required")
     args.output = args.output.resolve()
     if args.output == ROOT or ROOT in args.output.parents:
         parser.error("keep artifacts outside the checkout")
@@ -28,7 +33,7 @@ def main():
     runner = str(ROOT / "target/release/inferena-meganeura")
     device = select_native_device(json.loads(subprocess.check_output([runner, "--list-devices"], text=True)), None)
     expanded = args.output / "expanded-options.json"
-    options = {"scope": "All", "max_classes": 128, "max_scratch_bytes": 64 * 1024 * 1024,
+    options = {"scope": "All", "max_classes": 128, "max_scratch_bytes": args.expanded_scratch_mib * 1024 * 1024,
                "staging": "Download", "staging_reuse": "SameSize", "max_time": {"secs": 60, "nanos": 0},
                "warmup_runs": 1, "sample_pairs": 6, "dispatches_per_sample": 16, "min_improvement": 0.05}
     with expanded.open("x") as output:
@@ -40,8 +45,8 @@ def main():
         for replicate in range(args.replicates):
             for model in args.models:
                 results = {}
-                variants = ["untuned", "default", "expanded"]
-                variants = variants[replicate % 3:] + variants[:replicate % 3]
+                start = replicate % len(args.variants)
+                variants = args.variants[start:] + args.variants[:start]
                 for variant in variants:
                     destination = args.output / f"r{replicate + 1}" / model / variant
                     destination.mkdir(parents=True)

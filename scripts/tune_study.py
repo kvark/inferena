@@ -21,6 +21,8 @@ def main():
     parser.add_argument("--variants", nargs="+", choices=("untuned", "default", "expanded", "fixed-params"),
                         default=["untuned", "default", "expanded"])
     parser.add_argument("--expanded-scratch-mib", type=int, default=64)
+    parser.add_argument("--fresh-driver-cache", action="store_true",
+                        help="use a new private driver disk cache for each process")
     args = parser.parse_args()
     if args.replicates < 1 or subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT).strip():
         parser.error("positive replicate count and committed source required")
@@ -59,6 +61,10 @@ def main():
                                 "MEGANEURA_TUNE": str(int(variant in ("default", "expanded"))),
                                 "MEGANEURA_SPECIALIZE_CONV": str(int(variant == "fixed-params")),
                                 "RUST_LOG": "warn,meganeura::runtime::tuning=info"})
+                    if args.fresh_driver_cache:
+                        cache = destination / "driver-cache"
+                        cache.mkdir()
+                        env.update(__GL_SHADER_DISK_CACHE="1", __GL_SHADER_DISK_CACHE_PATH=str(cache))
                     if variant in ("default", "expanded"):
                         env["INFERENA_TUNE_REPORT"] = str(destination)
                     if variant == "expanded":

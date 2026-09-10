@@ -505,6 +505,45 @@ Local records: `gemv-add-width-20260910-{pilot,confirm}`,
 `nsys-gemv-add128-{135m,1.7b}-20260910` and `ngfx-token-add128-20260910` under
 `/x/Code/inferena-results`. These are separate from collection/paper data.
 
+## Scalar matmul K staging: rejected before timing
+
+The source-only `experiment/matmul-k-stage-2026-09-10` tags pin Meganeura
+`ced08b9` and Inferena `fc041a5`. A bounded follow-up to the remaining prefill
+gap varies f32 K staging 8/16/32 while preserving output tiles, transpose-aware
+load mappings and source accumulation order. Reduced/Q4 paths retain K=32;
+GEMV and convolution are unaffected. No production default changes.
+
+At each depth, the existing 22 shader checks, 39 matmul regression cases and
+the opt-in four-scalar-entry rectangular-edge qualification pass. The existing
+geometry assertion was generalized to the requested K depth, not removed;
+there is no new regression file. Hardware-gated native-f32 cooperative paths
+remain unexercised on this device.
+
+Full-output f64 screening stops the experiment at M=128, N=2048, K=2048:
+2/262144 ordinary outputs and 10/262144 tiny outputs exceed the unchanged
+bound. All six combinations of K depth and 32/64 output tile have **identical
+complete output hashes**, failure locations and errors. The original pre-change
+binary at Meganeura `2c8b5df` has the same counts and maximum errors. This is an
+existing scalar long-reduction accuracy limit under this tight oracle, not
+evidence of a new staging/indexing regression or failed whole-model validation.
+The matched runtime-shape IEEE-f32 Triton control also has 2 ordinary and 10
+tiny failures at both output tiles, with the same inputs and bound. Do not
+attribute this shared numerical limit to WGSL translation or the new staging.
+The current production tuner samples 32 f64 dots; passing that screen is not a
+full-output proof. No model timing or candidate admission follows this rejection.
+
+For example, the first ordinary failure is output 191180: f64 reference
+-0.003553006950362203, actual -0.0035406574606895447, absolute error
+1.23495e-5 versus bound 1.07106e-5. The runner now reports a full-output hash and
+the first failure alongside total counts, without writing full arrays. This
+is the intended diagnosis workflow, not a reason to add one fixture per error.
+
+Reproduce with `MEGANEURA_MATMUL_K_STAGE=8 target/release/compile_gemm
+128 2048 2048 32`; repeat depths 16/32 and output tile 64. Numerical rejection
+prints the diagnostic JSON and returns nonzero. The small/medium cases through
+K=1536 tested before that rejection pass, but do not qualify the larger domain.
+Tolerances and collection/paper data stay unchanged.
+
 ## Qualified Graphics source correlation — September 10
 
 The short resident-model captures now have complete runner output, matching

@@ -2,6 +2,7 @@
 """f32 GEMM with runtime dimensions, matching native tile/K/warp counts."""
 
 from dataclasses import asdict
+import hashlib
 import json
 import os
 import platform
@@ -99,7 +100,9 @@ def main():
         error = (reference - result).abs()
         bound = float(torch.tensor(scale, dtype=torch.float32)) * 1.0e-5 + reference.abs() * 2.0e-4
         failures = (~torch.isfinite(result) | (error > bound)).sum().item()
-        validation.append({"scale": scale, "failures": failures, "max_abs_error": error.max().item(), "elements": m*n})
+        output_hash = hashlib.sha256(result.float().numpy().astype("<f4", copy=False).tobytes()).hexdigest()
+        validation.append({"scale": scale, "failures": failures, "max_abs_error": error.max().item(),
+                           "elements": m*n, "output_hash": "sha256:" + output_hash})
     assert not starts and len(records) == 1, "unexpected new specialization or pending load"
     print(json.dumps({"engine": "triton", "shape": [m, n, k], "tile": tile,
                       "gpu": torch.cuda.get_device_name(), "torch": torch.__version__,
@@ -109,6 +112,8 @@ def main():
                       "launcher_and_load_ns": prepare_ns - compiled_ns,
                       "dimensions": "runtime, no value/alignment specialization",
                       "compilations": records, "loads": loads, "validation": validation}, default=str))
+    if any(row["failures"] for row in validation):
+        raise SystemExit("full-output f64 qualification failed")
 
 
 if __name__ == "__main__":

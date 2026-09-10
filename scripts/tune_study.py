@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Full-model untuned/default/expanded tuning ablation, with unchanged gates."""
+"""Full-model tuning/implementation ablation, with unchanged numerical gates."""
 
 import argparse
 import json
@@ -18,7 +18,7 @@ def main():
                         default=["SmolLM2-135M", "ResNet-50", "Whisper-tiny"])
     parser.add_argument("--replicates", type=int, default=3)
     parser.add_argument("--precision", choices=("strict", "accelerated"), default="strict")
-    parser.add_argument("--variants", nargs="+", choices=("untuned", "default", "expanded"),
+    parser.add_argument("--variants", nargs="+", choices=("untuned", "default", "expanded", "fixed-params"),
                         default=["untuned", "default", "expanded"])
     parser.add_argument("--expanded-scratch-mib", type=int, default=64)
     args = parser.parse_args()
@@ -56,9 +56,10 @@ def main():
                                 "INFERENA_INFERENCE_ONLY": str(int(model.startswith("SmolLM2-"))),
                                 "INFERENA_WARMUP_RUNS": "5", "INFERENA_MEASUREMENT_RUNS": "20",
                                 "INFERENA_REQUIRE_LOCAL_WEIGHTS": "1", "MEGANEURA_DEVICE_ID": str(device["device_id"]),
-                                "MEGANEURA_TUNE": str(int(variant != "untuned")),
+                                "MEGANEURA_TUNE": str(int(variant in ("default", "expanded"))),
+                                "MEGANEURA_SPECIALIZE_CONV": str(int(variant == "fixed-params")),
                                 "RUST_LOG": "warn,meganeura::runtime::tuning=info"})
-                    if variant != "untuned":
+                    if variant in ("default", "expanded"):
                         env["INFERENA_TUNE_REPORT"] = str(destination)
                     if variant == "expanded":
                         env["INFERENA_TUNE_OPTIONS"] = str(expanded)

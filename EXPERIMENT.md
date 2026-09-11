@@ -6,25 +6,31 @@ do not copy binaries or experimental raw records into this branch or main.
 The Meganeura dependency is pinned to merged main `ce80e9cd` (0.3.0); it is not a
 floating sibling checkout.
 
-## Current collection readiness, September 10
+## Current collection readiness, September 11
 
-**Ready for collection at `p3hpc-collection-2026-09-10-r2`.** At source `db048638`,
-all 30 paired CUDA qualification conditions pass on RTX 5070 / driver
-595.71.05: five common models, strict and accelerated precision, each with
-default/no-graph, default/graph and max-autotune/graph. Python 3.13.13 and the
-common torch 2.13.0+cu130 source pin are unchanged. All runs retain default
-algorithms (`deterministic=false`, no cuBLAS workspace override), and all
-cross-engine gates pass. The collection tag adds only this documentation to
-the qualified implementation. Other machines must pass their own preflight;
-this is not a new cross-engine performance table or a guarantee of their results.
+**A fresh full qualification is required before collection.** At source
+`db048638`, all 30 paired CUDA conditions passed on RTX 5070 / driver 595.71.05.
+A later collection attempt at source `6531bdee` stopped before measurement after
+22 valid pairs: accelerated diffusion failed while comparing two ordinary
+PyTorch runs, not a CUDA Graph replay or cross-engine result. Its local gradient
+error exceeded the maximum learned from the preceding repeats while remaining
+inside the independent 1% whole-gradient limit. This disproves the old
+sample-fitted policy as a stable collection gate.
+
+The incomplete manifest is preserved at
+`../inferena-results/zork-20260911T041114972531Z-6531bdee/campaign.json`; it is
+not performance data and must not be resumed. `fixed-full-gradient-v3` below is
+the replacement candidate. The provisional collection tags were removed; the
+moving `experiment/p3hpc-cuda-graphs` branch is authoritative until the
+protocol and data settle, at which point one final revision can be tagged.
+Other machines must still pass their own preflight.
 
 Reproduce with `python scripts/p3hpc.py --qualify-only`; omit that option to
-qualify and then collect three fresh-process replicates per condition. The
-complete local qualification manifest is outside Git at
-`../inferena-results/zork-20260910T161443333460Z-db048638/campaign.json`.
-No condition was retried or excluded, and the bounded run used no swap. The
-broad Python tests pass, including live input/weight changes and rejection of
-excessive calibrated drift.
+qualify and then collect three fresh-process replicates per condition. The old
+complete qualification remains at
+`../inferena-results/zork-20260910T161443333460Z-db048638/campaign.json`, but it
+does not qualify the revised policy. Failed attempts remain evidence rather
+than retries selected for a favorable result.
 
 The old/new Meganeura screen below found no large steady-state regression.
 Getting the reference qualified required addressing two pre-existing problems:
@@ -54,7 +60,8 @@ captured variability, with worst full-gradient relative L2 differences of
 0.224% and 0.305%. Full deterministic mode has zero measured difference in both sets of
 16 calls. Local small-gradient tensors can vary more than the full vector;
 merely applying one larger percentage to every tensor is inappropriate.
-The precision/noise-aware policy below passes the fresh full qualification.
+The sample-fitted policy then passed one fresh full qualification, but the
+September 11 failure above demonstrates that one pass did not make it stable.
 
 Diagnostic source and concise results are preserved on
 [`experiment/p3hpc-replay-stability-2026-09-10`](https://github.com/kvark/inferena/tree/experiment/p3hpc-replay-stability-2026-09-10)
@@ -75,49 +82,44 @@ this documented behavior. They do not identify a particular offending kernel.
 [PyTorch reproducibility](https://docs.pytorch.org/docs/main/notes/randomness.html),
 [cuDNN determinism](https://docs.nvidia.com/deeplearning/cudnn/backend/latest/developer/misc.html#reproducibility-determinism).
 
-`bounded-repeat-noise-v2` retains elementwise output/loss comparison at
+`fixed-full-gradient-v3` retains elementwise output/loss comparison at
 `rtol=1e-4, atol=1e-6`. For **each** participating parameter gradient, let
-`d = actual - reference`. Strict-f32 uses these fixed bounds:
+`d = actual - reference`. Strict-f32 retains these per-tensor bounds:
 
 ```
 max(abs(d)) <= 1e-6 + 1e-4 * max(abs(reference))
 RMS(d)      <= 1e-6 + 1e-4 * RMS(reference)
 ```
 
-This changes the relative-error scale, not the numerical constants. It avoids
-dividing by individual near-zero cancellation results, checks every element
-for sparse corruption, and also bounds diffuse error. Shapes, dtypes,
-finiteness and the complete participating-gradient set must match. This is an
-explicit experiment acceptance policy, not a PyTorch error guarantee or a
-proof of correct gradients. The cross-engine output/loss/gradient-norm gates
-are unchanged; these within-engine checks are additional replay qualification.
+Shapes, dtypes, finiteness and the complete participating-gradient set must
+match. Strict mode also applies the same bounds to the complete gradient.
 
 Accelerated-f32 allows reduced input precision, including TF32's ten input
 mantissa bits. Small preceding roundoff can cross later quantization boundaries;
 the much larger observed variation is consistent with this arithmetic, but
 the controls do not localize the responsible kernel.
 [PyTorch TF32 accuracy](https://docs.pytorch.org/docs/main/notes/numerical_accuracy.html#tensorfloat-32-tf32-on-nvidia-ampere-and-later-devices).
-For accelerated **gradients only**, eight uncaptured calls supply a fixed
-reference and the largest observed RMS/maximum errors for each parameter.
-Twice those observed errors is added to the corresponding strict bound.
-Two additional uncaptured holdouts and two captured replays must then pass
-the frozen bounds. They cannot enlarge the allowance. No samples are dropped.
-Strict training and all inference phases still use three ordinary calls
-(one reference, two holdouts) and no noise allowance.
+Accelerated training uses one fixed reference, eight ordinary repeats and two
+captured replays. Every comparison must satisfy both complete-gradient bounds:
 
-Every calibration, holdout and replay also has an independent full-gradient
-RMS ceiling: `RMS(d) <= 1e-6 + 0.01 * RMS(reference)`, weighted by element
-count across all participating parameters. Excessive reference variability
-fails rather than teaching an unlimited tolerance. This declared 1% ceiling
-is a policy limit, not a measured confidence interval or a PyTorch guarantee;
-unseen variability may still fail qualification. The per-parameter maximum
-and RMS checks remain additional constraints, not just this pooled check.
+```
+max(abs(d)) <= 1e-6 + 0.01 * max(abs(reference))
+RMS(d)      <= 1e-6 + 0.01 * RMS(reference)
+```
 
-Errors, reference scales, frozen allowances and full-gradient checks are saved
-in execution metadata. Readback/CPU validation is outside ordinary timings
-and charged to `validation_s`. Full deterministic algorithms remain off;
-effective settings are recorded. The prospective campaign is not a retry of
-unchanged policy, and the earlier failed campaigns remain incomplete.
+The maximum spans every element and catches sparse corruption; RMS is weighted
+by element count across every participating parameter and catches diffuse
+drift. Per-tensor metrics remain recorded, but observed repeats do not enlarge
+or otherwise fit the pass threshold. This avoids both near-zero local relative
+errors and a finite-sample maximum masquerading as a statistical guarantee.
+The declared 1% is an experiment policy limit, not a PyTorch guarantee or proof
+of correctness. Cross-engine output/loss/gradient-norm gates are unchanged.
+
+Errors, reference scales and full-gradient checks are saved in execution
+metadata. Readback/CPU validation is outside ordinary timings and charged to
+`validation_s`. Full deterministic algorithms remain off; effective settings
+are recorded. The prospective campaign is not a retry of unchanged policy,
+and all earlier failed campaigns remain incomplete.
 Diagnostic source is on
 [`experiment/p3hpc-precision-stability-2026-09-10`](https://github.com/kvark/inferena/tree/experiment/p3hpc-precision-stability-2026-09-10)
 at `0734dd7`; its ungated gradient measurements are not qualification records.

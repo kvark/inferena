@@ -161,18 +161,19 @@ install hints for anything missing.
 
 ## Quick start
 
-**September 10 status:** all 30 common-model CUDA qualification conditions pass
-on the RTX 5070, with default PyTorch algorithms. Use the same collection tag
-on every machine; each machine still qualifies itself before collecting data:
+The collection source is maintained on one branch while the protocol settles.
+The provisional collection tags were removed; use the same full branch revision
+on every machine, and check the current readiness finding before collecting:
 
 ```sh
-git fetch origin --tags
-git switch --detach p3hpc-collection-2026-09-10-r2
+git fetch origin
+git switch experiment/p3hpc-cuda-graphs
+git pull --ff-only
 ```
 
-The [readiness findings](EXPERIMENT.md#current-collection-readiness-september-10)
-explain the precision-aware replay checks. Cross-engine accuracy gates are
-unchanged; measured noise does not grant an unlimited allowance.
+The [readiness findings](EXPERIMENT.md#current-collection-readiness-september-11)
+explain the precision-aware replay checks and preserved failed attempts.
+Cross-engine accuracy gates are unchanged.
 
 For the paired P3HPC campaign, install [uv](https://docs.astral.sh/uv/getting-started/installation/)
 once, then let the setup script install Python and the pinned requirements:

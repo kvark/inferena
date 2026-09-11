@@ -15,7 +15,7 @@ from bench import clear_compile_cache, detect_device, device_name
 from execution import capture_phase, synchronize
 
 
-def check_backend(backend):
+def check_backend(backend, max_autotune=True):
     os.environ["INFERENA_TORCH_BACKEND"] = backend
     device = detect_device()  # Explicit requests cannot fall back to CPU.
     torch.manual_seed(7)
@@ -26,7 +26,7 @@ def check_backend(backend):
     gradients = torch.autograd.grad(expected.square().mean(), tuple(model.parameters()))
     expected = expected.detach()
     with clear_compile_cache():
-        for mode, graphs in conditions(backend):
+        for mode, graphs in conditions(backend, max_autotune):
             candidate = model if mode == "eager" else torch.compile(model, fullgraph=True, options={
                 "max_autotune": mode == "max-autotune", "triton.cudagraphs": False,
             })
@@ -51,13 +51,14 @@ def check_backend(backend):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", choices=("cuda", "rocm", "xpu", "mps", "cpu"), required=True)
+    parser.add_argument("--no-max-autotune", dest="max_autotune", action="store_false", default=True)
     args = parser.parse_args()
     if platform.python_version() != PYTHON_VERSION:
         parser.error(f"use Python {PYTHON_VERSION}")
     check_torch_identity(torch.__version__, torch.version.git_version, torch.__version__)
     print(f"Python {platform.python_version()}, torch {torch.__version__}, source {torch.version.git_version}", flush=True)
     print(f"Runner shell: {runner_bash()}", flush=True)
-    check_backend(args.backend)
+    check_backend(args.backend, args.max_autotune)
     print("Environment probe passed; run paired model qualification before collecting data.")
 
 

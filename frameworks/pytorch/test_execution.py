@@ -1,6 +1,7 @@
 """Campaign identity and broad CUDA replay checks; no retained artifacts."""
 
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,7 +16,7 @@ from execution import capture_phase, check_gradient_set, compare_tensors, profil
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from p3hpc import (MODELS, TORCH_REVISION, TORCH_VERSION, check_pair, check_torch_identity,
-                  create_parser, gpu_matches, runner_bash, select_native_device)
+                  conditions, create_parser, gpu_matches, runner_bash, select_native_device)
 
 
 class CampaignTest(unittest.TestCase):
@@ -55,10 +56,14 @@ class CampaignTest(unittest.TestCase):
         self.assertEqual(defaults.models, list(MODELS))
         self.assertEqual(defaults.precisions, ["strict", "accelerated"])
         self.assertEqual(defaults.replicates, 3)
+        self.assertTrue(defaults.max_autotune)
         self.assertIsNone(defaults.backend)
         self.assertIsNone(defaults.gpu)
         self.assertIsNone(defaults.results_dir)
         self.assertFalse(create_parser().parse_args(["--qualify-only"]).collect)
+        self.assertFalse(create_parser().parse_args(["--no-max-autotune"]).max_autotune)
+        self.assertEqual(conditions("rocm", False), [("default", False)])
+        self.assertEqual(conditions("cuda", False), [("default", False), ("default", True)])
         with self.assertRaisesRegex(ValueError, "pytorch failed: capture traceback"):
             check_pair([
                 {"framework": "meganeura", "status": "ok"},
@@ -103,6 +108,24 @@ class CampaignTest(unittest.TestCase):
                 uname.return_value = "Linux\n"
                 with self.assertRaisesRegex(RuntimeError, "not WSL"):
                     runner_bash()
+        import prepare_models
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            directory = root / "models/Test"
+            directory.mkdir(parents=True)
+            files = {"config.json": b"config", "model.safetensors": b"weights"}
+            for name, contents in files.items():
+                (directory / name).write_bytes(contents)
+            pin = {"revision": "a" * 40,
+                   "sha256": {name: hashlib.sha256(contents).hexdigest()
+                               for name, contents in files.items()}}
+            with patch.object(prepare_models, "ROOT", root), patch.object(prepare_models, "PINS", {"Test": pin}):
+                prepare_models.prepare_model("Test")
+                receipt = json.loads((directory / "source.json").read_text())
+                self.assertEqual(receipt, {"repo": "HuggingFaceTB/Test", **pin})
+                (directory / "model.safetensors").write_bytes(b"wrong")
+                with self.assertRaisesRegex(ValueError, "does not match"):
+                    prepare_models.prepare_model("Test")
 
     def test_explicit_backend_is_probed_and_synchronized_without_fallback(self):
         from bench import bench, detect_device

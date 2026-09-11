@@ -1,5 +1,23 @@
 {
-  "SmolLM2-135M": "93efa2f097d58c2a74874c7e644dbc9b0cee75a2",
-  "SmolLM2-360M": "f8027fd0eaeea54caa13c31d31b9fdc459c38b49",
-  "SmolLM2-1.7B": "effd688a12921b4cc83e3312b6feb579f70f9c71"
+  "SmolLM2-135M": {
+    "revision": "93efa2f097d58c2a74874c7e644dbc9b0cee75a2",
+    "sha256": {
+      "config.json": "1d556eab73b69c7f11f64c557a2f9c6f440bd4c6b89bb2584a6b498c92603843",
+      "model.safetensors": "80521b40281d6ce74e35c9282c22539e75aa0ac8578892b2a59955ef78d55da1"
+    }
+  },
+  "SmolLM2-360M": {
+    "revision": "f8027fd0eaeea54caa13c31d31b9fdc459c38b49",
+    "sha256": {
+      "config.json": "34f7801487078de7e434e19162c497e5cc6ff397080e40e8586627cb68a5168a",
+      "model.safetensors": "7aaff6661428bed033abba9522bec81938678642cca3181fe752b6ca9e1e540f"
+    }
+  },
+  "SmolLM2-1.7B": {
+    "revision": "effd688a12921b4cc83e3312b6feb579f70f9c71",
+    "sha256": {
+      "config.json": "33397f6af8090f7290f27ce6fb1cd23a95fd0915a5c648dfd10b6002aaf7fc48",
+      "model.safetensors": "1193528982f4ac0c0b707ce36fd7dc03a0ef6f3e1a432deb886dce2e90c300c0"
+    }
+  }
 }

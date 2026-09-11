@@ -6,7 +6,9 @@ param(
     [string]$Backend,
 
     [Parameter(Position = 1)]
-    [string]$EnvPath
+    [string]$EnvPath,
+
+    [switch]$NoMaxAutotune
 )
 
 $ErrorActionPreference = 'Stop'
@@ -61,5 +63,9 @@ $ProbeBackend = switch -Regex ($Backend) {
     default    { $Backend }
 }
 
-& $EnvPython (Join-Path $Root 'scripts\check_environment.py') --backend $ProbeBackend
+$ProbeArgs = @('--backend', $ProbeBackend)
+if ($NoMaxAutotune) {
+    $ProbeArgs += '--no-max-autotune'
+}
+& $EnvPython (Join-Path $Root 'scripts\check_environment.py') @ProbeArgs
 exit $LASTEXITCODE

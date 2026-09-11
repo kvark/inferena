@@ -18,7 +18,8 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS = ("SmolLM2-135M", "SmolVLA", "StableDiffusion", "ResNet-50", "Whisper-tiny")
-SMOLLM2_REVISIONS = json.loads((ROOT / "models/smollm2-revisions.json").read_text())
+SMOLLM2_PINS = json.loads((ROOT / "models/smollm2-revisions.json").read_text())
+SMOLLM2_REVISIONS = {name: pin["revision"] for name, pin in SMOLLM2_PINS.items()}
 SUPPORTED_MODELS = (*MODELS, "SmolLM2-360M", "SmolLM2-1.7B")
 PHASES = ("inference", "latency", "training")
 PYTHON_VERSION = (ROOT / ".python-version").read_text().strip()
@@ -68,12 +69,14 @@ def check_torch_identity(version, revision, declared_version):
         raise ValueError(f"PyTorch source must be {TORCH_REVISION}, got {revision!r}")
 
 
-def conditions(backend):
+def conditions(backend, max_autotune=True):
     if backend == "cuda":
-        return [("default", False), ("default", True), ("max-autotune", True)]
-    if backend in ("rocm", "xpu"):
-        return [("default", False), ("max-autotune", False)]
-    return [("eager", False)]
+        configs = [("default", False), ("default", True), ("max-autotune", True)]
+    elif backend in ("rocm", "xpu"):
+        configs = [("default", False), ("max-autotune", False)]
+    else:
+        configs = [("eager", False)]
+    return [config for config in configs if max_autotune or config[0] != "max-autotune"]
 
 
 def check_pair(records, args, mode, graphs, count, revision, diagnostic=False):
@@ -146,13 +149,16 @@ def input_hashes(models):
             continue
         directory = ROOT / "models" / model
         source = json.loads((directory / "source.json").read_text())
-        if source["repo"] != f"HuggingFaceTB/{model}" or source["revision"] != SMOLLM2_REVISIONS[model]:
+        pin = SMOLLM2_PINS[model]
+        if (source.get("repo") != f"HuggingFaceTB/{model}"
+                or source.get("revision") != pin["revision"]
+                or source.get("sha256") != pin["sha256"]):
             raise ValueError(f"{model}: use scripts/prepare_models.py for the pinned checkpoint")
         for name in ("config.json", "model.safetensors"):
             path = directory / name
             with path.open("rb") as data:
                 digest = hashlib.file_digest(data, "sha256").hexdigest()
-            if source["sha256"][name] != digest:
+            if pin["sha256"][name] != digest:
                 raise ValueError(f"{model}/{name}: checkpoint changed since preparation")
             hashes[str(path.relative_to(ROOT))] = digest
     return hashes
@@ -171,6 +177,8 @@ def create_parser():
     parser.add_argument("--allow-integrated-gpu", action="store_true", default=True, help=argparse.SUPPRESS)
     parser.add_argument("--precisions", nargs="+", choices=("strict", "accelerated"), default=["strict", "accelerated"])
     parser.add_argument("--replicates", type=int, default=3)
+    parser.add_argument("--no-max-autotune", dest="max_autotune", action="store_false", default=True,
+                        help="omit PyTorch max-autotune and label this an availability subset")
     stage = parser.add_mutually_exclusive_group()
     stage.add_argument("--collect", dest="collect", action="store_true", default=True, help="qualify then measure (default)")
     stage.add_argument("--qualify-only", dest="collect", action="store_false", help="run correctness gates without publication samples")
@@ -240,29 +248,43 @@ def main():
         if not args.offline:
             from prepare_models import prepare_model
             for model in args.models:
-                if model in SMOLLM2_REVISIONS and not (ROOT / "models" / model).exists():
+                if model in SMOLLM2_REVISIONS:
                     prepare_model(model)
         hashes = input_hashes(args.models)
     except (OSError, ValueError, KeyError) as error:
         parser.error(f"prepare local pinned models first: {error}")
     dependency = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["dependencies"]["meganeura"]
+    declared_conditions = conditions(args.backend)
+    selected_conditions = conditions(args.backend, args.max_autotune)
+    omitted_conditions = [config for config in declared_conditions if config not in selected_conditions]
     destination.mkdir(parents=True, exist_ok=False)
     env = dict(os.environ, PYTHON=Path(sys.executable).as_posix(), PYTHONUTF8="1", PYTHONIOENCODING="utf-8",
                INFERENA_BASH=runner_bash(), HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
                INFERENA_REQUIRE_LOCAL_WEIGHTS="1", INFERENA_TORCH_BACKEND=args.backend)
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v3", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v4", "source": revision,
         "model_revisions": {name: SMOLLM2_REVISIONS[name] for name in args.models if name in SMOLLM2_REVISIONS},
         "meganeura": dependency, "python": sys.version, "packages": packages,
         "torch": {"version": torch.__version__, "git_version": torch.version.git_version,
                   "build_config": torch.__config__.show()},
         "args": {**vars(args), "results_dir": str(destination)}, "sha256": hashes,
+        "reference_conditions": {
+            "declared": [{"mode": mode, "cuda_graphs": graphs} for mode, graphs in declared_conditions],
+            "selected": [{"mode": mode, "cuda_graphs": graphs} for mode, graphs in selected_conditions],
+            "omitted": [{"mode": mode, "cuda_graphs": graphs,
+                         "reason": "command-line --no-max-autotune"}
+                        for mode, graphs in omitted_conditions],
+            "coverage": "availability-subset" if omitted_conditions else "full",
+        },
         "device_selection": {key: env[key] for key in (
             "CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "VK_ICD_FILENAMES",
             "VK_DRIVER_FILES", "VK_LOADER_DRIVERS_SELECT", "VK_LOADER_DRIVERS_DISABLE",
-            "MESA_VK_DEVICE_SELECT", "HSA_OVERRIDE_GFX_VERSION",
+            "MESA_VK_DEVICE_SELECT", "HSA_OVERRIDE_GFX_VERSION", "ROCR_VISIBLE_DEVICES",
             "ONEAPI_DEVICE_SELECTOR", "ZE_AFFINITY_MASK", "SYCL_CACHE_PERSISTENT",
+        ) if key in env},
+        "runtime_overrides": {key: env[key] for key in (
+            "HSA_OVERRIDE_GFX_VERSION", "HSA_ENABLE_SDMA", "AMD_SERIALIZE_KERNEL",
         ) if key in env},
         "runs": [], "status": "in-progress",
     }
@@ -297,7 +319,7 @@ def main():
             for replicate in range(replicates):
                 for precision in args.precisions:
                     for model in args.models:
-                        configs = conditions(args.backend)
+                        configs = selected_conditions
                         offset = replicate % len(configs)
                         for mode, graphs in configs[offset:] + configs[:offset]:
                             label = f"{mode}-graph{int(graphs)}"

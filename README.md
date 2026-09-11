@@ -194,11 +194,23 @@ On native Windows, from PowerShell:
 After activating that environment, the collection command on every platform is
 simply **`python scripts/p3hpc.py`**. Run it from a clean checkout of the same
 collection revision on each machine. It prepares missing pinned 135M weights,
-detects the reference backend and matching native GPU, qualifies all five common
+or verifies/adopts an exact legacy cache, detects the reference backend and matching native GPU, qualifies all five common
 models in both precision classes, then collects three fresh-process replicates
 per condition (5 warmups, 20 samples). No CPU/eager fallback, automatic model
 exclusion or relaxed validation is allowed. The full campaign can take a while;
 compilation caches are private to each reference process.
+
+An AMD consumer GPU that cannot execute PyTorch's max-autotune condition can
+still produce an explicitly labelled availability dataset:
+
+```bash
+bash scripts/setup.sh rocm7.2 --no-max-autotune
+.venv-p3hpc/bin/python scripts/p3hpc.py --no-max-autotune
+```
+
+This is not the full reference-condition matrix. The manifest records the
+declared, selected and omitted conditions and marks its coverage as
+`availability-subset`. See the [Radeon 780M case study](EXPERIMENT.md#radeon-780m-availability-case).
 
 The printed `../inferena-results/<host>-<UTC>-<source>/` directory contains the
 manifest, records and logs. Keep that whole directory; `campaign.json` must say

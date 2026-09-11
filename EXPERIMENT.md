@@ -206,13 +206,13 @@ existing venv is overwritten. Use `.venv-p3hpc/bin/python` below; on Windows
 use `scripts/setup.ps1` and `.venv-p3hpc/Scripts/python.exe` from PowerShell,
 or the shell setup from Git Bash.
 Setup also probes the requested backend with a tiny forward/backward workload
-in every reference condition, including CUDA Graph replay. Missing drivers,
+in every selected reference condition, including CUDA Graph replay. Missing drivers,
 compiler support or failed numerical checks stop setup; it never reports an
 eager fallback as successful compilation. Rerun the check in an existing venv
 with `python scripts/check_environment.py --backend cuda` (or `xpu`, etc.).
 This is an installation check, not model qualification or a timing result.
 
-The v3 campaign collector requires that Python version, PyTorch 2.13.0 and reported source commit
+The v4 campaign collector requires that Python version, PyTorch 2.13.0 and reported source commit
 `cf30153c4c131c8164ee7798e5022d810682e2cb` on **every** platform. It checks
 both before collection and in every paired result; unknown/different commits
 fail closed. The exact installed platform wheel suffix is detected and recorded;
@@ -232,9 +232,10 @@ The collector downloads missing selected SmolLM2 checkpoints before running;
 ahead of time, use `python scripts/prepare_models.py SmolLM2-135M` (or select the
 larger sizes). All are **base**
 checkpoints, pinned in `models/smollm2-revisions.json`. This writes ignored
-weights/configs and a source/hash receipt; it refuses to replace an existing
-model directory. Both engines read those files, including the actual 1.7B
-RoPE configuration. The collector verifies receipts and hashes inputs and
+weights/configs and a source/hash receipt. A legacy directory without a receipt
+is adopted only when both files match the tracked hashes; mismatched or partial
+inputs are never replaced implicitly. Both engines read those files, including
+the actual 1.7B RoPE configuration. The collector verifies receipts and hashes inputs and
 Cargo.lock before/after the offline campaign. The other four workloads use
 the unchanged deterministic initialization in source.
 
@@ -296,7 +297,8 @@ pairs need an explicit scientific disposition, not an automatic exclusion.
 
 `campaign.json` records the complete source SHA, pinned Meganeura dependency,
 Python package versions, input hashes, device-selection overrides and run order.
-It also records the common PyTorch source and platform-specific build settings.
+It also records the common PyTorch source, platform-specific build settings,
+selected reference-condition coverage and relevant runtime overrides.
 The per-engine records retain driver/device, preparation, memory, execution and
 validation details. Do not run two collectors on the same device concurrently.
 
@@ -386,6 +388,44 @@ ROCm's official wheel index and AMD's APU-specific requirements may offer
 different source builds or supported devices. Setup does not promise every
 APU can execute the common-source cohort: an incompatible vendor build needs
 a separately labelled availability experiment, not a relaxed source check.
+
+### Radeon 780M availability case
+
+The Radeon 780M report exposes three independent portability failures in the
+pinned ROCm/PyTorch stack:
+
+1. The ROCm wheel has no gfx1103 rocBLAS/Tensile library, so the process must
+   impersonate the nearby gfx1102 target with `HSA_OVERRIDE_GFX_VERSION=11.0.2`.
+2. With that override, asynchronous SDMA copies reproducibly fail during the
+   real training backward pass, requiring `HSA_ENABLE_SDMA=0`.
+3. PyTorch max-autotune tries a generated Triton matmul configuration that
+   faults the HIP context. Synchronous launch diagnostics identify the failure
+   more cleanly but do not make that condition runnable.
+
+Keep both runtime workarounds active for setup and collection, and explicitly
+omit the broken condition:
+
+```sh
+export HSA_OVERRIDE_GFX_VERSION=11.0.2
+export HSA_ENABLE_SDMA=0
+bash scripts/setup.sh rocm7.2 --no-max-autotune
+.venv-p3hpc/bin/python scripts/p3hpc.py --no-max-autotune
+```
+
+For an already-created environment, rerun the minimal probe with
+`python scripts/check_environment.py --backend rocm --no-max-autotune` before
+the collector. The v4 manifest retains both HSA values, `args.max_autotune=false`,
+the omitted condition and `reference_conditions.coverage=availability-subset`.
+A `complete` status therefore means the declared subset completed; it is not a
+full ROCm condition matrix and must remain a labelled availability result.
+
+This is a concrete portability test for Meganeura's hardware-driven design:
+its side uses the Vulkan device and capability-derived implementations rather
+than ROCm architecture impersonation, Tensile target tables or Triton kernels.
+The architectural independence is real, but the paired qualification remains
+the evidence gate; do not claim success on the 780M until that record completes.
+Full reproducer details and failure logs are tracked in
+[issue #61](https://github.com/kvark/inferena/issues/61).
 
 ### Matched SmolLM2 scaling
 

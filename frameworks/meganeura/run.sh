@@ -65,7 +65,7 @@ PREFIX=()
 if [ -n "${INFERENA_NSYS:-}" ]; then
     PREFIX=("$INFERENA_NSYS" profile --trace=vulkan,nvtx --vulkan-gpu-workload=individual
         --sample=none --cpuctxsw=none --wait=primary "--output=${INFERENA_NSYS_DIR:?}/meganeura")
-    printf '%q ' "${PREFIX[@]}" "$ROOT_DIR/target/release/inferena-meganeura${EXE}" "$MODEL" >&2
+    printf '%q ' "${PREFIX[@]+"${PREFIX[@]}"}" "$ROOT_DIR/target/release/inferena-meganeura${EXE}" "$MODEL" >&2
     echo >&2
 fi
-exec "${PREFIX[@]}" "$ROOT_DIR/target/release/inferena-meganeura${EXE}" "$MODEL"
+exec "${PREFIX[@]+"${PREFIX[@]}"}" "$ROOT_DIR/target/release/inferena-meganeura${EXE}" "$MODEL"

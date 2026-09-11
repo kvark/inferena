@@ -34,6 +34,15 @@ TORCH_ARGS=()
 if [ "$BACKEND" != mps ]; then
     TORCH_ARGS=(--torch-backend "$BACKEND")
 fi
+if [ "$BACKEND" = rocm7.2 ]; then
+    # The ROCm torch wheel depends on a newly published triton-rocm wheel.
+    # Expose and refresh the vendor index explicitly instead of trusting a
+    # possibly stale implicit --torch-backend index entry.
+    TORCH_ARGS+=(
+        --extra-index-url "https://download.pytorch.org/whl/$BACKEND"
+        --refresh-package triton-rocm
+    )
+fi
 REQUIREMENTS="$ROOT/requirements-p3hpc.txt"
 if [ -f "$ENV_DIR/Scripts/python.exe" ] && [ "$BACKEND" = cu130 ]; then
     REQUIREMENTS="$ROOT/requirements-p3hpc-cu130-windows.txt"

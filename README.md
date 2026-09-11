@@ -148,7 +148,9 @@ sudo apt install nvidia-cuda-toolkit        # nvcc — needed for Candle, Lumina
 # rocprofiler-sdk, roctracer, rocm-core (ROCm-compatible but unmanaged).
 
 # Intel GPU (Arc, Data Center GPU, Xe iGPU):
-# sudo apt install libze-intel-gpu1 libze1 intel-opencl-icd
+# sudo apt install libze-intel-gpu1 libze1 intel-opencl-icd intel-ocloc
+# intel-opencl-icd supplies the shared IGC compiler used by Level Zero; this
+# benchmark does not submit OpenCL work. intel-ocloc is needed by Triton XPU.
 # SYCL/oneMKL runtime libs ship as dependencies of the torch+xpu wheel.
 
 # Enable torch.compile on CPU (Inductor needs Python headers + g++):

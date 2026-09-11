@@ -367,9 +367,24 @@ bash scripts/setup.sh xpu
 
 An explicit XPU request performs a numerical matmul/backward probe and fails
 without CPU fallback; requested compilation failures likewise stop collection.
+On Ubuntu, the tested Arc stack additionally needs `libze-intel-gpu1`, `libze1`,
+`intel-opencl-icd`, and `intel-ocloc`. The benchmark does not use OpenCL:
+Ubuntu's OpenCL package is the dependency vehicle for IGC, which the Level Zero
+runtime also needs, while `intel-ocloc` supplies Triton's offline compiler.
 The harness synchronizes XPU, reports its device/allocator metadata, and selects
 XPU activity for diagnostic PyTorch profiles. Hardware qualification remains
 required: successful wheel resolution or a mocked test is not an Intel result.
+Arc B570 qualification found a separate correctness defect in the pinned XPU
+build: native dense `nn.Embedding` backward populated only 19,968 of 73,728
+expected elements for a unique-index `[128, 576]` probe. CPU produced all
+73,728, and XPU's standard dense `index_add` produced all 73,728. The runner
+therefore performs this small shape-derived probe before compiling a causal LM.
+If native backward fails, it substitutes an equivalent custom autograd backward
+built from `index_add`, qualifies that path, and records both outcomes plus the
+selection under `execution.embedding_backward`. This is not a relaxed gate;
+the corrected full SmolLM2 gradient agrees with CPU and Meganeura. Training
+results that select the workaround must retain that metadata and be described
+as a qualified PyTorch workaround, not an unmodified native XPU result.
 On hybrid machines the collector selects the native match for the reference
 GPU, including trademark spelling differences. If selection is ambiguous,
 restrict visibility with `ONEAPI_DEVICE_SELECTOR` / `ZE_AFFINITY_MASK` and

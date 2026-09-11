@@ -146,6 +146,20 @@ class CampaignTest(unittest.TestCase):
             run.assert_called_once_with("model", {}, "xpu:0", None)
             stream.assert_not_called()
 
+    def test_index_add_embedding_backward_accumulates_repeated_rows(self):
+        from bench import _IndexAddEmbeddingBackward
+
+        weight = torch.randn(5, 3, requires_grad=True)
+        indices = torch.tensor([1, 1, 3])
+        upstream = torch.arange(9, dtype=torch.float32).reshape(3, 3)
+        output = _IndexAddEmbeddingBackward.apply(indices, weight)
+        output.backward(upstream)
+
+        expected = torch.zeros_like(weight)
+        expected.index_add_(0, indices, upstream)
+        torch.testing.assert_close(output, weight[indices])
+        torch.testing.assert_close(weight.grad, expected)
+
 
 @unittest.skipUnless(torch.cuda.is_available() and torch.version.cuda, "NVIDIA CUDA required")
 class ReplayTest(unittest.TestCase):

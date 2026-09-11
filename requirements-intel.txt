@@ -9,8 +9,9 @@
 
 # Intel XPU support is patchy on pre-Arc integrated GPUs (Gen12 UHD on
 # Raptor/Alder Lake etc.) — kernel JIT can fail with "program was built for
-# 1 devices". The pytorch runner probes XPU with a tiny matmul and falls
-# back to CPU on failure, so the bench still produces valid results.
+# 1 devices". The runner probes XPU with a tiny matmul. An explicit XPU
+# request fails instead of substituting CPU; automatic device selection may
+# fall back to CPU outside the paper collector.
 
 # CPU-targeted runtimes for frameworks without XPU support.
 onnxruntime

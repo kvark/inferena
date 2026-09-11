@@ -408,6 +408,98 @@ def _xpu_actually_works() -> bool:
         return False
 
 
+class _IndexAddEmbeddingBackward(torch.autograd.Function):
+    """Dense embedding gradient through a widely supported PyTorch primitive."""
+
+    @staticmethod
+    def forward(ctx, indices, weight):
+        ctx.save_for_backward(indices)
+        ctx.weight_shape = weight.shape
+        return F.embedding(indices, weight)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (indices,) = ctx.saved_tensors
+        grad_weight = grad_output.new_zeros(ctx.weight_shape)
+        grad_weight.index_add_(
+            0,
+            indices.reshape(-1),
+            grad_output.reshape(-1, ctx.weight_shape[1]),
+        )
+        return None, grad_weight
+
+
+def _index_add_embedding_forward(embedding, indices):
+    return _IndexAddEmbeddingBackward.apply(indices, embedding.weight)
+
+
+def qualify_embedding_backward(model, dev: str):
+    """Probe the native dense backward and select an equivalent safe path."""
+    embedding = model.get_input_embeddings()
+    if not isinstance(embedding, nn.Embedding):
+        return {"status": "not-applicable", "reason": "input module is not nn.Embedding"}
+
+    rows = min(128, embedding.num_embeddings)
+    width = embedding.embedding_dim
+
+    def probe(forward):
+        weight = torch.zeros(
+            rows, width, dtype=embedding.weight.dtype, device=dev, requires_grad=True
+        )
+        indices = torch.arange(rows, device=dev)
+        forward(indices, weight).sum().backward()
+        synchronize(dev)
+        grad = weight.grad.detach()
+        matching = int((grad == 1).sum().cpu())
+        finite = bool(torch.isfinite(grad).all().cpu())
+        return matching, finite
+
+    total = rows * width
+    matching, finite = probe(lambda indices, weight: F.embedding(indices, weight))
+    native_matching = matching
+    report = {
+        "probe_shape": [rows, width],
+        "native_dense": {
+            "status": "pass" if matching == total and finite else "fail",
+            "matching_elements": matching,
+            "total_elements": total,
+            "finite": finite,
+        },
+        "selected": "native-dense",
+    }
+    if matching == total and finite:
+        return report
+
+    if (
+        embedding.padding_idx is not None
+        or embedding.max_norm is not None
+        or embedding.scale_grad_by_freq
+        or embedding.sparse
+    ):
+        raise RuntimeError(
+            "native embedding backward failed its probe and the input embedding "
+            "uses options unsupported by the dense index_add workaround"
+        )
+
+    matching, finite = probe(_IndexAddEmbeddingBackward.apply)
+    if matching != total or not finite:
+        raise RuntimeError("both native and index_add embedding backward failed qualification")
+    embedding.forward = _index_add_embedding_forward.__get__(embedding, type(embedding))
+    report["selected"] = "dense-index-add-autograd"
+    report["workaround"] = {
+        "status": "pass",
+        "matching_elements": matching,
+        "total_elements": total,
+        "finite": finite,
+    }
+    print(
+        f"[pytorch] native dense embedding backward matched {native_matching}/{total} "
+        "contract elements; selected qualified dense index_add backward",
+        file=sys.stderr,
+    )
+    return report
+
+
 def detect_device() -> str:
     requested = os.environ.get("INFERENA_TORCH_BACKEND")
     if requested:
@@ -1380,6 +1472,12 @@ def _bench(model_name, spec, dev, stream):
         eager_model.train()
     synchronize(dev)
     load_s = time.perf_counter() - load_start
+
+    execution["embedding_backward"] = (
+        qualify_embedding_backward(eager_model, dev)
+        if training_requested and model_type == "causal_lm"
+        else {"status": "not-requested"}
+    )
 
     model = eager_model
     compile_s = 0.0

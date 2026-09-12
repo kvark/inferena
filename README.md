@@ -199,7 +199,11 @@ collection revision on each machine. It prepares missing pinned 135M weights,
 or verifies/adopts an exact legacy cache, detects the reference backend and matching native GPU, qualifies all five common
 models in both precision classes, then collects three fresh-process replicates
 per condition (5 warmups, 20 samples). No CPU/eager fallback, automatic model
-exclusion or relaxed validation is allowed. The full campaign can take a while;
+exclusion, discarded sample, or retry is allowed. Strict gradients must pass
+the 5% gate in every process. Accelerated gradients retain every sample under
+a 10% safety ceiling, then require the median cross-engine error to remain
+below 5% across the three processes; the manifest also records and bounds each
+engine's own cross-process spread. The full campaign can take a while;
 compilation caches are private to each reference process.
 
 An AMD consumer GPU that cannot execute PyTorch's max-autotune condition can

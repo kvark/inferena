@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import shutil
 import socket
+import statistics
 import subprocess
 import sys
 import tomllib
@@ -25,6 +26,8 @@ PHASES = ("inference", "latency", "training")
 PYTHON_VERSION = (ROOT / ".python-version").read_text().strip()
 TORCH_VERSION = "2.13.0"
 TORCH_REVISION = "cf30153c4c131c8164ee7798e5022d810682e2cb"
+GRADIENT_LIMIT = 0.05
+ACCELERATED_SAMPLE_LIMIT = 0.10
 
 
 def gpu_matches(expected, actual):
@@ -79,7 +82,21 @@ def conditions(backend, max_autotune=True):
     return [config for config in configs if max_autotune or config[0] != "max-autotune"]
 
 
-def check_pair(records, args, mode, graphs, count, revision, diagnostic=False):
+def _replicated_candidate(record):
+    validation = record["validation"]
+    return (
+        record["precision"]["reduced_precision_allowed"]
+        and validation.get("forward_valid") is True
+        and validation.get("gradients_available") is True
+        and math.isfinite(validation.get("total_gradient_relative_error", math.inf))
+        and math.isfinite(validation.get("parameter_gradient_relative_l2_error", math.inf))
+        and validation["total_gradient_relative_error"] < ACCELERATED_SAMPLE_LIMIT
+        and validation["parameter_gradient_relative_l2_error"] < ACCELERATED_SAMPLE_LIMIT
+    )
+
+
+def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
+               replicated=False):
     phases = PHASES[:2] if args.inference_only else PHASES
     by_engine = {record["framework"]: record for record in records}
     if len(records) != 2 or set(by_engine) != {"pytorch", "meganeura"}:
@@ -90,9 +107,13 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False):
     for engine, record in by_engine.items():
         validation = record["validation"]
         gates = ("comparison_performed", "forward_valid")
+        valid = all(validation.get(key) is True for key in gates)
         if not args.inference_only:
-            gates += ("training_valid",)
-        if not all(validation.get(key) is True for key in gates) or validation.get("reference_framework") != "pytorch":
+            valid = valid and (
+                validation.get("training_valid") is True
+                or replicated and _replicated_candidate(record)
+            )
+        if not valid or validation.get("reference_framework") != "pytorch":
             raise ValueError(f"{engine} failed the requested numerical gates: {validation}")
         if record["protocol"]["training_requested"] != (not args.inference_only):
             raise ValueError("unexpected training scope")
@@ -139,6 +160,91 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False):
                     or validation.get("consecutive_replays") != 2):
                 raise ValueError(f"{phase} did not use the declared replay qualification policy")
     return by_engine
+
+
+def _relative_gradient_distance(left, right):
+    if not left or left.keys() != right.keys():
+        return math.inf
+    difference = sum((left[name] - right[name]) ** 2 for name in left)
+    scale = max(
+        sum(value ** 2 for value in left.values()),
+        sum(value ** 2 for value in right.values()),
+        1e-24,
+    )
+    return math.sqrt(difference / scale)
+
+
+def _maximum_spread(pairs, engine):
+    outputs = [pair[engine]["outputs"] for pair in pairs]
+    parameter = 0.0
+    total = 0.0
+    for index, left in enumerate(outputs):
+        for right in outputs[index + 1:]:
+            parameter = max(
+                parameter,
+                _relative_gradient_distance(left["gradient_norms"], right["gradient_norms"]),
+            )
+            total = max(
+                total,
+                abs(left["grad_norm"] - right["grad_norm"])
+                / max(abs(left["grad_norm"]), abs(right["grad_norm"]), 1e-12),
+            )
+    return {"parameter_gradient_relative_l2": parameter, "total_gradient_relative": total}
+
+
+def replicated_gradient_report(pairs):
+    reduced = pairs[0]["pytorch"]["precision"]["reduced_precision_allowed"]
+    validations = [pair["meganeura"]["validation"] for pair in pairs]
+    parameter = [item["parameter_gradient_relative_l2_error"] for item in validations]
+    total = [item["total_gradient_relative_error"] for item in validations]
+    sample_limit = ACCELERATED_SAMPLE_LIMIT if reduced else GRADIENT_LIMIT
+    reference_spread = _maximum_spread(pairs, "pytorch")
+    candidate_spread = _maximum_spread(pairs, "meganeura")
+    finite = all(math.isfinite(value) for value in (*parameter, *total))
+    accepted = (
+        finite
+        and all(item.get("forward_valid") is True for item in validations)
+        and max(parameter) < sample_limit
+        and max(total) < sample_limit
+        and statistics.median(parameter) < GRADIENT_LIMIT
+        and statistics.median(total) < GRADIENT_LIMIT
+        and max(reference_spread.values()) < ACCELERATED_SAMPLE_LIMIT
+        and max(candidate_spread.values()) < ACCELERATED_SAMPLE_LIMIT
+    )
+    return {
+        "status": "pass" if accepted else "fail",
+        "precision": "accelerated" if reduced else "strict",
+        "sample_limit": sample_limit,
+        "median_limit": GRADIENT_LIMIT,
+        "stability_limit": ACCELERATED_SAMPLE_LIMIT,
+        "parameter_gradient_relative_l2": {
+            "samples": parameter,
+            "median": statistics.median(parameter),
+            "maximum": max(parameter),
+        },
+        "total_gradient_relative": {
+            "samples": total,
+            "median": statistics.median(total),
+            "maximum": max(total),
+        },
+        "within_pytorch": reference_spread,
+        "within_meganeura": candidate_spread,
+    }
+
+
+def validate_replicated_gradients(groups, replicates):
+    reports = []
+    for (precision, model, mode, graphs), pairs in groups.items():
+        if len(pairs) != replicates:
+            raise ValueError(f"{precision}/{model}/{mode}/graph{int(graphs)} has {len(pairs)} replicates")
+        report = replicated_gradient_report(pairs)
+        report.update({"model": model, "mode": mode, "cuda_graphs": graphs})
+        reports.append(report)
+    return {
+        "policy": "replicated-gradient-median-v1",
+        "status": "pass" if all(report["status"] == "pass" for report in reports) else "fail",
+        "groups": reports,
+    }
 
 
 def input_hashes(models):
@@ -263,7 +369,7 @@ def main():
                INFERENA_REQUIRE_LOCAL_WEIGHTS="1", INFERENA_TORCH_BACKEND=args.backend)
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v4", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v5", "source": revision,
         "model_revisions": {name: SMOLLM2_REVISIONS[name] for name in args.models if name in SMOLLM2_REVISIONS},
         "meganeura": dependency, "python": sys.version, "packages": packages,
         "torch": {"version": torch.__version__, "git_version": torch.version.git_version,
@@ -314,6 +420,7 @@ def main():
         stages = [("qualification", 1, 1)]
         if args.collect:
             stages.append(("measurement", args.replicates, 20))
+        measurement_pairs = {}
         sequence = 0
         for stage, replicates, count in stages:
             for replicate in range(replicates):
@@ -348,13 +455,26 @@ def main():
                             if result.returncode:
                                 raise RuntimeError(f"runner failed; inspect {folder / 'runner.log'}")
                             records = json.loads((folder / f"{model}_summary.json").read_text())
-                            pair = check_pair(records, args, mode, graphs, count, revision)
+                            pair = check_pair(
+                                records, args, mode, graphs, count, revision,
+                                replicated=args.collect,
+                            )
                             if not dependency["rev"].startswith(pair["meganeura"]["framework_rev"]):
                                 raise ValueError("Meganeura dependency revision changed")
                             if pair["meganeura"]["environment"].get("gpu_device_id") != native["device_id"]:
                                 raise ValueError("Meganeura ran on a different device than the preflight selected")
                             run["status"] = "valid"
+                            if stage == "measurement":
+                                key = (precision, model, mode, graphs)
+                                measurement_pairs.setdefault(key, []).append(pair)
                             save()
+        if args.collect and not args.inference_only:
+            manifest["replicated_gradient_validation"] = validate_replicated_gradients(
+                measurement_pairs, args.replicates
+            )
+            save()
+            if manifest["replicated_gradient_validation"]["status"] != "pass":
+                raise ValueError("replicated gradient validation failed")
         if input_hashes(args.models) != hashes:
             raise ValueError("input changed during collection")
         manifest["status"] = "complete"

@@ -375,8 +375,11 @@ Stable Diffusion compile interval is 17,249 seconds and spans the archive's
 4.8-hour activity gap. The records cannot distinguish host suspension from a
 compiler stall, so that interval is not compile-time evidence. Even after
 removing it, PyTorch compilation totals 3.83 hours across the old campaign's
-120 isolated processes. Campaign v6 removes the redundant 30-process preflight;
-the remaining 90 cold compilations are still expected to dominate wall time.
+120 isolated processes. In its 90 publication pairs alone, PyTorch cold
+compilation takes 3.22 hours while all retained calls total 76.6 seconds;
+Meganeura's retained calls total 173.3 seconds. Campaign v6 removes the
+redundant 30-process preflight, but the remaining cold compilation is still
+expected to dominate wall time.
 A later campaign at `f4255c4b`, with the same pinned packages, inputs, driver and device,
 passed qualification and 61 measurement pairs before PyTorch failed while
 capturing strict SmolLM2 max-autotune training. The exact GEMM had succeeded in

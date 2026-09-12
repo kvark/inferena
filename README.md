@@ -205,7 +205,7 @@ the 5% gate in every process. Accelerated gradients retain every sample under
 a 10% safety ceiling, then require the median cross-engine error to remain
 below 5% across the three processes. Every raw result remains in the campaign.
 The full campaign can take a while because compilation caches are private to
-each of its 90 reference processes.
+each process (90 on CUDA with the default matrix).
 
 When stock PyTorch max-autotune fails on an AMD consumer GPU, preserve that
 failure as a portability result, then collect the runnable conditions as an

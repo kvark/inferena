@@ -139,6 +139,9 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
         raise ValueError(f"unexpected Meganeura GPU: {mg['gpu_name']}")
     if args.backend in ("cuda", "rocm", "xpu") and not gpu_matches(args.gpu, pt["gpu_name"]):
         raise ValueError(f"unexpected PyTorch GPU: {pt['gpu_name']}")
+    expected_search = mode == "max-autotune"
+    if mg.get("optimizer", {}).get("measured_kernel_search") is not expected_search:
+        raise ValueError("Meganeura did not use the declared preparation policy")
     execution = pt["execution"]
     if args.backend == "cuda" and execution.get("stream_policy") != "single dedicated CUDA preparation/run stream":
         raise ValueError("CUDA preparation and execution must share the declared stream policy")
@@ -320,16 +323,21 @@ def main():
                INFERENA_REQUIRE_LOCAL_WEIGHTS="1", INFERENA_TORCH_BACKEND=args.backend)
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v6", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v7", "source": revision,
         "model_revisions": {name: SMOLLM2_REVISIONS[name] for name in args.models if name in SMOLLM2_REVISIONS},
         "meganeura": dependency, "python": sys.version, "packages": packages,
         "torch": {"version": torch.__version__, "git_version": torch.version.git_version,
                   "build_config": torch.__config__.show()},
         "args": {**vars(args), "results_dir": str(destination)}, "sha256": hashes,
         "reference_conditions": {
-            "declared": [{"mode": mode, "cuda_graphs": graphs} for mode, graphs in declared_conditions],
-            "selected": [{"mode": mode, "cuda_graphs": graphs} for mode, graphs in selected_conditions],
+            "declared": [{"mode": mode, "cuda_graphs": graphs,
+                          "preparation_policy": "searched" if mode == "max-autotune" else "light"}
+                         for mode, graphs in declared_conditions],
+            "selected": [{"mode": mode, "cuda_graphs": graphs,
+                          "preparation_policy": "searched" if mode == "max-autotune" else "light"}
+                         for mode, graphs in selected_conditions],
             "omitted": [{"mode": mode, "cuda_graphs": graphs,
+                         "preparation_policy": "searched",
                          "reason": "command-line --no-max-autotune"}
                         for mode, graphs in omitted_conditions],
             "coverage": "availability-subset" if omitted_conditions else "full",
@@ -393,14 +401,18 @@ def main():
                                 command.append("--inference-only")
                             if args.allow_integrated_gpu:
                                 command.append("--allow-integrated-gpu")
+                            preparation_policy = "searched" if mode == "max-autotune" else "light"
                             run = {"path": str(folder.relative_to(destination)), "command": command,
-                                   "mode": mode, "graphs": graphs, "status": "running"}
+                                   "mode": mode, "graphs": graphs,
+                                   "preparation_policy": preparation_policy, "status": "running"}
                             manifest["runs"].append(run)
                             save()
                             print(run["path"], flush=True)
                             with (folder / "runner.log").open("w") as log:
                                 result = subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
-                                                        env=dict(env, INFERENA_TORCH_MODE=mode, INFERENA_CUDA_GRAPHS=str(int(graphs))))
+                                                        env=dict(env, INFERENA_TORCH_MODE=mode,
+                                                                 INFERENA_CUDA_GRAPHS=str(int(graphs)),
+                                                                 MEGANEURA_TUNE=str(int(preparation_policy == "searched"))))
                             run["returncode"] = result.returncode
                             if result.returncode:
                                 raise RuntimeError(f"runner failed; inspect {folder / 'runner.log'}")

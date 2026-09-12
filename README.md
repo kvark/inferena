@@ -207,6 +207,14 @@ below 5% across the three processes. Every raw result remains in the campaign.
 The full campaign can take a while because compilation caches are private to
 each process (90 on CUDA with the default matrix).
 
+Preparation policy is independent of arithmetic precision. The `light`
+conditions use default PyTorch compilation and disable Meganeura's empirical
+kernel search; the `searched` conditions request PyTorch max-autotune and
+Meganeura's bounded on-device tuner. CUDA Graph replay is retained in both
+primary conditions, with default/no-graph as the replay ablation. Thus strict
+and accelerated results each cover startup-oriented and searched deployment
+without adding another campaign condition.
+
 When stock PyTorch max-autotune fails on an AMD consumer GPU, preserve that
 failure as a portability result, then collect the runnable conditions as an
 explicitly labelled availability dataset:

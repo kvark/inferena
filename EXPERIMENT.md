@@ -24,7 +24,7 @@ campaign already collects. Strict mode keeps the 5% per-process gate.
 Accelerated mode retains every sample below a 10% safety ceiling and requires
 the median cross-engine total-gradient and parameter-gradient errors to remain
 below 5% across three independent processes. No observed value enlarges a
-limit, and no sample is discarded or retried. The v6 manifest carries every raw
+limit, and no sample is discarded or retried. The v7 manifest carries every raw
 error and the small aggregate report; the paired records retain both engines'
 outputs for offline diagnosis. A fresh complete campaign is required for the
 revised policy; completed v4 campaigns already satisfied the stricter
@@ -240,7 +240,7 @@ eager fallback as successful compilation. Rerun the check in an existing venv
 with `python scripts/check_environment.py --backend cuda` (or `xpu`, etc.).
 This is an installation check, not model qualification or a timing result.
 
-The v6 campaign collector requires that Python version, PyTorch 2.13.0 and reported source commit
+The v7 campaign collector requires that Python version, PyTorch 2.13.0 and reported source commit
 `cf30153c4c131c8164ee7798e5022d810682e2cb` on **every** platform. It checks
 both before collection and in every paired result; unknown/different commits
 fail closed. The exact installed platform wheel suffix is detected and recorded;
@@ -317,6 +317,14 @@ not a complete data point. Use the same clean source revision on every machine.
 | MPS | declared eager reference |
 | CPU | declared eager availability reference, separate from GPU comparisons |
 
+Arithmetic and preparation are separate axes. `light` means default PyTorch
+compilation and no Meganeura empirical search. `searched` means requested
+PyTorch max-autotune and Meganeura's bounded on-device tuner. On CUDA both
+primary policies use qualified whole-phase replay; default/no-graph remains the
+graph ablation. Every run records the policy and Meganeura's effective search
+state, so unavailable PyTorch search remains an outcome rather than silently
+changing the paired Meganeura policy.
+
 Every pair must retain both engines, pass the requested forward/backward gates,
 and match the declared revisions, torch build version, backend, GPU and execution
 mode. A successful harness exit alone is insufficient. Invalid or missing
@@ -377,7 +385,7 @@ compiler stall, so that interval is not compile-time evidence. Even after
 removing it, PyTorch compilation totals 3.83 hours across the old campaign's
 120 isolated processes. In its 90 publication pairs alone, PyTorch cold
 compilation takes 3.22 hours while all retained calls total 76.6 seconds;
-Meganeura's retained calls total 173.3 seconds. Campaign v6 removes the
+Meganeura's retained calls total 173.3 seconds. Campaign v7 removes the
 redundant 30-process preflight, but the remaining cold compilation is still
 expected to dominate wall time.
 A later campaign at `f4255c4b`, with the same pinned packages, inputs, driver and device,
@@ -481,7 +489,7 @@ bash scripts/setup.sh rocm7.2 --no-max-autotune
 
 For an already-created environment, rerun the minimal probe with
 `python scripts/check_environment.py --backend rocm --no-max-autotune` before
-the collector. The v6 manifest retains both HSA values, `args.max_autotune=false`,
+the collector. The v7 manifest retains both HSA values, `args.max_autotune=false`,
 the omitted condition and `reference_conditions.coverage=availability-subset`.
 A `complete` status therefore means the declared subset completed; it is not a
 full ROCm condition matrix and must remain a labelled availability result.
@@ -766,7 +774,8 @@ that gate does not guarantee a different selected kernel or a timing gain.
 
 This is **PyTorch's upstream policy**, not a new Inferena or Meganeura device
 threshold. We do not override it to privilege either GPU. Meganeura's actual
-measured kernel search is `SessionConfig.tune` (off in the default cohort):
+measured kernel search is `SessionConfig.tune`: it is off in the light cohort
+and on in the searched cohort.
 it probes bounded legal f32 matmul/convolution alternatives, not every dtype,
 attention variant or graph representation. Baseline shape/occupancy heuristics
 remain; supported timed challengers are not vetoed by a card-name/SM cutoff.

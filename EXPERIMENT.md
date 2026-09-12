@@ -366,6 +366,18 @@ Record the exact 3050 model, VRAM, driver, Windows version and laptop power mode
 where applicable. Keep 1.7B separate until memory placement/capacity is checked;
 do not silently shrink precision, batch size or sequence length to fit it.
 
+RTX 3050 / Windows 11 completed all 120 pairs at `5103dedf`. A later campaign
+at `f4255c4b`, with the same pinned packages, inputs, driver and device, passed
+qualification and 61 measurement pairs before PyTorch failed while capturing
+strict SmolLM2 max-autotune training. The exact GEMM had succeeded in three
+synchronized ordinary calls immediately before capture; cuBLAS then returned
+`CUBLAS_STATUS_EXECUTION_FAILED` only inside the second CUDA Graph. Six other
+processes across the two campaigns captured this condition successfully. This
+single event makes the later campaign incomplete, but is not yet a repeatable
+platform exclusion. The XPU embedding probe added between those revisions had
+also been running unnecessarily on CUDA; later revisions restrict it to XPU so
+the next Windows campaign does not carry that unrelated state perturbation.
+
 Historical preparation source: `experiment/p3hpc-portability-2026-09-09`
 (`819b7d2`). On Linux/RTX 5070 it passes all three strict ResNet-50 paired
 qualification cases (forward + latency + backward), the 3 broad Python checks

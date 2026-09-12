@@ -1475,8 +1475,12 @@ def _bench(model_name, spec, dev, stream):
 
     execution["embedding_backward"] = (
         qualify_embedding_backward(eager_model, dev)
-        if training_requested and model_type == "causal_lm"
-        else {"status": "not-requested"}
+        if training_requested and model_type == "causal_lm" and dev.startswith("xpu")
+        else {
+            "status": "not-required"
+            if training_requested and model_type == "causal_lm"
+            else "not-requested"
+        }
     )
 
     model = eager_model

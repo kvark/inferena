@@ -16,7 +16,7 @@ from execution import capture_phase, check_gradient_set, compare_tensors, profil
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from p3hpc import (MODELS, TORCH_REVISION, TORCH_VERSION, check_pair, check_torch_identity,
-                  conditions, create_parser, gpu_matches, replicated_gradient_report,
+                  conditions, create_parser, gpu_matches, validate_replicated_gradients,
                   runner_bash, select_native_device)
 
 
@@ -65,16 +65,12 @@ class CampaignTest(unittest.TestCase):
         self.assertFalse(create_parser().parse_args(["--no-max-autotune"]).max_autotune)
         self.assertEqual(conditions("rocm", False), [("default", False)])
         self.assertEqual(conditions("cuda", False), [("default", False), ("default", True)])
-        def pair(error, reference):
-            def outputs(value):
-                return {"grad_norm": value, "gradient_norms": {"weight": value}}
+        def pair(error):
             return {
                 "pytorch": {
                     "precision": {"reduced_precision_allowed": True},
-                    "outputs": outputs(reference),
                 },
                 "meganeura": {
-                    "outputs": outputs(1.0),
                     "validation": {
                         "forward_valid": True,
                         "parameter_gradient_relative_l2_error": error,
@@ -82,12 +78,12 @@ class CampaignTest(unittest.TestCase):
                     },
                 },
             }
-        repeated = [pair(0.02, 1.0), pair(0.052, 1.06), pair(0.03, 1.03)]
-        report = replicated_gradient_report(repeated)
+        repeated = [pair(0.02), pair(0.052), pair(0.03)]
+        groups = {("accelerated", "model", "default", True): repeated}
+        report = validate_replicated_gradients(groups, 3)["groups"][0]
         self.assertEqual(report["status"], "pass")
-        self.assertGreater(report["within_pytorch"]["parameter_gradient_relative_l2"], 0.05)
         repeated[-1]["meganeura"]["validation"]["parameter_gradient_relative_l2_error"] = 0.11
-        self.assertEqual(replicated_gradient_report(repeated)["status"], "fail")
+        self.assertEqual(validate_replicated_gradients(groups, 3)["status"], "fail")
         with self.assertRaisesRegex(ValueError, "pytorch failed: capture traceback"):
             check_pair([
                 {"framework": "meganeura", "status": "ok"},

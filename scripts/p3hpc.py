@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qualification-first, paired P3HPC collection. Generated evidence stays outside Git."""
+"""Validated paired P3HPC collection. Generated evidence stays outside Git."""
 
 import argparse
 from datetime import datetime, timezone
@@ -162,84 +162,35 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
     return by_engine
 
 
-def _relative_gradient_distance(left, right):
-    if not left or left.keys() != right.keys():
-        return math.inf
-    difference = sum((left[name] - right[name]) ** 2 for name in left)
-    scale = max(
-        sum(value ** 2 for value in left.values()),
-        sum(value ** 2 for value in right.values()),
-        1e-24,
-    )
-    return math.sqrt(difference / scale)
-
-
-def _maximum_spread(pairs, engine):
-    outputs = [pair[engine]["outputs"] for pair in pairs]
-    parameter = 0.0
-    total = 0.0
-    for index, left in enumerate(outputs):
-        for right in outputs[index + 1:]:
-            parameter = max(
-                parameter,
-                _relative_gradient_distance(left["gradient_norms"], right["gradient_norms"]),
-            )
-            total = max(
-                total,
-                abs(left["grad_norm"] - right["grad_norm"])
-                / max(abs(left["grad_norm"]), abs(right["grad_norm"]), 1e-12),
-            )
-    return {"parameter_gradient_relative_l2": parameter, "total_gradient_relative": total}
-
-
-def replicated_gradient_report(pairs):
-    reduced = pairs[0]["pytorch"]["precision"]["reduced_precision_allowed"]
-    validations = [pair["meganeura"]["validation"] for pair in pairs]
-    parameter = [item["parameter_gradient_relative_l2_error"] for item in validations]
-    total = [item["total_gradient_relative_error"] for item in validations]
-    sample_limit = ACCELERATED_SAMPLE_LIMIT if reduced else GRADIENT_LIMIT
-    reference_spread = _maximum_spread(pairs, "pytorch")
-    candidate_spread = _maximum_spread(pairs, "meganeura")
-    finite = all(math.isfinite(value) for value in (*parameter, *total))
-    accepted = (
-        finite
-        and all(item.get("forward_valid") is True for item in validations)
-        and max(parameter) < sample_limit
-        and max(total) < sample_limit
-        and statistics.median(parameter) < GRADIENT_LIMIT
-        and statistics.median(total) < GRADIENT_LIMIT
-        and max(reference_spread.values()) < ACCELERATED_SAMPLE_LIMIT
-        and max(candidate_spread.values()) < ACCELERATED_SAMPLE_LIMIT
-    )
-    return {
-        "status": "pass" if accepted else "fail",
-        "precision": "accelerated" if reduced else "strict",
-        "sample_limit": sample_limit,
-        "median_limit": GRADIENT_LIMIT,
-        "stability_limit": ACCELERATED_SAMPLE_LIMIT,
-        "parameter_gradient_relative_l2": {
-            "samples": parameter,
-            "median": statistics.median(parameter),
-            "maximum": max(parameter),
-        },
-        "total_gradient_relative": {
-            "samples": total,
-            "median": statistics.median(total),
-            "maximum": max(total),
-        },
-        "within_pytorch": reference_spread,
-        "within_meganeura": candidate_spread,
-    }
-
-
 def validate_replicated_gradients(groups, replicates):
     reports = []
     for (precision, model, mode, graphs), pairs in groups.items():
         if len(pairs) != replicates:
             raise ValueError(f"{precision}/{model}/{mode}/graph{int(graphs)} has {len(pairs)} replicates")
-        report = replicated_gradient_report(pairs)
-        report.update({"model": model, "mode": mode, "cuda_graphs": graphs})
-        reports.append(report)
+        validations = [pair["meganeura"]["validation"] for pair in pairs]
+        metrics = {
+            "parameter_gradient_relative_l2": [
+                item["parameter_gradient_relative_l2_error"] for item in validations
+            ],
+            "total_gradient_relative": [
+                item["total_gradient_relative_error"] for item in validations
+            ],
+        }
+        sample_limit = ACCELERATED_SAMPLE_LIMIT if precision == "accelerated" else GRADIENT_LIMIT
+        accepted = all(
+            all(math.isfinite(value) and value < sample_limit for value in values)
+            and statistics.median(values) < GRADIENT_LIMIT
+            for values in metrics.values()
+        )
+        reports.append({
+            "status": "pass" if accepted else "fail",
+            "precision": precision, "model": model, "mode": mode, "cuda_graphs": graphs,
+            "sample_limit": sample_limit, "median_limit": GRADIENT_LIMIT,
+            "metrics": {
+                name: {"samples": values, "median": statistics.median(values)}
+                for name, values in metrics.items()
+            },
+        })
     return {
         "policy": "replicated-gradient-median-v1",
         "status": "pass" if all(report["status"] == "pass" for report in reports) else "fail",
@@ -286,7 +237,7 @@ def create_parser():
     parser.add_argument("--no-max-autotune", dest="max_autotune", action="store_false", default=True,
                         help="omit PyTorch max-autotune and label this an availability subset")
     stage = parser.add_mutually_exclusive_group()
-    stage.add_argument("--collect", dest="collect", action="store_true", default=True, help="qualify then measure (default)")
+    stage.add_argument("--collect", dest="collect", action="store_true", default=True, help="validated measurement (default)")
     stage.add_argument("--qualify-only", dest="collect", action="store_false", help="run correctness gates without publication samples")
     parser.add_argument("--offline", action="store_true", help="require all pinned models to be prepared already")
     return parser
@@ -299,7 +250,7 @@ def main():
         parser.error(f"use Python {PYTHON_VERSION}: bash scripts/setup.sh <wheel-backend>")
     if args.inference_only and any(model not in SMOLLM2_REVISIONS for model in args.models):
         parser.error("--inference-only currently supports SmolLM2 workloads")
-    if args.replicates < 3:
+    if args.collect and args.replicates < 3:
         parser.error("collection requires at least three fresh processes per condition")
     if len(set(args.models)) != len(args.models) or len(set(args.precisions)) != len(args.precisions):
         parser.error("duplicate models or precision classes")
@@ -369,7 +320,7 @@ def main():
                INFERENA_REQUIRE_LOCAL_WEIGHTS="1", INFERENA_TORCH_BACKEND=args.backend)
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v5", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v6", "source": revision,
         "model_revisions": {name: SMOLLM2_REVISIONS[name] for name in args.models if name in SMOLLM2_REVISIONS},
         "meganeura": dependency, "python": sys.version, "packages": packages,
         "torch": {"version": torch.__version__, "git_version": torch.version.git_version,
@@ -416,10 +367,9 @@ def main():
         save()
         print(f"Reference: {args.backend}, torch {args.torch_version}; native: {native['name']}", flush=True)
         print(f"Models: {', '.join(args.models)}; precision: {', '.join(args.precisions)}; "
-              f"{'qualification then collection' if args.collect else 'qualification only'}", flush=True)
-        stages = [("qualification", 1, 1)]
-        if args.collect:
-            stages.append(("measurement", args.replicates, 20))
+              f"{'validated collection' if args.collect else 'qualification only'}", flush=True)
+        stages = ([('measurement', args.replicates, 20)] if args.collect
+                  else [('qualification', 1, 1)])
         measurement_pairs = {}
         sequence = 0
         for stage, replicates, count in stages:

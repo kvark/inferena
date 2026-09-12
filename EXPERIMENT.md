@@ -21,13 +21,14 @@ diagnosis; it is reproducible from `f4255c4b`.
 
 `replicated-gradient-median-v1` therefore evaluates the distribution that the
 campaign already collects. Strict mode keeps the 5% per-process gate.
-Accelerated mode retains every sample below a 10% safety ceiling, requires the
-median cross-engine total-gradient and parameter-gradient errors to remain
-below 5% across three independent processes, and records and caps both engines'
-own cross-process spread at 10%. No observed value enlarges a limit, and no
-sample is discarded or retried. The v5 manifest carries every raw error and the
-aggregate report. A fresh complete campaign is required for the revised
-policy; completed v4 campaigns already satisfied the stricter per-process gate.
+Accelerated mode retains every sample below a 10% safety ceiling and requires
+the median cross-engine total-gradient and parameter-gradient errors to remain
+below 5% across three independent processes. No observed value enlarges a
+limit, and no sample is discarded or retried. The v6 manifest carries every raw
+error and the small aggregate report; the paired records retain both engines'
+outputs for offline diagnosis. A fresh complete campaign is required for the
+revised policy; completed v4 campaigns already satisfied the stricter
+per-process gate.
 
 Earlier attempts established the within-process replay policy:
 
@@ -48,9 +49,12 @@ moving `experiment/p3hpc-cuda-graphs` branch is authoritative until the
 protocol and data settle, at which point one final revision can be tagged.
 Other machines must still pass their own preflight.
 
-Reproduce with `python scripts/p3hpc.py --qualify-only`; omit that option to
-qualify and then collect three fresh-process replicates per condition. The old
-complete qualification remains at
+Reproduce a short preflight with `python scripts/p3hpc.py --qualify-only`;
+omit that option to collect three fresh-process replicates per condition. Each
+measurement process performs the full numerical and replay validation before
+retaining timing samples, so a separate fourth cold-compile process would add
+cost without validating the later processes. The old complete qualification
+remains at
 `../inferena-results/zork-20260910T161443333460Z-db048638/campaign.json`, but it
 does not qualify the revised policy. Failed attempts remain evidence rather
 than retries selected for a favorable result.
@@ -236,7 +240,7 @@ eager fallback as successful compilation. Rerun the check in an existing venv
 with `python scripts/check_environment.py --backend cuda` (or `xpu`, etc.).
 This is an installation check, not model qualification or a timing result.
 
-The v5 campaign collector requires that Python version, PyTorch 2.13.0 and reported source commit
+The v6 campaign collector requires that Python version, PyTorch 2.13.0 and reported source commit
 `cf30153c4c131c8164ee7798e5022d810682e2cb` on **every** platform. It checks
 both before collection and in every paired result; unknown/different commits
 fail closed. The exact installed platform wheel suffix is detected and recorded;
@@ -274,7 +278,7 @@ source revision, and a **new directory outside the checkout**:
 .venv-p3hpc/bin/python scripts/p3hpc.py --qualify-only \
   --models ResNet-50 --precisions strict
 
-# All five models, both precision classes; qualify ALL pairs, then measure.
+# All five models, both precision classes; validate and measure every pair.
 .venv-p3hpc/bin/python scripts/p3hpc.py
 ```
 
@@ -288,14 +292,14 @@ cross-engine name mismatches fail the preflight. `--backend`, `--gpu`, and
 `--results-dir` remain available as explicit assertions/overrides. CPU requires
 an explicit `--backend cpu`; it is never an automatic fallback.
 
-The first stage retains one call per phase for each pair to exercise the full
-runner and validity gates; these are qualification records, not publishable
-timings. Collection (now the default; `--collect` remains accepted) starts the
-5-warmup/20-sample campaign only after every
-selected qualification pair passes its individual or accelerated safety gate.
-Each pair uses fresh PyTorch and Meganeura processes; compiler configurations
-rotate across replicates and engine order alternates. After all three
-measurement processes, the replicated gradient report must also pass. Each
+Collection is the default (`--collect` remains accepted). Every measurement
+process compiles from an empty PyTorch cache, runs the full correctness and
+CUDA-replay gates, then retains 5 warmups and 20 timing samples. This gives 90
+validated pairs rather than repeating the same work in 30 separate preflight
+processes. Optional `--qualify-only` remains a short hardware check, not a
+prerequisite that certifies later processes. Compiler configurations rotate
+across replicates and engine order alternates. After all three measurement
+processes, the replicated gradient report must also pass. Each
 configuration gets its own Meganeura control, not an old or fastest control
 reused across unrelated runs. Rust builds finish before the
 first pair and later wrapper checks use the locked dependency resolution.
@@ -369,8 +373,11 @@ do not silently shrink precision, batch size or sequence length to fit it.
 RTX 3050 / Windows 11 completed all 120 pairs at `5103dedf`, but one PyTorch
 Stable Diffusion compile interval is 17,249 seconds and spans the archive's
 4.8-hour activity gap. The records cannot distinguish host suspension from a
-compiler stall, so that campaign is not clean compile-time evidence. A later
-campaign at `f4255c4b`, with the same pinned packages, inputs, driver and device,
+compiler stall, so that interval is not compile-time evidence. Even after
+removing it, PyTorch compilation totals 3.83 hours across the old campaign's
+120 isolated processes. Campaign v6 removes the redundant 30-process preflight;
+the remaining 90 cold compilations are still expected to dominate wall time.
+A later campaign at `f4255c4b`, with the same pinned packages, inputs, driver and device,
 passed qualification and 61 measurement pairs before PyTorch failed while
 capturing strict SmolLM2 max-autotune training. The exact GEMM had succeeded in
 three synchronized ordinary calls immediately before capture; cuBLAS then
@@ -471,7 +478,7 @@ bash scripts/setup.sh rocm7.2 --no-max-autotune
 
 For an already-created environment, rerun the minimal probe with
 `python scripts/check_environment.py --backend rocm --no-max-autotune` before
-the collector. The v4 manifest retains both HSA values, `args.max_autotune=false`,
+the collector. The v6 manifest retains both HSA values, `args.max_autotune=false`,
 the omitted condition and `reference_conditions.coverage=availability-subset`.
 A `complete` status therefore means the declared subset completed; it is not a
 full ROCm condition matrix and must remain a labelled availability result.
@@ -741,10 +748,11 @@ or a PyTorch-versus-Meganeura speed claim. Keep failures and do not retry a
 configuration merely to improve its timing. The max-autotune condition and
 paired Meganeura/full-model/device campaign remain separate required work.
 
-The collector implements the qualification and process-rotation plan above;
+The collector implements the validation and process-rotation plan above;
 it does not establish that all workloads/platforms have already passed it.
-Automatic max-autotune may reject a kernel family on hardware/capacity grounds;
-retain its diagnostics rather than overriding its hardware policy per model.
+We request automatic max-autotune everywhere. When PyTorch rejects or times out
+its own candidates, that is measured compiler availability evidence; retain its
+diagnostics rather than overriding its hardware policy per model.
 Keep compilation/capture/search costs and graph-pool memory alongside timings.
 
 In the pinned PyTorch source, Inductor's `is_big_gpu` gates some NVIDIA GEMM

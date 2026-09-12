@@ -173,7 +173,7 @@ git switch experiment/p3hpc-cuda-graphs
 git pull --ff-only
 ```
 
-The [readiness findings](EXPERIMENT.md#current-collection-readiness-september-11)
+The [readiness findings](EXPERIMENT.md#current-collection-readiness-september-12)
 explain the precision-aware replay checks and preserved failed attempts.
 Cross-engine accuracy gates are unchanged.
 
@@ -196,18 +196,20 @@ On native Windows, from PowerShell:
 After activating that environment, the collection command on every platform is
 simply **`python scripts/p3hpc.py`**. Run it from a clean checkout of the same
 collection revision on each machine. It prepares missing pinned 135M weights,
-or verifies/adopts an exact legacy cache, detects the reference backend and matching native GPU, qualifies all five common
-models in both precision classes, then collects three fresh-process replicates
+or verifies/adopts an exact legacy cache, detects the reference backend and
+matching native GPU, and validates all five common models in both precision
+classes inside three fresh-process measurement replicates
 per condition (5 warmups, 20 samples). No CPU/eager fallback, automatic model
 exclusion, discarded sample, or retry is allowed. Strict gradients must pass
 the 5% gate in every process. Accelerated gradients retain every sample under
 a 10% safety ceiling, then require the median cross-engine error to remain
-below 5% across the three processes; the manifest also records and bounds each
-engine's own cross-process spread. The full campaign can take a while;
-compilation caches are private to each reference process.
+below 5% across the three processes. Every raw result remains in the campaign.
+The full campaign can take a while because compilation caches are private to
+each of its 90 reference processes.
 
-An AMD consumer GPU that cannot execute PyTorch's max-autotune condition can
-still produce an explicitly labelled availability dataset:
+When stock PyTorch max-autotune fails on an AMD consumer GPU, preserve that
+failure as a portability result, then collect the runnable conditions as an
+explicitly labelled availability dataset:
 
 ```bash
 bash scripts/setup.sh rocm7.2 --no-max-autotune

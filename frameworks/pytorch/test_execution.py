@@ -218,6 +218,7 @@ class CampaignTest(unittest.TestCase):
               "execution": {
                   "stream_policy": "single dedicated preparation/run stream",
                   "requested_mode": "default", "compiled": True,
+                  "sdpa_policy": "auto", "sdpa_enabled_backends": [],
                   "compile_budget_seconds": args.compile_seconds, "compile_budget_enforced": True,
                   "compiler_options": {key: False for key in (
                       "max_autotune", "coordinate_descent_tuning", "max_autotune_gemm",
@@ -238,6 +239,7 @@ class CampaignTest(unittest.TestCase):
             (0, ("optimizer", "sessions", 0, "search", "class_limit"), 8),
             (0, ("optimizer", "sessions", 0, "search", "visited_classes"), 0),
             (1, ("execution", "compiled"), False),
+            (1, ("execution", "sdpa_policy"), "math"),
             (1, ("execution", "compile_budget_enforced"), False),
             (1, ("execution", "compiler_options", "max_autotune"), True),
             (1, ("execution", "graph_replay", "requested"), False),

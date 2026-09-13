@@ -24,6 +24,7 @@ import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from execution import capture_phase, graph_backend, profile_phase, synchronize, nsys_range
 from budget import compilation_budget
@@ -1410,17 +1411,27 @@ def select_compiler_backend(device):
         os.environ["TRITON_DEFAULT_BACKEND"] = selected
 
 
+def attention_policy(device):
+    # The pinned XPU fused attention waits on an event during graph capture.
+    # Keep one public SDPA policy for both replay and its uncaptured ablation.
+    policy = os.environ.get("INFERENA_SDPA", "math" if device.startswith("xpu") else "auto")
+    if policy not in ("auto", "math"):
+        raise ValueError("INFERENA_SDPA must be auto or math")
+    return policy
+
+
 def bench(model_name: str, spec: dict):
     """Matched benchmark: symmetric samples and full forward/loss/backward."""
     dev = detect_device()
     select_compiler_backend(dev)
+    attention = sdpa_kernel(SDPBackend.MATH) if attention_policy(dev) == "math" else nullcontext()
     api = graph_backend(dev) if torch.device(dev).type in ("cuda", "xpu") else None
     stream = api.Stream(device=dev) if api is not None else None
     if stream is not None:
         stream.wait_stream(api.current_stream(dev))
     # Compilation can retain AccumulateGrad nodes. Their stream must remain
     # valid for capture, so all replay-capable backends use one stream.
-    with api.stream(stream) if stream is not None else nullcontext():
+    with attention, api.stream(stream) if stream is not None else nullcontext():
         _bench(model_name, spec, dev, stream)
     if stream is not None:
         api.current_stream(dev).wait_stream(stream)
@@ -1455,6 +1466,8 @@ def _bench(model_name, spec, dev, stream):
     execution = {
         "requested_mode": mode,
         "compiled": False,
+        "sdpa_policy": attention_policy(dev),
+        "sdpa_enabled_backends": [backend.name for backend in torch.nn.attention._cur_sdpa_kernel_backends()],
         "compile_budget_seconds": float(os.environ.get("INFERENA_COMPILE_SECONDS", "120")),
         "compile_budget_enforced": os.environ.get("INFERENA_BUDGET_ENFORCED") == "1",
         "stream_policy": "single dedicated preparation/run stream" if stream is not None else "backend default",

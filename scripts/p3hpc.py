@@ -184,6 +184,10 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
         if search["visited_classes"] < search["eligible_classes"] and not search["time_budget_exhausted"]:
             raise ValueError("native search stopped early without exhausting its budget")
     execution = pt["execution"]
+    if execution["sdpa_policy"] != ("math" if args.backend == "xpu" else "auto"):
+        raise ValueError("reference attention policy differs from the declared backend configuration")
+    if args.backend == "xpu" and execution["sdpa_enabled_backends"] != ["MATH"]:
+        raise ValueError("XPU replay requires the qualified math SDPA setting")
     if args.backend in ("cuda", "rocm", "xpu") and execution.get("stream_policy") != "single dedicated preparation/run stream":
         raise ValueError("preparation and execution must share the declared stream policy")
     if execution["requested_mode"] != mode or execution["compiled"] != (mode != "eager"):
@@ -330,6 +334,7 @@ def main():
         "TORCH_LOGS", "TORCH_TRACE", "CARGO_TARGET_DIR",
         "INFERENA_TORCH_MODE", "INFERENA_GRAPH_REPLAY", "INFERENA_CUDA_GRAPHS",
         "INFERENA_TUNE_SECONDS", "INFERENA_COMPILE_SECONDS", "INFERENA_PREPARATION_REPORT", "INFERENA_BUDGET_ENFORCED",
+        "INFERENA_SDPA",
     )]
     if overrides:
         parser.error(f"remove experimental/profiling overrides: {', '.join(overrides)}")
@@ -401,6 +406,7 @@ def main():
                           "max_scratch_bytes": TUNE_SCRATCH_BYTES,
                           "search_seconds_per_session": args.tune_seconds, "strict_coop": "NativeF32"},
         "reference_compile_seconds": args.compile_seconds,
+        "reference_sdpa_policy": "math" if args.backend == "xpu" else "auto",
         "reference_conditions": {
             "declared": [{"mode": mode, "graph_replay": graphs}
                          for mode, graphs in declared_conditions],

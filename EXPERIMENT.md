@@ -102,7 +102,7 @@ scaling law. Do not quantize, offload or shrink workloads to make them fit.
 | Strict arithmetic | f32 operands/accumulators; native-f32 cooperative tiles permitted; f16-input tiles forbidden |
 | Accelerated arithmetic | Reduced-input paths permitted, with f32 accumulation and the declared validation gates |
 | CUDA and ROCm | Default PyTorch compilation plus qualified whole-phase `torch.cuda.CUDAGraph` replay |
-| XPU | Default PyTorch compilation plus qualified whole-phase `torch.xpu.XPUGraph` replay |
+| XPU | Default PyTorch compilation, public math SDPA setting, qualified whole-phase `torch.xpu.XPUGraph` replay |
 | MPS | Default PyTorch compilation, including first Metal specializations; no equivalent public whole-phase replay API |
 | CPU availability control | Explicit default-compiled CPU reference, no GPU replay |
 
@@ -243,6 +243,13 @@ the benchmark itself does not execute OpenCL. The XPU causal-LM embedding
 backward probe and qualified `index_add` workaround remain recorded under
 `execution.embedding_backward`; this must not be described as an unmodified
 native XPU result.
+Full-model replay qualification also exposes an event wait inside the pinned
+fused attention operator, reproduced by an isolated grouped-query attention
+call. The public `sdpa_kernel(SDPBackend.MATH)` setting passes isolated
+forward/backward capture. XPU uses this explicitly reported configuration
+for both replay and its uncaptured ablation; other backends retain automatic
+SDPA selection. The full-model workaround still has to pass the same gates.
+`execution.sdpa_policy` and `sdpa_enabled_backends` record the active setting.
 The runner selects Triton's backend explicitly from the requested Torch
 device, avoiding ambiguous auto-detection when NVIDIA and Intel drivers are
 both installed. It records the selection and rejects a conflicting override.

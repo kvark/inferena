@@ -17,7 +17,7 @@ import torch
 from execution import capture_phase, check_gradient_set, compare_tensors, graph_backend, profile_phase, synchronize
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-from p3hpc import (MODELS, PYTHON_VERSION, TORCH_REVISION, TORCH_VERSION, TUNE_SCRATCH_BYTES,
+from p3hpc import (MODELS, PYTHON_VERSION, TORCH_REVISION, TORCH_VERSION, TUNE_SCRATCH_BYTES, SDPA_BACKENDS,
                   check_pair, check_torch_identity,
                   conditions, create_parser, gpu_matches, validate_replicated_gradients,
                   runner_bash, select_native_device)
@@ -172,6 +172,8 @@ class CampaignTest(unittest.TestCase):
         with patch("bench.detect_device", return_value="xpu:0"), \
              patch("bench._bench") as run, patch("bench.graph_backend") as api, \
              patch.dict(os.environ, {"TRITON_DEFAULT_BACKEND": "intel"}):
+            run.side_effect = lambda *_: self.assertEqual(
+                torch.nn.attention._cur_sdpa_kernel_backends(), [torch.nn.attention.SDPBackend.MATH])
             bench("model", {})
             stream = api.return_value.Stream.return_value
             run.assert_called_once_with("model", {}, "xpu:0", stream)
@@ -218,7 +220,7 @@ class CampaignTest(unittest.TestCase):
               "execution": {
                   "stream_policy": "single dedicated preparation/run stream",
                   "requested_mode": "default", "compiled": True,
-                  "sdpa_policy": "auto", "sdpa_enabled_backends": [],
+                  "sdpa_policy": "auto", "sdpa_enabled_backends": sorted(SDPA_BACKENDS),
                   "compile_budget_seconds": args.compile_seconds, "compile_budget_enforced": True,
                   "compiler_options": {key: False for key in (
                       "max_autotune", "coordinate_descent_tuning", "max_autotune_gemm",
@@ -240,6 +242,7 @@ class CampaignTest(unittest.TestCase):
             (0, ("optimizer", "sessions", 0, "search", "visited_classes"), 0),
             (1, ("execution", "compiled"), False),
             (1, ("execution", "sdpa_policy"), "math"),
+            (1, ("execution", "sdpa_enabled_backends"), ["MATH"]),
             (1, ("execution", "compile_budget_enforced"), False),
             (1, ("execution", "compiler_options", "max_autotune"), True),
             (1, ("execution", "graph_replay", "requested"), False),
@@ -355,7 +358,8 @@ class ReplayTest(unittest.TestCase):
             path = Path(directory) / "training.json"
             # PTI may omit child kernels of Level Zero command-buffer replay.
             # Check ordinary XPU GPU profiling separately from replay correctness.
-            profile = profile_phase(backward if device == "cuda" else training, path, 2, device=device)
+            with api.stream(stream):
+                profile = profile_phase(backward if device == "cuda" else training, path, 2, device=device)
             self.assertEqual(len(profile["instrumented_wall_ms"]), 2)
             events = json.loads(path.read_text())["traceEvents"]
             self.assertTrue(any(event.get("cat") == "kernel" for event in events))

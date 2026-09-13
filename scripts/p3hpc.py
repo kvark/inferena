@@ -31,6 +31,7 @@ ACCELERATED_SAMPLE_LIMIT = 0.10
 TUNE_SECONDS = 60.0
 TUNE_SCRATCH_BYTES = 1024**3
 COMPILE_SECONDS = 120.0
+SDPA_BACKENDS = {"MATH", "FLASH_ATTENTION", "EFFICIENT_ATTENTION", "CUDNN_ATTENTION", "OVERRIDEABLE"}
 
 
 def gpu_matches(expected, actual):
@@ -186,8 +187,9 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
     execution = pt["execution"]
     if execution["sdpa_policy"] != ("math" if args.backend == "xpu" else "auto"):
         raise ValueError("reference attention policy differs from the declared backend configuration")
-    if args.backend == "xpu" and execution["sdpa_enabled_backends"] != ["MATH"]:
-        raise ValueError("XPU replay requires the qualified math SDPA setting")
+    expected_sdpa = {"MATH"} if args.backend == "xpu" else SDPA_BACKENDS
+    if set(execution["sdpa_enabled_backends"]) != expected_sdpa:
+        raise ValueError("active attention backends differ from the declared policy")
     if args.backend in ("cuda", "rocm", "xpu") and execution.get("stream_policy") != "single dedicated preparation/run stream":
         raise ValueError("preparation and execution must share the declared stream policy")
     if execution["requested_mode"] != mode or execution["compiled"] != (mode != "eager"):
@@ -468,6 +470,7 @@ def main():
                             order = "pytorch,meganeura" if sequence % 2 == 0 else "meganeura,pytorch"
                             sequence += 1
                             command = [env["INFERENA_BASH"], (ROOT / "run.sh").as_posix(), "-m", model, "-f", order,
+                                       "--platform", args.gpu,
                                        "--warmup-runs", "5", "--measurement-runs", str(count),
                                        "--results-dir", str(folder)]
                             if precision == "strict":

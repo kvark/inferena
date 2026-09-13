@@ -63,9 +63,6 @@ $ProbeBackend = switch -Regex ($Backend) {
     default    { $Backend }
 }
 
-$ProbeArgs = @('--backend', $ProbeBackend)
-if ($NoMaxAutotune) {
-    $ProbeArgs += '--no-max-autotune'
-}
-& $EnvPython (Join-Path $Root 'scripts\check_environment.py') @ProbeArgs
+# NoMaxAutotune remains accepted for compatibility; it is already the default.
+& $EnvPython (Join-Path $Root 'scripts\check_environment.py') --backend $ProbeBackend
 exit $LASTEXITCODE

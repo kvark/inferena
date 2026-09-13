@@ -5,9 +5,9 @@ Use branch `experiment/p3hpc-cuda-graphs`. Meganeura is pinned to merged
 `p3hpc-paired-campaign-v8` is a new cohort: do not combine its results with
 v7 / `efb1e520` or relabel older results as always-tuned or native-f32 strict.
 
-**Qualification in progress: do not start the full cross-platform collection
-until the local CUDA/XPU checks below have completed.** MPS, ROCm and Windows
-must pass their own short qualification; Linux success does not certify them.
+**Collection candidate: qualify the new MPS and ROCm paths before launching
+the common cohort or renting H100 again.** Local CUDA and XPU full-model checks
+pass as detailed below; Linux success does not certify macOS/ROCm/Windows.
 
 ## What to run
 
@@ -248,7 +248,7 @@ fused attention operator, reproduced by an isolated grouped-query attention
 call. The public `sdpa_kernel(SDPBackend.MATH)` setting passes isolated
 forward/backward capture. XPU uses this explicitly reported configuration
 for both replay and its uncaptured ablation; other backends retain automatic
-SDPA selection. The full-model workaround still has to pass the same gates.
+SDPA selection. The full-model workaround passes the same gates on B570.
 `execution.sdpa_policy` and `sdpa_enabled_backends` record the active setting.
 The runner selects Triton's backend explicitly from the requested Torch
 device, avoiding ambiguous auto-detection when NVIDIA and Intel drivers are

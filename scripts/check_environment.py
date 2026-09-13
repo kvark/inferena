@@ -17,7 +17,8 @@ import torch
 from p3hpc import ROOT, PYTHON_VERSION, check_torch_identity, conditions, runner_bash
 
 sys.path.insert(0, str(ROOT / "frameworks/pytorch"))
-from bench import clear_compile_cache, detect_device, device_name, select_compiler_backend
+from bench import attention_policy, clear_compile_cache, detect_device, device_name, select_compiler_backend
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from budget import compilation_budget
 from execution import capture_phase, graph_backend, synchronize
 from contextlib import nullcontext
@@ -38,7 +39,8 @@ def check_backend(backend, max_autotune=False):
     stream = api.Stream(device=device) if api is not None else None
     if stream is not None:
         stream.wait_stream(api.current_stream(device))
-    with clear_compile_cache(), api.stream(stream) if stream is not None else nullcontext():
+    attention = sdpa_kernel(SDPBackend.MATH) if attention_policy(device) == "math" else nullcontext()
+    with clear_compile_cache(), attention, api.stream(stream) if stream is not None else nullcontext():
         for mode, graphs in conditions(backend, max_autotune):
             candidate = model if mode == "eager" else torch.compile(model, fullgraph=True, options={
                 "max_autotune": mode == "max-autotune", "triton.cudagraphs": False,

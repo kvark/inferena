@@ -716,10 +716,7 @@ done
 # Always emitted (not gated on --update) so every run leaves a visual summary
 # of what the machine just produced. Uses the override if one was supplied,
 # otherwise defers to the script's own gpu_name extraction.
-CHART_PLATFORM="${PLATFORM:-}"
-if [ -z "$CHART_PLATFORM" ] && [ "$DRY_RUN" != true ]; then
-    CHART_PLATFORM=$(detect_platform)
-fi
+CHART_PLATFORM="${PLATFORM_OVERRIDE:-${PLATFORM:-}}"
 if [ "$DRY_RUN" != true ]; then
     "$PYTHON" "$ROOT_DIR/scripts/generate_chart.py" \
         --results-dir "$RESULTS_DIR" \

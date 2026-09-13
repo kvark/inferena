@@ -521,8 +521,7 @@ dependencies = [
 [[package]]
 name = "blade-graphics"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f50161de1b828487e321d0df36cba06666e624a6a943293485f0dd0e97ef6ea"
+source = "git+https://github.com/kvark/blade?rev=f6f2729e850cc0aefdc0bb18523da58a72765169#f6f2729e850cc0aefdc0bb18523da58a72765169"
 dependencies = [
  "ash",
  "ash-window",
@@ -5219,7 +5218,7 @@ checksum = "7ebb8d8732c6a6df3d8f032a82911cfc747e00efb95cc46e8d0acd5b5b88570c"
 [[package]]
 name = "meganeura"
 version = "0.3.0"
-source = "git+https://github.com/kvark/meganeura?rev=fcdd76d1a4cd0e3d10507e56ea3f2412378a2ba7#fcdd76d1a4cd0e3d10507e56ea3f2412378a2ba7"
+source = "git+https://github.com/kvark/meganeura?rev=75dfe901deb87ca0054c438437efd3aa388b7188#75dfe901deb87ca0054c438437efd3aa388b7188"
 dependencies = [
  "blade-graphics",
  "blade-macros",

@@ -3,8 +3,14 @@
 Source branch: `experiment/p3hpc-cuda-graphs`, based on Inferena main.
 The submitted source remains tagged `paper-arxiv-1`. Git records both bases;
 do not copy binaries or experimental raw records into this branch or main.
-The Meganeura dependency is pinned to merged main `fcdd76d1` (0.3.0); it is not a
+The Meganeura dependency is pinned to merged main `75dfe901` (0.3.0); it is not a
 floating sibling checkout.
+
+September 13 dependency refresh: includes measured convolution specialization
+and calibrated Blade timings. Light/searched policies and numerical gates are
+unchanged; convolution search runs in the searched condition. The completed
+`17d13a3` cohort used `fcdd76d1` and remains separate from new measurements.
+This pin update alone does not qualify a fresh full collection.
 
 ## Current collection readiness, September 12
 

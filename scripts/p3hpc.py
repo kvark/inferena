@@ -218,7 +218,10 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
                 raise ValueError("requested replay backend did not execute")
             validation = report["validation"]
             repeats = 8 if phase == "training" and pt["precision"]["reduced_precision_allowed"] else 2
-            if (validation.get("policy") != "fixed-full-gradient-v3"
+            if (validation.get("policy") != "fixed-full-tensor-v4"
+                    or validation.get("output_metric") != "per-tensor RMS and maximum absolute error"
+                    or validation.get("rtol") != 1e-4 or validation.get("atol") != 1e-6
+                    or validation.get("accelerated_gradient_rtol") != 0.01
                     or validation.get("uncaptured_calls") != repeats + 1
                     or validation.get("uncaptured_repeats") != repeats
                     or validation.get("consecutive_replays") != 2):
@@ -398,7 +401,7 @@ def main():
                INFERENA_REQUIRE_LOCAL_WEIGHTS="1", INFERENA_TORCH_BACKEND=args.backend)
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v8", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v9", "source": revision,
         "model_revisions": {name: SMOLLM2_REVISIONS[name] for name in args.models if name in SMOLLM2_REVISIONS},
         "meganeura": dependency, "python": sys.version, "packages": packages,
         "torch": {"version": torch.__version__, "git_version": torch.version.git_version,

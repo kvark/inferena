@@ -620,7 +620,7 @@ fn run_framework(
         Ok(r) => {
             if matches!(framework, "pytorch" | "meganeura") {
                 let expected_protocol = if framework == "pytorch" {
-                    "inferena-graph-replay-v3"
+                    "inferena-graph-replay-v4"
                 } else {
                     PAPER_PROTOCOL
                 };

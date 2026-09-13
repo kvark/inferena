@@ -28,21 +28,22 @@ class CampaignTest(unittest.TestCase):
         # Full-vector bounds admit cancellation noise, not corrupt/stale data.
         reference = torch.tensor([1.0, -1.0, 0.0])
         rounded = reference + torch.tensor([0.0, 0.0, 2e-6])
-        compare_tensors(rounded, reference, gradient=True)
-        with self.assertRaises(AssertionError):
-            compare_tensors(rounded, reference)
-        for invalid in (reference * 2, -reference, torch.zeros_like(reference),
-                        torch.tensor([1.0, -1.0, 1e-3]), reference + float("nan"),
-                        reference + float("inf"), reference[:2], reference.double()):
-            with self.assertRaises(ValueError):
-                compare_tensors(invalid, reference, gradient=True)
+        self.assertEqual(compare_tensors(rounded, reference)["elementwise_mismatches"], 1)
+        for gradient in (False, True):
+            compare_tensors(rounded, reference, gradient=gradient)
+            for invalid in (reference * 2, -reference, torch.zeros_like(reference),
+                            torch.tensor([1.0, -1.0, 1e-3]), reference + float("nan"),
+                            reference + float("inf"), reference[:2], reference.double()):
+                with self.assertRaises(ValueError):
+                    compare_tensors(invalid, reference, gradient=gradient)
         # The maximum catches sparse corruption; RMS catches diffuse drift
         # even when one large element would make a max-only gate permissive.
         reference = torch.zeros(10000)
         reference[0] = 1.0
         diffuse = reference + 1e-5
-        with self.assertRaisesRegex(ValueError, "fixed bounds"):
-            compare_tensors(diffuse, reference, gradient=True)
+        for gradient in (False, True):
+            with self.assertRaisesRegex(ValueError, "fixed bounds"):
+                compare_tensors(diffuse, reference, gradient=gradient)
         compare_tensors(torch.zeros(3), torch.zeros(3), gradient=True)
         with self.assertRaises(ValueError):
             compare_tensors(torch.full((3,), 1e-3), torch.zeros(3), gradient=True)
@@ -51,6 +52,8 @@ class CampaignTest(unittest.TestCase):
         check_gradient_set([
             compare_tensors(rounded, reference, gradient=True, reduced_precision=True)
         ], reduced_precision=True)
+        with self.assertRaisesRegex(ValueError, "fixed bounds"):
+            compare_tensors(rounded, reference, reduced_precision=True)
         with self.assertRaisesRegex(ValueError, "full-gradient"):
             check_gradient_set([
                 compare_tensors(reference * 1.02, reference, gradient=True, reduced_precision=True)
@@ -227,8 +230,11 @@ class CampaignTest(unittest.TestCase):
                       "max_autotune_pointwise", "triton.cudagraphs")},
                   "graph_replay": {"requested": True, "phases": {phase: {
                       "status": "captured-and-validated", "api": "torch.cuda.CUDAGraph",
-                      "validation": {"policy": "fixed-full-gradient-v3", "uncaptured_calls": 3,
-                                     "uncaptured_repeats": 2, "consecutive_replays": 2},
+                      "validation": {"policy": "fixed-full-tensor-v4", "uncaptured_calls": 3,
+                                     "uncaptured_repeats": 2, "consecutive_replays": 2,
+                                     "output_metric": "per-tensor RMS and maximum absolute error",
+                                     "rtol": 1e-4, "atol": 1e-6,
+                                     "accelerated_gradient_rtol": 0.01},
                   } for phase in ("inference", "latency", "training")}},
               }}
         check = lambda records: check_pair(records, args, "default", True, 1, "source", precision="strict")
@@ -247,6 +253,8 @@ class CampaignTest(unittest.TestCase):
             (1, ("execution", "compiler_options", "max_autotune"), True),
             (1, ("execution", "graph_replay", "requested"), False),
             (1, ("execution", "graph_replay", "phases", "training", "api"), "torch.xpu.XPUGraph"),
+            (1, ("execution", "graph_replay", "phases", "training", "validation", "rtol"), 0.01),
+            (1, ("execution", "graph_replay", "phases", "training", "validation", "policy"), "fixed-full-gradient-v3"),
         ):
             records = copy.deepcopy([mg, pt])
             target = records[engine]

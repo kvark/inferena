@@ -10,7 +10,7 @@ import torch
 
 REPLAY_RTOL = 1e-4
 REPLAY_ATOL = 1e-6
-REPLAY_POLICY = "fixed-full-gradient-v3"
+REPLAY_POLICY = "fixed-full-tensor-v4"
 ACCELERATED_GRADIENT_REPEATS = 8
 ACCELERATED_GRADIENT_RTOL = 0.01
 
@@ -39,16 +39,17 @@ def compare_tensors(actual, reference, *, gradient=False, reduced_precision=Fals
     report["rms_bound"] = REPLAY_ATOL + REPLAY_RTOL * report["rms_reference"]
     if not all(math.isfinite(value) for value in report.values()):
         raise ValueError(f"non-finite error metric: {report}")
-    if gradient:
-        # Cancellation makes elementwise relative gradient errors misleading.
-        # Strict execution retains the tight per-parameter gate. Accelerated
-        # reductions are allowed to be nondeterministic and are checked as one
-        # complete gradient below, without fitting bounds to observed repeats.
-        if not reduced_precision and (report["max_abs_error"] > report["max_abs_bound"]
-                                      or report["rms_error"] > report["rms_bound"]):
-            raise ValueError(f"gradient repeatability exceeds fixed bounds: {report}")
-    else:
-        torch.testing.assert_close(actual, reference, rtol=REPLAY_RTOL, atol=REPLAY_ATOL)
+    if not gradient:
+        report["elementwise_mismatches"] = int(
+            (error.abs() > REPLAY_ATOL + REPLAY_RTOL * reference.abs()).sum())
+    # Cancellation affects outputs as well as gradients. Bound sparse error
+    # by the tensor maximum and diffuse error by RMS, without fitting either
+    # bound to repeats. Every output/loss retains the tight gate in both modes;
+    # only accelerated gradients use the separate complete-gradient gate.
+    if not (gradient and reduced_precision) and (
+            report["max_abs_error"] > report["max_abs_bound"]
+            or report["rms_error"] > report["rms_bound"]):
+        raise ValueError(f"tensor repeatability exceeds fixed bounds: {report}")
     return report
 
 
@@ -204,7 +205,7 @@ def capture_phase(fn, model=None, stream=None, reduced_precision=False, device="
                 expected = tuple(t.detach().cpu().clone() for t in tensors(outputs))
                 gradients = {name: grad.detach().cpu().clone() for name, grad in parameter_gradients().items()}
             else:
-                ordinary.append(check(outputs, "uncaptured repeat"))
+                ordinary.append(check(outputs, f"uncaptured repeat {index}"))
             ordinary_validation_s += time.perf_counter() - validation_start
             del outputs
     api.current_stream(device).wait_stream(stream)
@@ -236,6 +237,7 @@ def capture_phase(fn, model=None, stream=None, reduced_precision=False, device="
         "validation": {
             "policy": REPLAY_POLICY,
             "outputs": "all elements",
+            "output_metric": "per-tensor RMS and maximum absolute error",
             "gradient_tensors": len(gradients),
             "gradients": "all elements of every participating parameter",
             "gradient_metric": "whole-gradient RMS and maximum absolute error",

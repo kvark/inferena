@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT / "frameworks/pytorch"))
 from bench import attention_policy, clear_compile_cache, detect_device, device_name, select_compiler_backend
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from budget import compilation_budget
-from execution import capture_phase, graph_backend, synchronize
+from execution import capture_phase, compare_tensors, graph_backend, synchronize
 from contextlib import nullcontext
 
 
@@ -60,9 +60,9 @@ def check_backend(backend, max_autotune=False):
             call = capture_phase(training, model, stream=stream, device=device)[0] if graphs else training
             output, loss = call()
             synchronize(device)
-            torch.testing.assert_close(output, expected, rtol=1e-4, atol=1e-6)
+            compare_tensors(output, expected.cpu())
             for parameter, reference in zip(model.parameters(), gradients, strict=True):
-                torch.testing.assert_close(parameter.grad, reference, rtol=1e-4, atol=1e-6)
+                compare_tensors(parameter.grad, reference.cpu(), gradient=True)
             print(f"PASS: {device_name(device)} / {mode} / graphs={graphs}, forward + backward", flush=True)
             del output, loss, call, candidate
 

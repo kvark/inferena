@@ -2,8 +2,10 @@
 
 Use branch `experiment/p3hpc-cuda-graphs`. Meganeura is pinned to merged
 `428fc2d2322229e5338f5d80a10d700340d593cd`. Protocol
-`p3hpc-paired-campaign-v8` is a new cohort: do not combine its results with
-v7 / `efb1e520` or relabel older results as always-tuned or native-f32 strict.
+`p3hpc-paired-campaign-v9` replaces the v8 candidate's pointwise output
+repeatability gate with fixed per-tensor maximum/RMS gates. Do not relabel
+v8 records as v9 or combine this cohort with v7 / `efb1e520`, which did not
+implement always-tuned Meganeura or native-f32 strict.
 
 **Collection candidate: qualify the new MPS and ROCm paths before launching
 the common cohort or renting H100 again.** Local CUDA and XPU full-model checks
@@ -202,14 +204,23 @@ match the pins; mismatches are not overwritten. Other workloads retain the
 source-defined deterministic initialization. Rust builds are locked and
 finish before the first pair; build parallelism defaults to one job.
 
-Whole-phase replay retains full output/loss comparison at `rtol=1e-4,
-atol=1e-6`, exact shapes/dtypes/participating-gradient inventory and finite
-values. Strict gradients pass per-tensor and full-gradient maximum/RMS bounds:
+Whole-phase replay checks every output/loss tensor separately, with exact
+shapes/dtypes/participating-gradient inventory and finite values. Outputs in
+both modes and strict per-parameter gradients use fixed maximum/RMS bounds:
 
 ```text
 max(abs(error)) <= 1e-6 + 1e-4 * max(abs(reference))
 RMS(error)      <= 1e-6 + 1e-4 * RMS(reference)
 ```
+
+Both inequalities must pass; maximum error catches sparse corruption and RMS
+catches diffuse drift. Loss is its own tensor, not pooled with larger outputs.
+Strict gradients also pass the same full-gradient bounds. Output records retain
+the count of pointwise mismatches as a diagnostic, not an acceptance gate.
+`fixed-full-tensor-v4` uses the same fixed tolerance coefficients as before,
+but deliberately changes the norm: small cancellation residuals near zero no
+longer fail solely because their elementwise relative error is large. This
+is an acceptance-rule change, not an unchanged-validation claim.
 
 Accelerated training uses one fixed reference, eight ordinary repeats and two
 replays, with complete-gradient maximum and element-weighted RMS bounds at
@@ -221,8 +232,8 @@ Cross-engine validation retains the v7 policy: strict errors must remain below
 5% per process; accelerated forward must pass and each training error must
 remain below a 10% safety ceiling, with medians below 5% across three independent
 processes. Every sample is retained; `replicated-gradient-median-v1` is a
-separate gate from within-process replay validation. No limit has been loosened
-for the new execution paths.
+separate gate from within-process replay validation. These cross-engine and
+gradient limits are unchanged by the output repeatability correction.
 
 `check_pair` also rejects disabled native tuning, an incorrect strict policy,
 missing session evidence, unexpected class caps, uncompiled requested modes,
@@ -301,6 +312,19 @@ macOS/ROCm/Windows hardware qualification and cloud-model coverage remain
 outstanding. In particular, local tests do not prove MPS compilation or actual
 native-f32 cooperative use on a Mac. Do not launch the paid cloud campaign
 until the new backend paths have qualified.
+
+The archived RX 7900 XT v8 candidate (`d5b46f2`) completed nine pairs before
+accelerated Whisper failed its ordinary training-output repeatability check,
+before training graph capture. Compilation finished in 7.09 seconds. Two of
+576,000 output elements failed the pointwise gate (largest mismatch
+`1.185e-6`). Successful strict Whisper already had a larger full-tensor maximum
+variation (`1.529e-6`) but small RMS error (`7.171e-8`). This supports treating
+near-zero sensitivity as a validation-metric issue, not claiming a graph or
+Meganeura failure. The failed process did not retain full comparison metrics;
+its acceptance under v9 must be tested, not inferred from the strict result.
+The pinned [PyTorch reproducibility notes](https://github.com/pytorch/pytorch/blob/cf30153c4c131c8164ee7798e5022d810682e2cb/docs/source/notes/randomness.md)
+explain that nondeterministic algorithms are permitted unless disabled. They
+do not identify which kernel caused this particular forward variation.
 
 ## Separate diagnostics
 

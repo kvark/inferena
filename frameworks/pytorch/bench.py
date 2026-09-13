@@ -1481,7 +1481,7 @@ def _bench(model_name, spec, dev, stream):
     }
 
     print(
-        f"[pytorch] inferena-graph-replay-v3: {precision_mode}, {warmup_runs} warmups, "
+        f"[pytorch] inferena-graph-replay-v4: {precision_mode}, {warmup_runs} warmups, "
         f"{measurement_runs} samples",
         file=sys.stderr,
     )
@@ -1754,7 +1754,7 @@ def _bench(model_name, spec, dev, stream):
         "execution": execution,
         "profile_artifacts": profiles,
         "protocol": {
-            "name": "inferena-graph-replay-v3",
+            "name": "inferena-graph-replay-v4",
             "warmup_runs": warmup_runs,
             "measurement_runs": measurement_runs,
             "statistic": "median",

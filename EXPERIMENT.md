@@ -8,8 +8,9 @@ v8 records as v9 or combine this cohort with v7 / `efb1e520`, which did not
 implement always-tuned Meganeura or native-f32 strict.
 
 **Collection candidate: qualify the new MPS and ROCm paths before launching
-the common cohort or renting H100 again.** Local CUDA and XPU full-model checks
-pass as detailed below; Linux success does not certify macOS/ROCm/Windows.
+the common cohort or renting H100 again.** Local v8 full-model and v9 Whisper
+checks pass on CUDA/XPU as detailed below; Linux success does not certify
+macOS/ROCm/Windows.
 
 ## What to run
 
@@ -325,6 +326,13 @@ its acceptance under v9 must be tested, not inferred from the strict result.
 The pinned [PyTorch reproducibility notes](https://github.com/pytorch/pytorch/blob/cf30153c4c131c8164ee7798e5022d810682e2cb/docs/source/notes/randomness.md)
 explain that nondeterministic algorithms are permitted unless disabled. They
 do not identify which kernel caused this particular forward variation.
+
+At `8826ef7`, v9 paired Whisper qualification passes in strict and accelerated
+modes on both RTX 5070 and B570; the six broad execution/contract tests pass
+with each vendor wheel, as do nine Rust harness tests. Rechecking retained
+output statistics finds no maximum/RMS failure among 192 comparisons from the
+nine valid AMD pairs or 220 from each local v8 full-model check. This is an
+offline metric audit, not new v9 samples or qualification of the failed pair.
 
 ## Separate diagnostics
 

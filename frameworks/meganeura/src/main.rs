@@ -45,7 +45,7 @@ fn build_session_for(graph: &Graph, mode: Mode) -> Session {
     });
     if meganeura::config::TUNE.bool_or(true) {
         let seconds = std::env::var("INFERENA_TUNE_SECONDS")
-            .unwrap_or_else(|_| "10".to_owned())
+            .unwrap_or_else(|_| "60".to_owned())
             .parse::<f64>()
             .expect("INFERENA_TUNE_SECONDS must be a positive number");
         assert!(seconds.is_finite() && seconds > 0.0);

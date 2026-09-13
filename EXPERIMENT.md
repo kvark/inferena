@@ -123,12 +123,16 @@ Do not call this a measurement of PyTorch's best achievable steady state.
 ### Preparation budgets and evidence
 
 Meganeura searches all classes in its **current legal tuning domain**, with
-no eight-class cutoff, a **10-second soft deadline per session**, and at most
+no eight-class cutoff, a **60-second soft deadline per session**, and at most
 **1 GiB private scratch**, including staging. This is a ceiling, not a
 reservation; the engine also checks the available device-memory budget.
 The larger ceiling admits substantial language-model matrix bindings that
 the old 64 MiB limit excluded. Most workloads create three sessions; Whisper
 reuses its inference session for minimal forward and creates two.
+Search returns as soon as the legal candidates finish; 60 seconds is not a
+mandatory wait. A local ResNet check reached all 71 strict / 59 accelerated
+training classes in 29 / 24 seconds, while a 10-second cap reached only
+22 / 25. These are qualification observations, not a replicated speed claim.
 
 The legal domain includes scalar f32 matmul tiles, compatible native-f32
 cooperative alternatives, and scalar convolution forward/dX/dW shapes and
@@ -239,6 +243,9 @@ the benchmark itself does not execute OpenCL. The XPU causal-LM embedding
 backward probe and qualified `index_add` workaround remain recorded under
 `execution.embedding_backward`; this must not be described as an unmodified
 native XPU result.
+The runner selects Triton's backend explicitly from the requested Torch
+device, avoiding ambiguous auto-detection when NVIDIA and Intel drivers are
+both installed. It records the selection and rejects a conflicting override.
 
 On the Radeon 780M configuration previously reported in
 [issue #61](https://github.com/kvark/inferena/issues/61), retain the needed
@@ -279,8 +286,10 @@ INFERENA_TORCH_MODE=default INFERENA_GRAPH_REPLAY=1 \
 ```
 
 PyTorch exports a CPU/GPU Chrome timeline; MPS needs native Metal tooling for
-GPU events. Meganeura exports per-pass GPU timing sidecars. Use
-`scripts/profile_report.py` to rank families. Instrumentation can change the
+GPU events. Meganeura exports per-pass GPU timing sidecars.
+For XPU, PTI may omit child-kernel events inside command-buffer replay even
+when ordinary kernel profiling works; API events alone are not GPU timings.
+Use `scripts/profile_report.py` to rank families. Instrumentation can change the
 schedule and timing; synthetic host placement of duration slices is not a
 calibrated GPU start time. `wall - sum(kernel medians)` is neither CPU time nor
 barrier cost. Prefer vendor timelines for causal attribution.

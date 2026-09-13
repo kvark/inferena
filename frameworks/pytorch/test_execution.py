@@ -63,7 +63,7 @@ class CampaignTest(unittest.TestCase):
         self.assertFalse(defaults.max_autotune)
         self.assertFalse(defaults.graph_ablation)
         self.assertEqual(defaults.compile_seconds, 120)
-        self.assertEqual(defaults.tune_seconds, 10)
+        self.assertEqual(defaults.tune_seconds, 60)
         self.assertIsNone(defaults.backend)
         self.assertIsNone(defaults.gpu)
         self.assertIsNone(defaults.results_dir)
@@ -351,7 +351,9 @@ class ReplayTest(unittest.TestCase):
                 torch.testing.assert_close(parameter.grad, expected)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "training.json"
-            profile = profile_phase(backward, path, 2, device=device)
+            # PTI may omit child kernels of Level Zero command-buffer replay.
+            # Check ordinary XPU GPU profiling separately from replay correctness.
+            profile = profile_phase(backward if device == "cuda" else training, path, 2, device=device)
             self.assertEqual(len(profile["instrumented_wall_ms"]), 2)
             events = json.loads(path.read_text())["traceEvents"]
             self.assertTrue(any(event.get("cat") == "kernel" for event in events))

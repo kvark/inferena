@@ -11,18 +11,23 @@ pass as detailed below; Linux success does not certify macOS/ROCm/Windows.
 
 ## What to run
 
-For an existing checkout/environment:
+First qualify the candidate on macOS, ROCm and Windows, using an existing
+checkout/environment:
 
 ```sh
 git switch experiment/p3hpc-cuda-graphs
 git pull --ff-only
 git rev-parse HEAD
-.venv-p3hpc/bin/python scripts/p3hpc.py
+.venv-p3hpc/bin/python scripts/p3hpc.py --qualify-only
 ```
 
 Use the same complete source SHA on every machine. Existing pinned environments
 do not need reinstalling. No `--no-max-autotune` is needed on any platform;
 that old spelling remains accepted as a no-op.
+Qualification checks all five models and both arithmetic classes once. Keep
+the results, including any failure, and resolve protocol problems before
+starting the common cohort. Once those backend checks pass, full collection
+is simply `python scripts/p3hpc.py`, using the interpreter below.
 
 For a new environment, install uv and Rust, then run the appropriate setup.
 Setup downloads managed Python **3.13.13**, installs the pinned requirements,
@@ -45,12 +50,11 @@ Here `python` means the created environment's interpreter:
 machine. CPU comparison is always explicit; it is GPU-versus-CPU availability
 evidence, not part of GPU speed-ratio aggregates.
 
-Before committing another machine to a full run, perform a short check:
+For example, the Mac qualification is:
 
 ```sh
 .venv-p3hpc/bin/python scripts/check_environment.py --backend mps
-.venv-p3hpc/bin/python scripts/p3hpc.py --backend mps --qualify-only \
-  --models ResNet-50 SmolLM2-135M --precisions strict
+.venv-p3hpc/bin/python scripts/p3hpc.py --backend mps --qualify-only
 ```
 
 Substitute that machine's backend. The Mac check is particularly important:
@@ -280,6 +284,23 @@ Do not compare them as identical peak-VRAM measurements.
 The acknowledged Naga Workgroup ArrayStride diagnostic is not a reason to
 disable Vulkan validation. Distinguish it from new validation or numerical
 failures.
+
+## Local acceptance evidence
+
+On September 13, RTX 5070 passed all ten model/arithmetic pairs at `7d671a0`;
+the expanded ResNet search passed again with the final default budgets and
+receipt checks at `1430d0d`. B570 passed all ten pairs at `d8335a8`, using
+the declared math SDPA policy; all receipts also pass the `1430d0d` checker.
+Both installed vendor wheels pass the six broad execution/contract tests,
+both setup probes pass, and the nine Rust harness tests pass. Raw qualification
+outputs stay outside Git; these single-pair checks are not publication data.
+
+The B570 ResNet training search can reach its 60-second deadline before
+visiting all classes; this is recorded and retains untested incumbents.
+macOS/ROCm/Windows hardware qualification and cloud-model coverage remain
+outstanding. In particular, local tests do not prove MPS compilation or actual
+native-f32 cooperative use on a Mac. Do not launch the paid cloud campaign
+until the new backend paths have qualified.
 
 ## Separate diagnostics
 

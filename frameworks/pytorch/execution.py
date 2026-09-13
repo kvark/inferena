@@ -1,4 +1,4 @@
-"""Whole-phase CUDA replay with untimed, full-tensor qualification."""
+"""Whole-phase CUDA/HIP/XPU replay with untimed, full-tensor qualification."""
 
 import time
 import os
@@ -90,6 +90,13 @@ def synchronize(device):
         torch.mps.synchronize()
 
 
+def graph_backend(device):
+    backend = torch.device(device).type
+    if backend not in ("cuda", "xpu"):
+        raise ValueError(f"no explicit whole-phase replay API for {backend}")
+    return getattr(torch, backend)
+
+
 def profile_phase(fn, path, samples, before=None, device="cuda"):
     """Separate diagnostic timeline; these durations are never benchmark samples."""
     path = Path(path)
@@ -133,7 +140,7 @@ class CapturedPhase:
         return self.outputs
 
 
-def capture_phase(fn, model=None, stream=None, reduced_precision=False):
+def capture_phase(fn, model=None, stream=None, reduced_precision=False, device="cuda"):
     """Return a replay callable retaining its graph, outputs and gradient storage.
 
     fn returns a tensor or a tuple of tensors. Inputs and parameters must keep
@@ -142,8 +149,11 @@ def capture_phase(fn, model=None, stream=None, reduced_precision=False):
     Reuse the preparation stream when compilation retains autograd nodes.
     """
     start = time.perf_counter()
-    stream = stream if stream is not None else torch.cuda.Stream()
-    stream.wait_stream(torch.cuda.current_stream())
+    api = graph_backend(device)
+    backend = torch.device(device).type
+    graph_type = api.CUDAGraph if backend == "cuda" else api.XPUGraph
+    stream = stream if stream is not None else api.Stream(device=device)
+    stream.wait_stream(api.current_stream(device))
 
     def tensors(values):
         return (values,) if isinstance(values, torch.Tensor) else values
@@ -172,7 +182,7 @@ def capture_phase(fn, model=None, stream=None, reduced_precision=False):
             except (ValueError, AssertionError) as error:
                 raise ValueError(f"{stage} {label}: {error}") from error
         if model is not None:
-            totals["replays" if stage == "CUDA graph replay" else "uncaptured"].append(
+            totals["replays" if stage == "graph replay" else "uncaptured"].append(
                 check_gradient_set(
                     [row for label, row in rows.items() if label.startswith("gradient ")],
                     reduced_precision=reduced_precision,
@@ -183,12 +193,12 @@ def capture_phase(fn, model=None, stream=None, reduced_precision=False):
     ordinary = []
     ordinary_validation_s = 0.0
     ordinary_repeats = ACCELERATED_GRADIENT_REPEATS if reduced_precision and model is not None else 2
-    with torch.cuda.stream(stream):
+    with api.stream(stream):
         for index in range(ordinary_repeats + 1):
             if model is not None:
                 model.zero_grad(set_to_none=True)
             outputs = fn()
-            torch.cuda.synchronize()
+            synchronize(device)
             validation_start = time.perf_counter()
             if index == 0:
                 expected = tuple(t.detach().cpu().clone() for t in tensors(outputs))
@@ -197,14 +207,14 @@ def capture_phase(fn, model=None, stream=None, reduced_precision=False):
                 ordinary.append(check(outputs, "uncaptured repeat"))
             ordinary_validation_s += time.perf_counter() - validation_start
             del outputs
-    torch.cuda.current_stream().wait_stream(stream)
+    api.current_stream(device).wait_stream(stream)
 
     if model is not None:
         # Allocate gradients during capture; backward then overwrites them on
         # every replay. Do not detach or reset those tensors between replays.
         model.zero_grad(set_to_none=True)
-    graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(graph, stream=stream):
+    graph = graph_type()
+    with api.graph(graph, stream=stream):
         outputs = fn()
 
     replay = CapturedPhase(fn, model, graph, outputs)
@@ -214,11 +224,12 @@ def capture_phase(fn, model=None, stream=None, reduced_precision=False):
     replays = []
     for _ in range(2):
         actual = replay()
-        torch.cuda.synchronize()
-        replays.append(check(actual, "CUDA graph replay"))
+        synchronize(device)
+        replays.append(check(actual, "graph replay"))
 
     return replay, {
         "status": "captured-and-validated",
+        "api": f"torch.{backend}.{graph_type.__name__}",
         "scope": "forward + loss + backward" if model is not None else "forward",
         "capture_s": capture_s,
         "validation_s": ordinary_validation_s + time.perf_counter() - validation_start,

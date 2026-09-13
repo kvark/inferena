@@ -10,7 +10,8 @@ import sqlite3
 import subprocess
 import sys
 
-from p3hpc import ROOT, SUPPORTED_MODELS, check_pair, input_hashes, runner_bash
+from p3hpc import (ROOT, SUPPORTED_MODELS, TUNE_SECONDS, COMPILE_SECONDS,
+                  check_pair, input_hashes, positive_seconds, runner_bash)
 
 
 def main():
@@ -20,7 +21,9 @@ def main():
     parser.add_argument("--gpu", required=True)
     parser.add_argument("--torch-version", required=True)
     parser.add_argument("--precision", choices=("strict", "accelerated"), default="strict")
-    parser.add_argument("--mode", choices=("default", "max-autotune", "eager"), default="max-autotune")
+    parser.add_argument("--mode", choices=("default", "max-autotune", "eager"), default="default")
+    parser.add_argument("--tune-seconds", type=positive_seconds, default=TUNE_SECONDS)
+    parser.add_argument("--compile-seconds", type=positive_seconds, default=COMPILE_SECONDS)
     parser.add_argument("--no-graphs", action="store_true")
     parser.add_argument("--inference-only", action="store_true")
     parser.add_argument("--nsys", default=os.environ.get("NSYS") or shutil.which("nsys"), help="Nsight Systems executable (or NSYS/PATH)")
@@ -53,7 +56,10 @@ def main():
     env = dict(os.environ, PYTHON=Path(sys.executable).as_posix(), PYTHONUTF8="1", PYTHONIOENCODING="utf-8",
                INFERENA_BASH=command[0], INFERENA_NSYS=args.nsys,
                INFERENA_NSYS_DIR=str(destination), INFERENA_TORCH_BACKEND="cuda",
-               INFERENA_TORCH_MODE=args.mode, INFERENA_CUDA_GRAPHS=str(int(not args.no_graphs)),
+               INFERENA_TORCH_MODE=args.mode, INFERENA_GRAPH_REPLAY=str(int(not args.no_graphs)),
+               MEGANEURA_TUNE="1", INFERENA_TUNE_SECONDS=str(args.tune_seconds),
+               INFERENA_COMPILE_SECONDS=str(args.compile_seconds),
+               INFERENA_PREPARATION_REPORT=str(destination / "torch-preparation.json"),
                INFERENA_REQUIRE_LOCAL_WEIGHTS="1", HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
                TORCH_LOGS="graph_breaks,recompiles,perf_hints")
     env.pop("VIRTUAL_ENV", None)
@@ -70,7 +76,8 @@ def main():
             subprocess.run(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
         args.backend = "cuda"
         records = json.loads((destination / f"{args.model}_summary.json").read_text())
-        check_pair(records, args, args.mode, not args.no_graphs, 3, revision, diagnostic=True)
+        check_pair(records, args, args.mode, not args.no_graphs, 3, revision,
+                   diagnostic=True, precision=args.precision)
         if input_hashes([args.model]) != hashes:
             raise ValueError("inputs changed during capture")
         manifest["event_counts"] = {}

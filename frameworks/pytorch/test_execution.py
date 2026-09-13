@@ -1,4 +1,4 @@
-"""Campaign identity and broad CUDA replay checks; no retained artifacts."""
+"""Campaign contract, bounded compilation and backend replay; no retained artifacts."""
 
 import copy
 import hashlib
@@ -7,15 +7,18 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import subprocess
+import time
 import unittest
 from unittest.mock import patch
 
 import torch
 
-from execution import capture_phase, check_gradient_set, compare_tensors, profile_phase, synchronize
+from execution import capture_phase, check_gradient_set, compare_tensors, graph_backend, profile_phase, synchronize
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-from p3hpc import (MODELS, TORCH_REVISION, TORCH_VERSION, check_pair, check_torch_identity,
+from p3hpc import (MODELS, PYTHON_VERSION, TORCH_REVISION, TORCH_VERSION, TUNE_SCRATCH_BYTES,
+                  check_pair, check_torch_identity,
                   conditions, create_parser, gpu_matches, validate_replicated_gradients,
                   runner_bash, select_native_device)
 
@@ -57,14 +60,20 @@ class CampaignTest(unittest.TestCase):
         self.assertEqual(defaults.models, list(MODELS))
         self.assertEqual(defaults.precisions, ["strict", "accelerated"])
         self.assertEqual(defaults.replicates, 3)
-        self.assertTrue(defaults.max_autotune)
+        self.assertFalse(defaults.max_autotune)
+        self.assertFalse(defaults.graph_ablation)
+        self.assertEqual(defaults.compile_seconds, 120)
+        self.assertEqual(defaults.tune_seconds, 10)
         self.assertIsNone(defaults.backend)
         self.assertIsNone(defaults.gpu)
         self.assertIsNone(defaults.results_dir)
         self.assertFalse(create_parser().parse_args(["--qualify-only"]).collect)
         self.assertFalse(create_parser().parse_args(["--no-max-autotune"]).max_autotune)
-        self.assertEqual(conditions("rocm", False), [("default", False)])
-        self.assertEqual(conditions("cuda", False), [("default", False), ("default", True)])
+        for backend in ("cuda", "rocm", "xpu", "mps", "cpu"):
+            replay = backend in ("cuda", "rocm", "xpu")
+            self.assertEqual(conditions(backend), [("default", replay)])
+            self.assertEqual(conditions(backend, True), [("default", replay), ("max-autotune", replay)])
+        self.assertTrue(create_parser().parse_args(["--max-autotune"]).max_autotune)
         def pair(error):
             return {
                 "pytorch": {
@@ -161,10 +170,108 @@ class CampaignTest(unittest.TestCase):
             xpu.assert_called_once_with("xpu:1")
             cuda.assert_not_called()
         with patch("bench.detect_device", return_value="xpu:0"), \
-             patch("bench._bench") as run, patch("torch.cuda.stream") as stream:
+             patch("bench._bench") as run, patch("bench.graph_backend") as api, \
+             patch.dict(os.environ, {"TRITON_DEFAULT_BACKEND": "intel"}):
             bench("model", {})
-            run.assert_called_once_with("model", {}, "xpu:0", None)
-            stream.assert_not_called()
+            stream = api.return_value.Stream.return_value
+            run.assert_called_once_with("model", {}, "xpu:0", stream)
+            api.return_value.stream.assert_called_once_with(stream)
+        # MPS must attempt compilation, not report an eager result with zero
+        # compile time. A mock checks routing, not real Metal backend support.
+        from bench import _bench
+        with patch.dict(os.environ, {"INFERENA_TORCH_MODE": "default", "INFERENA_GRAPH_REPLAY": "0"}), \
+             patch("bench.load_model"), patch("bench.synchronize"), \
+             patch("bench.device_name", return_value="test MPS"), \
+             patch("torch.compile", side_effect=RuntimeError("compiler failure")) as compile:
+            with self.assertRaisesRegex(RuntimeError, "no eager timing substituted"):
+                _bench("model", {"type": "resnet"}, "mps", None)
+            compile.assert_called_once()
+
+    def test_executed_receipts_enforce_the_requested_protocol(self):
+        args = create_parser().parse_args(["--backend", "cuda", "--gpu", "test GPU"])
+        args.torch_version = TORCH_VERSION
+        base = {
+            "status": "ok", "benchmark_rev": "source", "gpu_name": args.gpu,
+            "validation": {"comparison_performed": True, "forward_valid": True,
+                           "training_valid": True, "reference_framework": "pytorch"},
+            "protocol": {"training_requested": True, "diagnostic": False, "warmup_runs": 5},
+            "timing_samples_ms": {phase: [1.0] for phase in ("inference", "latency", "training")},
+            "precision": {"comparison_class": "strict-f32", "reduced_precision_allowed": False,
+                          "cooperative_matrix_policy": "NativeF32",
+                          "native_f32_cooperative_matrix_permitted": True,
+                          "f16_cooperative_matrix_permitted": False},
+        }
+        mg = {**copy.deepcopy(base), "framework": "meganeura", "optimizer": {
+            "measured_kernel_search": True, "sessions": [{
+                "mode": mode, "cooperative_matrix_policy": "NativeF32", "search": {
+                    "scope": "All", "class_limit": None, "class_limit_reached": False,
+                    "max_seconds": args.tune_seconds, "max_scratch_bytes": TUNE_SCRATCH_BYTES,
+                    "visited_classes": 1, "eligible_classes": 1, "elapsed_seconds": 0.1,
+                    "time_budget_exhausted": False,
+                },
+            } for mode in ("Inference", "Training")],
+        }}
+        pt = {**copy.deepcopy(base), "framework": "pytorch", "backend": "CUDA",
+              "torch_version": TORCH_VERSION,
+              "environment": {"torch_git_version": TORCH_REVISION, "python_version": PYTHON_VERSION,
+                              "triton_backend": "nvidia"},
+              "execution": {
+                  "stream_policy": "single dedicated preparation/run stream",
+                  "requested_mode": "default", "compiled": True,
+                  "compile_budget_seconds": args.compile_seconds, "compile_budget_enforced": True,
+                  "compiler_options": {key: False for key in (
+                      "max_autotune", "coordinate_descent_tuning", "max_autotune_gemm",
+                      "max_autotune_pointwise", "triton.cudagraphs")},
+                  "graph_replay": {"requested": True, "phases": {phase: {
+                      "status": "captured-and-validated", "api": "torch.cuda.CUDAGraph",
+                      "validation": {"policy": "fixed-full-gradient-v3", "uncaptured_calls": 3,
+                                     "uncaptured_repeats": 2, "consecutive_replays": 2},
+                  } for phase in ("inference", "latency", "training")}},
+              }}
+        check = lambda records: check_pair(records, args, "default", True, 1, "source", precision="strict")
+        check([mg, pt])
+        for engine, path, wrong in (
+            (0, ("optimizer", "measured_kernel_search"), False),
+            (0, ("precision", "cooperative_matrix_policy"), "Disabled"),
+            (0, ("precision", "f16_cooperative_matrix_permitted"), True),
+            (0, ("optimizer", "sessions"), []),
+            (0, ("optimizer", "sessions", 0, "search", "class_limit"), 8),
+            (0, ("optimizer", "sessions", 0, "search", "visited_classes"), 0),
+            (1, ("execution", "compiled"), False),
+            (1, ("execution", "compile_budget_enforced"), False),
+            (1, ("execution", "compiler_options", "max_autotune"), True),
+            (1, ("execution", "graph_replay", "requested"), False),
+            (1, ("execution", "graph_replay", "phases", "training", "api"), "torch.xpu.XPUGraph"),
+        ):
+            records = copy.deepcopy([mg, pt])
+            target = records[engine]
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = wrong
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                check(records)
+
+    def test_compilation_watchdog_preserves_failure_and_kills_workers(self):
+        directory = Path(__file__).resolve().parent
+        with tempfile.TemporaryDirectory() as temporary:
+            report = Path(temporary) / "compile.json"
+            marker = Path(temporary) / "orphan.txt"
+            env = dict(os.environ, INFERENA_COMPILE_SECONDS="0.3", INFERENA_PREPARATION_REPORT=str(report))
+            for statement, code, status in (("pass", 0, "complete"),
+                                            ("raise ValueError('test failure')", 1, "failed"),
+                                            ("time.sleep(5)", 124, "timeout")):
+                if report.exists():
+                    report.unlink()
+                child = f"import time; from pathlib import Path; time.sleep(2); Path({str(marker)!r}).touch()"
+                source = ("import subprocess, sys, time; from budget import compilation_budget\n"
+                          f"with compilation_budget():\n subprocess.Popen([sys.executable, '-c', {child!r}])\n {statement}\n"
+                          if code == 124 else f"from budget import compilation_budget\nwith compilation_budget():\n {statement}\n")
+                result = subprocess.run([sys.executable, str(directory / "budget.py"), "-c", source],
+                                        cwd=directory, env=env, capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, code, result.stderr)
+                self.assertEqual(json.loads(report.read_text())["status"], status)
+            time.sleep(2)
+            self.assertFalse(marker.exists(), "compiler descendant survived the deadline")
 
     def test_index_add_embedding_backward_accumulates_repeated_rows(self):
         from bench import _IndexAddEmbeddingBackward
@@ -181,17 +288,21 @@ class CampaignTest(unittest.TestCase):
         torch.testing.assert_close(weight.grad, expected)
 
 
-@unittest.skipUnless(torch.cuda.is_available() and torch.version.cuda, "NVIDIA CUDA required")
+@unittest.skipUnless(torch.cuda.is_available() or torch.xpu.is_available(), "CUDA/HIP/XPU required")
 class ReplayTest(unittest.TestCase):
     def test_forward_backward_replay_observes_live_inputs_and_weights(self):
         torch.manual_seed(7)
+        device = "cuda" if torch.cuda.is_available() else "xpu"
+        from bench import select_compiler_backend
+        select_compiler_backend(device)
+        api = graph_backend(device)
         model = torch.nn.Sequential(
             torch.nn.Conv2d(2, 4, 3, padding=1), torch.nn.SiLU(),
             torch.nn.Flatten(), torch.nn.Linear(4 * 8 * 8, 3),
-        ).cuda()
-        inputs = torch.randn(2, 2, 8, 8, device="cuda")
+        ).to(device)
+        inputs = torch.randn(2, 2, 8, 8, device=device)
         compiled = torch.compile(model, options={
-            "max_autotune": True, "triton.cudagraphs": False,
+            "max_autotune": False, "triton.cudagraphs": False,
         })
 
         def inference():
@@ -204,14 +315,14 @@ class ReplayTest(unittest.TestCase):
             loss.backward()
             return output, loss
 
-        stream = torch.cuda.Stream()
-        stream.wait_stream(torch.cuda.current_stream())
-        with torch.cuda.stream(stream):
+        stream = api.Stream(device=device)
+        stream.wait_stream(api.current_stream(device))
+        with api.stream(stream):
             # Keep this graph alive across capture, like compiled model caches.
             warmup = compiled(inputs)
             warmup.square().mean().backward()
-        forward, _ = capture_phase(inference, stream=stream)
-        backward, report = capture_phase(training, model, stream=stream, reduced_precision=True)
+        forward, _ = capture_phase(inference, stream=stream, device=device)
+        backward, report = capture_phase(training, model, stream=stream, reduced_precision=True, device=device)
         self.assertEqual(report["validation"]["gradient_tensors"], 4)
         self.assertEqual(len(report["validation"]["uncaptured"]), 8)
         self.assertEqual(report["validation"]["uncaptured_calls"], 9)
@@ -230,7 +341,7 @@ class ReplayTest(unittest.TestCase):
         )
         for _ in range(3):
             output, loss = backward()
-            torch.cuda.synchronize()
+            synchronize(device)
             torch.testing.assert_close(output, expected_output)
             torch.testing.assert_close(loss, expected_output.square().mean())
             for parameter, storage, expected in zip(
@@ -240,11 +351,12 @@ class ReplayTest(unittest.TestCase):
                 torch.testing.assert_close(parameter.grad, expected)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "training.json"
-            profile = profile_phase(backward, path, 2)
+            profile = profile_phase(backward, path, 2, device=device)
             self.assertEqual(len(profile["instrumented_wall_ms"]), 2)
             events = json.loads(path.read_text())["traceEvents"]
             self.assertTrue(any(event.get("cat") == "kernel" for event in events))
-            self.assertTrue(any("cudaGraphLaunch" in event.get("name", "") for event in events))
+            if device == "cuda" and torch.version.cuda:
+                self.assertTrue(any("cudaGraphLaunch" in event.get("name", "") for event in events))
 
 
 if __name__ == "__main__":

@@ -25,7 +25,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from execution import capture_phase, profile_phase, synchronize, nsys_range
+from execution import capture_phase, graph_backend, profile_phase, synchronize, nsys_range
+from budget import compilation_budget
 
 
 # --- Conditioned latent-diffusion U-Net (matches meganeura::models::sd_unet) ---
@@ -1399,18 +1400,30 @@ def _configure_benchmark_precision(dev: str, strict: bool):
     }
 
 
+def select_compiler_backend(device):
+    backend = torch.device(device).type
+    selected = {"cuda": "amd" if torch.version.hip else "nvidia", "xpu": "intel"}.get(backend)
+    if selected:
+        previous = os.environ.get("TRITON_DEFAULT_BACKEND")
+        if previous and previous != selected:
+            raise ValueError(f"TRITON_DEFAULT_BACKEND={previous} conflicts with requested {device}")
+        os.environ["TRITON_DEFAULT_BACKEND"] = selected
+
+
 def bench(model_name: str, spec: dict):
     """Matched benchmark: symmetric samples and full forward/loss/backward."""
     dev = detect_device()
-    stream = torch.cuda.Stream(device=dev) if dev.startswith("cuda") and torch.version.cuda else None
+    select_compiler_backend(dev)
+    api = graph_backend(dev) if torch.device(dev).type in ("cuda", "xpu") else None
+    stream = api.Stream(device=dev) if api is not None else None
     if stream is not None:
-        stream.wait_stream(torch.cuda.current_stream(dev))
+        stream.wait_stream(api.current_stream(dev))
     # Compilation can retain AccumulateGrad nodes. Their stream must remain
-    # valid for capture, so all CUDA conditions use one preparation/run stream.
-    with torch.cuda.stream(stream) if stream is not None else nullcontext():
+    # valid for capture, so all replay-capable backends use one stream.
+    with api.stream(stream) if stream is not None else nullcontext():
         _bench(model_name, spec, dev, stream)
     if stream is not None:
-        torch.cuda.current_stream(dev).wait_stream(stream)
+        api.current_stream(dev).wait_stream(stream)
 
 
 def _bench(model_name, spec, dev, stream):
@@ -1431,28 +1444,31 @@ def _bench(model_name, spec, dev, stream):
     modes = torch._inductor.list_mode_options()
     if mode != "eager" and mode not in modes:
         raise ValueError(f"unknown INFERENA_TORCH_MODE: {mode}")
-    native_cuda = dev.startswith("cuda") and torch.version.cuda is not None
-    graph_setting = os.environ.get("INFERENA_CUDA_GRAPHS", "1" if native_cuda else "0")
+    graph_capable = torch.device(dev).type in ("cuda", "xpu")
+    graph_setting = os.environ.get("INFERENA_GRAPH_REPLAY", os.environ.get(
+        "INFERENA_CUDA_GRAPHS", "1" if graph_capable else "0"))
     if graph_setting not in ("0", "1"):
-        raise ValueError("INFERENA_CUDA_GRAPHS must be 0 or 1")
+        raise ValueError("INFERENA_GRAPH_REPLAY must be 0 or 1")
     use_graphs = graph_setting == "1"
-    if use_graphs and not native_cuda:
-        raise ValueError("this experiment's explicit graph path requires NVIDIA CUDA")
+    if use_graphs and not graph_capable:
+        raise ValueError(f"no explicit whole-phase replay API for {dev}; no fallback")
     execution = {
         "requested_mode": mode,
         "compiled": False,
-        "stream_policy": "single dedicated CUDA preparation/run stream" if stream is not None else "backend default",
+        "compile_budget_seconds": float(os.environ.get("INFERENA_COMPILE_SECONDS", "120")),
+        "compile_budget_enforced": os.environ.get("INFERENA_BUDGET_ENFORCED") == "1",
+        "stream_policy": "single dedicated preparation/run stream" if stream is not None else "backend default",
         "determinism": {
             "algorithms": torch.are_deterministic_algorithms_enabled(),
             "cudnn": bool(torch.backends.cudnn.deterministic),
             "cudnn_benchmark": bool(torch.backends.cudnn.benchmark),
             "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
         },
-        "cuda_graphs": {"requested": use_graphs, "phases": {}},
+        "graph_replay": {"requested": use_graphs, "backend": backend, "phases": {}},
     }
 
     print(
-        f"[pytorch] inferena-cuda-graphs-v2: {precision_mode}, {warmup_runs} warmups, "
+        f"[pytorch] inferena-graph-replay-v3: {precision_mode}, {warmup_runs} warmups, "
         f"{measurement_runs} samples",
         file=sys.stderr,
     )
@@ -1485,44 +1501,46 @@ def _bench(model_name, spec, dev, stream):
 
     model = eager_model
     compile_s = 0.0
-    if mode != "eager" and dev != "mps":
+    if mode != "eager":
         compile_cache = clear_compile_cache()
         compile_start = time.perf_counter()
-        try:
-            options = dict(modes[mode])
-            # The explicit switch owns graph replay in this experiment. Do not
-            # enable hidden partial graph trees in the no-graph control either.
-            options["triton.cudagraphs"] = False
-            execution["compiler_options"] = options
-            candidate = torch.compile(eager_model, options=options)
-            compile_inputs = prepare_inputs(model_type, candidate, dev)
+        with compilation_budget():
+            try:
+                options = dict(modes[mode])
+                options.setdefault("max_autotune", False)
+                options.setdefault("coordinate_descent_tuning", False)
+                options.setdefault("max_autotune_gemm", False)
+                options.setdefault("max_autotune_pointwise", False)
+                # One explicit replay owner, including the uncaptured ablation.
+                options["triton.cudagraphs"] = False
+                execution["compiler_options"] = options
+                candidate = torch.compile(eager_model, options=options)
+                compile_inputs = prepare_inputs(model_type, candidate, dev)
 
-            if training_requested:
-                candidate.zero_grad(set_to_none=True)
-                train_outputs = _benchmark_forward(model_type, candidate, compile_inputs)
-                _benchmark_loss(model_type, train_outputs, compile_inputs).backward()
+                if training_requested:
+                    candidate.zero_grad(set_to_none=True)
+                    train_outputs = _benchmark_forward(model_type, candidate, compile_inputs)
+                    _benchmark_loss(model_type, train_outputs, compile_inputs).backward()
+                    synchronize(dev)
+                    candidate.zero_grad(set_to_none=True)
+                    del train_outputs
+
+                with torch.no_grad():
+                    _benchmark_forward(model_type, candidate, compile_inputs)
+                    _benchmark_latency_call(
+                        model_type, candidate, compile_inputs, dev
+                    )()
                 synchronize(dev)
-                candidate.zero_grad(set_to_none=True)
-                del train_outputs
-
-            with torch.no_grad():
-                _benchmark_forward(model_type, candidate, compile_inputs)
-                _benchmark_latency_call(
-                    model_type, candidate, compile_inputs, dev
-                )()
-            synchronize(dev)
-            compile_s = time.perf_counter() - compile_start
-            model = candidate
-            execution["compiled"] = True
-            del compile_inputs
-        except Exception as exc:
-            raise RuntimeError(
-                f"requested PyTorch mode {mode!r} failed; no eager timing substituted"
-            ) from exc
+                compile_s = time.perf_counter() - compile_start
+                model = candidate
+                execution["compiled"] = True
+                del compile_inputs
+            except Exception as exc:
+                raise RuntimeError(
+                    f"requested PyTorch mode {mode!r} failed; no eager timing substituted"
+                ) from exc
     else:
-        execution["compile_skipped"] = (
-            "explicit eager mode" if mode == "eager" else "unsupported platform"
-        )
+        execution["compile_skipped"] = "explicit eager mode"
 
     inputs = prepare_inputs(model_type, model, dev)
 
@@ -1533,10 +1551,10 @@ def _bench(model_name, spec, dev, stream):
     def prepare_phase(name, fn, training_model=None):
         if use_graphs:
             fn, report = capture_phase(fn, training_model, stream=stream,
-                                       reduced_precision=precision["reduced_precision_allowed"])
+                                       reduced_precision=precision["reduced_precision_allowed"], device=dev)
         else:
             report = {"status": "not-requested"}
-        execution["cuda_graphs"]["phases"][name] = report
+        execution["graph_replay"]["phases"][name] = report
         return fn
 
     phase_memory = {}
@@ -1671,6 +1689,7 @@ def _bench(model_name, spec, dev, stream):
         "torch_git_version": torch.version.git_version,
         "torch_build_config": torch.__config__.show(),
         "inductor_compile_threads": os.environ.get("TORCHINDUCTOR_COMPILE_THREADS"),
+        "triton_backend": os.environ.get("TRITON_DEFAULT_BACKEND"),
         "cuda_version": torch.version.cuda,
         "hip_version": torch.version.hip,
         "xpu_version": getattr(torch.version, "xpu", None),
@@ -1722,7 +1741,7 @@ def _bench(model_name, spec, dev, stream):
         "execution": execution,
         "profile_artifacts": profiles,
         "protocol": {
-            "name": "inferena-cuda-graphs-v2",
+            "name": "inferena-graph-replay-v3",
             "warmup_runs": warmup_runs,
             "measurement_runs": measurement_runs,
             "statistic": "median",

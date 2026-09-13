@@ -28,6 +28,9 @@ TORCH_VERSION = "2.13.0"
 TORCH_REVISION = "cf30153c4c131c8164ee7798e5022d810682e2cb"
 GRADIENT_LIMIT = 0.05
 ACCELERATED_SAMPLE_LIMIT = 0.10
+TUNE_SECONDS = 10.0
+TUNE_SCRATCH_BYTES = 1024**3
+COMPILE_SECONDS = 120.0
 
 
 def gpu_matches(expected, actual):
@@ -72,14 +75,22 @@ def check_torch_identity(version, revision, declared_version):
         raise ValueError(f"PyTorch source must be {TORCH_REVISION}, got {revision!r}")
 
 
-def conditions(backend, max_autotune=True):
-    if backend == "cuda":
-        configs = [("default", False), ("default", True), ("max-autotune", True)]
-    elif backend in ("rocm", "xpu"):
-        configs = [("default", False), ("max-autotune", False)]
-    else:
-        configs = [("eager", False)]
-    return [config for config in configs if max_autotune or config[0] != "max-autotune"]
+def conditions(backend, max_autotune=False, graph_ablation=False, no_graphs=False, eager=False):
+    replay = backend in ("cuda", "rocm", "xpu") and not no_graphs
+    mode = "eager" if eager else "default"
+    configs = [(mode, replay)]
+    if graph_ablation and replay:
+        configs.insert(0, (mode, False))
+    if max_autotune:
+        configs.append(("max-autotune", replay))
+    return configs
+
+
+def positive_seconds(value):
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("seconds must be finite and positive")
+    return seconds
 
 
 def _replicated_candidate(record):
@@ -96,7 +107,7 @@ def _replicated_candidate(record):
 
 
 def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
-               replicated=False):
+               replicated=False, precision=None):
     phases = PHASES[:2] if args.inference_only else PHASES
     by_engine = {record["framework"]: record for record in records}
     if len(records) != 2 or set(by_engine) != {"pytorch", "meganeura"}:
@@ -135,26 +146,70 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
         raise ValueError(f"use the campaign's Python {PYTHON_VERSION}")
     if pt["backend"].split()[0].lower() != args.backend:
         raise ValueError(f"unexpected reference backend: {pt['backend']}")
+    triton_backend = {"cuda": "nvidia", "rocm": "amd", "xpu": "intel"}.get(args.backend)
+    if triton_backend and pt["environment"].get("triton_backend") != triton_backend:
+        raise ValueError("compiler driver differs from the requested reference backend")
     if not gpu_matches(args.gpu, mg["gpu_name"]):
         raise ValueError(f"unexpected Meganeura GPU: {mg['gpu_name']}")
     if args.backend in ("cuda", "rocm", "xpu") and not gpu_matches(args.gpu, pt["gpu_name"]):
         raise ValueError(f"unexpected PyTorch GPU: {pt['gpu_name']}")
-    expected_search = mode == "max-autotune"
-    if mg.get("optimizer", {}).get("measured_kernel_search") is not expected_search:
-        raise ValueError("Meganeura did not use the declared preparation policy")
+    expected_class = ("strict-f32" if precision == "strict" else "reduced-input-f32-accumulate")
+    if precision is not None and any(record["precision"]["comparison_class"] != expected_class
+                                     for record in (mg, pt)):
+        raise ValueError("requested arithmetic contract did not execute")
+    if mg.get("optimizer", {}).get("measured_kernel_search") is not True:
+        raise ValueError("Meganeura search must be enabled independently of PyTorch mode")
+    strict = not mg["precision"]["reduced_precision_allowed"]
+    if strict and (mg["precision"].get("cooperative_matrix_policy") != "NativeF32"
+                   or mg["precision"].get("native_f32_cooperative_matrix_permitted") is not True
+                   or mg["precision"].get("f16_cooperative_matrix_permitted") is not False):
+        raise ValueError("strict arithmetic must permit native-f32, but not f16-input, cooperative tiles")
+    sessions = mg["optimizer"].get("sessions", [])
+    modes = [session["mode"] for session in sessions]
+    if (modes.count("Training") != int(not args.inference_only) or modes.count("Inference") not in (1, 2)
+            or set(modes) - {"Training", "Inference"}):
+        raise ValueError("missing native session preparation evidence")
+    for session in sessions:
+        if session["cooperative_matrix_policy"] != ("NativeF32" if strict else "Auto"):
+            raise ValueError("native session used the wrong cooperative policy")
+        search = session.get("search")
+        if not search or search["scope"] != "All" or search["class_limit"] is not None:
+            raise ValueError("native search did not explore the full legal domain")
+        if (search["max_seconds"] != getattr(args, "tune_seconds", TUNE_SECONDS)
+                or search["max_scratch_bytes"] != TUNE_SCRATCH_BYTES
+                or search["class_limit_reached"]
+                or not 0 <= search["visited_classes"] <= search["eligible_classes"]
+                or not math.isfinite(search["elapsed_seconds"]) or search["elapsed_seconds"] < 0):
+            raise ValueError("native search budget or coverage differs from the declared policy")
+        if search["visited_classes"] < search["eligible_classes"] and not search["time_budget_exhausted"]:
+            raise ValueError("native search stopped early without exhausting its budget")
     execution = pt["execution"]
-    if args.backend == "cuda" and execution.get("stream_policy") != "single dedicated CUDA preparation/run stream":
-        raise ValueError("CUDA preparation and execution must share the declared stream policy")
+    if args.backend in ("cuda", "rocm", "xpu") and execution.get("stream_policy") != "single dedicated preparation/run stream":
+        raise ValueError("preparation and execution must share the declared stream policy")
     if execution["requested_mode"] != mode or execution["compiled"] != (mode != "eager"):
         raise ValueError("requested compiler mode did not execute")
-    if execution["cuda_graphs"]["requested"] != graphs:
+    if execution["compile_budget_seconds"] != getattr(args, "compile_seconds", COMPILE_SECONDS):
+        raise ValueError("reference compilation budget changed")
+    if execution.get("compile_budget_enforced") is not True:
+        raise ValueError("reference compilation watchdog was not active")
+    if mode != "eager":
+        options = execution["compiler_options"]
+        if (options["max_autotune"] != (mode == "max-autotune")
+                or options["coordinate_descent_tuning"] != (mode == "max-autotune")
+                or options["max_autotune_gemm"] or options["max_autotune_pointwise"]
+                or options["triton.cudagraphs"]):
+            raise ValueError("reference search/replay options differ from the declared policy")
+    if execution["graph_replay"]["requested"] != graphs:
         raise ValueError("unexpected graph configuration")
     for phase in phases:
-        report = execution["cuda_graphs"]["phases"][phase]
+        report = execution["graph_replay"]["phases"][phase]
         expected = "captured-and-validated" if graphs else "not-requested"
         if report["status"] != expected:
             raise ValueError(f"{phase} did not execute the requested capture mode")
         if graphs:
+            expected_api = "torch.xpu.XPUGraph" if args.backend == "xpu" else "torch.cuda.CUDAGraph"
+            if report["api"] != expected_api:
+                raise ValueError("requested replay backend did not execute")
             validation = report["validation"]
             repeats = 8 if phase == "training" and pt["precision"]["reduced_precision_allowed"] else 2
             if (validation.get("policy") != "fixed-full-gradient-v3"
@@ -187,7 +242,7 @@ def validate_replicated_gradients(groups, replicates):
         )
         reports.append({
             "status": "pass" if accepted else "fail",
-            "precision": precision, "model": model, "mode": mode, "cuda_graphs": graphs,
+            "precision": precision, "model": model, "mode": mode, "graph_replay": graphs,
             "sample_limit": sample_limit, "median_limit": GRADIENT_LIMIT,
             "metrics": {
                 name: {"samples": values, "median": statistics.median(values)}
@@ -237,8 +292,17 @@ def create_parser():
     parser.add_argument("--allow-integrated-gpu", action="store_true", default=True, help=argparse.SUPPRESS)
     parser.add_argument("--precisions", nargs="+", choices=("strict", "accelerated"), default=["strict", "accelerated"])
     parser.add_argument("--replicates", type=int, default=3)
-    parser.add_argument("--no-max-autotune", dest="max_autotune", action="store_false", default=True,
-                        help="omit PyTorch max-autotune and label this an availability subset")
+    search = parser.add_mutually_exclusive_group()
+    search.add_argument("--max-autotune", action="store_true", default=False,
+                        help="add optional PyTorch search under the same compilation deadline")
+    search.add_argument("--no-max-autotune", dest="max_autotune", action="store_false", help=argparse.SUPPRESS)
+    parser.add_argument("--graph-ablation", action="store_true", help="also measure the uncaptured reference")
+    parser.add_argument("--no-graphs", action="store_true", help="explicitly omit whole-phase replay; recorded as an override")
+    parser.add_argument("--eager", action="store_true", help="explicit eager reference; never an automatic compiler fallback")
+    parser.add_argument("--tune-seconds", type=positive_seconds, default=TUNE_SECONDS,
+                        help="Meganeura soft search deadline per session (default: 10 s); no class-count cutoff")
+    parser.add_argument("--compile-seconds", type=positive_seconds, default=COMPILE_SECONDS,
+                        help="PyTorch compilation/first-specialization deadline (default: 120 s)")
     stage = parser.add_mutually_exclusive_group()
     stage.add_argument("--collect", dest="collect", action="store_true", default=True, help="validated measurement (default)")
     stage.add_argument("--qualify-only", dest="collect", action="store_false", help="run correctness gates without publication samples")
@@ -249,6 +313,8 @@ def create_parser():
 def main():
     parser = create_parser()
     args = parser.parse_args()
+    if args.eager and args.max_autotune:
+        parser.error("--eager and --max-autotune select different reference policies")
     if ".".join(map(str, sys.version_info[:3])) != PYTHON_VERSION:
         parser.error(f"use Python {PYTHON_VERSION}: bash scripts/setup.sh <wheel-backend>")
     if args.inference_only and any(model not in SMOLLM2_REVISIONS for model in args.models):
@@ -262,6 +328,8 @@ def main():
     overrides = [key for key in os.environ if key.startswith("MEGANEURA_") or key in (
         "INFERENA_MEGANEURA_PATH", "INFERENA_PROFILE_DIR", "INFERENA_DRY_RUN", "INFERENA_NSYS",
         "TORCH_LOGS", "TORCH_TRACE", "CARGO_TARGET_DIR",
+        "INFERENA_TORCH_MODE", "INFERENA_GRAPH_REPLAY", "INFERENA_CUDA_GRAPHS",
+        "INFERENA_TUNE_SECONDS", "INFERENA_COMPILE_SECONDS", "INFERENA_PREPARATION_REPORT", "INFERENA_BUDGET_ENFORCED",
     )]
     if overrides:
         parser.error(f"remove experimental/profiling overrides: {', '.join(overrides)}")
@@ -314,8 +382,8 @@ def main():
     except (OSError, ValueError, KeyError) as error:
         parser.error(f"prepare local pinned models first: {error}")
     dependency = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["dependencies"]["meganeura"]
-    declared_conditions = conditions(args.backend)
-    selected_conditions = conditions(args.backend, args.max_autotune)
+    declared_conditions = conditions(args.backend, max_autotune=True, graph_ablation=True)
+    selected_conditions = conditions(args.backend, args.max_autotune, args.graph_ablation, args.no_graphs, args.eager)
     omitted_conditions = [config for config in declared_conditions if config not in selected_conditions]
     destination.mkdir(parents=True, exist_ok=False)
     env = dict(os.environ, PYTHON=Path(sys.executable).as_posix(), PYTHONUTF8="1", PYTHONIOENCODING="utf-8",
@@ -323,24 +391,25 @@ def main():
                INFERENA_REQUIRE_LOCAL_WEIGHTS="1", INFERENA_TORCH_BACKEND=args.backend)
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v7", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v8", "source": revision,
         "model_revisions": {name: SMOLLM2_REVISIONS[name] for name in args.models if name in SMOLLM2_REVISIONS},
         "meganeura": dependency, "python": sys.version, "packages": packages,
         "torch": {"version": torch.__version__, "git_version": torch.version.git_version,
                   "build_config": torch.__config__.show()},
         "args": {**vars(args), "results_dir": str(destination)}, "sha256": hashes,
+        "native_policy": {"measured_kernel_search": True, "scope": "All", "class_limit": None,
+                          "max_scratch_bytes": TUNE_SCRATCH_BYTES,
+                          "search_seconds_per_session": args.tune_seconds, "strict_coop": "NativeF32"},
+        "reference_compile_seconds": args.compile_seconds,
         "reference_conditions": {
-            "declared": [{"mode": mode, "cuda_graphs": graphs,
-                          "preparation_policy": "searched" if mode == "max-autotune" else "light"}
+            "declared": [{"mode": mode, "graph_replay": graphs}
                          for mode, graphs in declared_conditions],
-            "selected": [{"mode": mode, "cuda_graphs": graphs,
-                          "preparation_policy": "searched" if mode == "max-autotune" else "light"}
+            "selected": [{"mode": mode, "graph_replay": graphs}
                          for mode, graphs in selected_conditions],
-            "omitted": [{"mode": mode, "cuda_graphs": graphs,
-                         "preparation_policy": "searched",
-                         "reason": "command-line --no-max-autotune"}
+            "omitted": [{"mode": mode, "graph_replay": graphs,
+                         "reason": "not selected; omission alone is not a backend failure"}
                         for mode, graphs in omitted_conditions],
-            "coverage": "availability-subset" if omitted_conditions else "full",
+            "coverage": "explicit-reference-override" if args.no_graphs or args.eager else "primary",
         },
         "device_selection": {key: env[key] for key in (
             "CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "VK_ICD_FILENAMES",
@@ -401,25 +470,27 @@ def main():
                                 command.append("--inference-only")
                             if args.allow_integrated_gpu:
                                 command.append("--allow-integrated-gpu")
-                            preparation_policy = "searched" if mode == "max-autotune" else "light"
                             run = {"path": str(folder.relative_to(destination)), "command": command,
                                    "mode": mode, "graphs": graphs,
-                                   "preparation_policy": preparation_policy, "status": "running"}
+                                   "preparation_policy": "native-tuned/reference-" + mode, "status": "running"}
                             manifest["runs"].append(run)
                             save()
                             print(run["path"], flush=True)
                             with (folder / "runner.log").open("w") as log:
                                 result = subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
                                                         env=dict(env, INFERENA_TORCH_MODE=mode,
-                                                                 INFERENA_CUDA_GRAPHS=str(int(graphs)),
-                                                                 MEGANEURA_TUNE=str(int(preparation_policy == "searched"))))
+                                                                 INFERENA_GRAPH_REPLAY=str(int(graphs)),
+                                                                 MEGANEURA_TUNE="1",
+                                                                 INFERENA_TUNE_SECONDS=str(args.tune_seconds),
+                                                                 INFERENA_COMPILE_SECONDS=str(args.compile_seconds),
+                                                                 INFERENA_PREPARATION_REPORT=str(folder / "torch-preparation.json")))
                             run["returncode"] = result.returncode
                             if result.returncode:
                                 raise RuntimeError(f"runner failed; inspect {folder / 'runner.log'}")
                             records = json.loads((folder / f"{model}_summary.json").read_text())
                             pair = check_pair(
                                 records, args, mode, graphs, count, revision,
-                                replicated=args.collect,
+                                replicated=args.collect, precision=precision,
                             )
                             if not dependency["rev"].startswith(pair["meganeura"]["framework_rev"]):
                                 raise ValueError("Meganeura dependency revision changed")

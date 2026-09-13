@@ -33,7 +33,7 @@ if [ -n "${INFERENA_NSYS:-}" ]; then
     export TORCHINDUCTOR_COMPILE_THREADS=1
     PREFIX=("$INFERENA_NSYS" profile --trace=cuda-sw,nvtx --cuda-graph-trace=node
         --sample=none --cpuctxsw=none --wait=primary "--output=${INFERENA_NSYS_DIR:?}/pytorch")
-    printf '%q ' "${PREFIX[@]+"${PREFIX[@]}"}" "$PYTHON" "$SCRIPT_DIR/bench.py" "$MODEL" >&2
+    printf '%q ' "${PREFIX[@]+"${PREFIX[@]}"}" "$PYTHON" "$SCRIPT_DIR/budget.py" "$SCRIPT_DIR/bench.py" "$MODEL" >&2
     echo >&2
 fi
-exec "${PREFIX[@]+"${PREFIX[@]}"}" "$PYTHON" "$SCRIPT_DIR/bench.py" "$MODEL"
+exec "${PREFIX[@]+"${PREFIX[@]}"}" "$PYTHON" "$SCRIPT_DIR/budget.py" "$SCRIPT_DIR/bench.py" "$MODEL"

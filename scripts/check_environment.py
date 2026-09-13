@@ -6,18 +6,27 @@ import os
 import platform
 import sys
 
+# Supervise before importing torch so the controller stays small.
+if __name__ == "__main__" and os.environ.get("INFERENA_BUDGET_ENFORCED") != "1":
+    from pathlib import Path
+    budget = Path(__file__).resolve().parents[1] / "frameworks/pytorch/budget.py"
+    os.execv(sys.executable, [sys.executable, str(budget), *sys.argv])
+
 import torch
 
 from p3hpc import ROOT, PYTHON_VERSION, check_torch_identity, conditions, runner_bash
 
 sys.path.insert(0, str(ROOT / "frameworks/pytorch"))
-from bench import clear_compile_cache, detect_device, device_name
-from execution import capture_phase, synchronize
+from bench import clear_compile_cache, detect_device, device_name, select_compiler_backend
+from budget import compilation_budget
+from execution import capture_phase, graph_backend, synchronize
+from contextlib import nullcontext
 
 
-def check_backend(backend, max_autotune=True):
+def check_backend(backend, max_autotune=False):
     os.environ["INFERENA_TORCH_BACKEND"] = backend
     device = detect_device()  # Explicit requests cannot fall back to CPU.
+    select_compiler_backend(device)
     torch.manual_seed(7)
     torch.set_float32_matmul_precision("highest")
     model = torch.nn.Sequential(torch.nn.Linear(16, 16), torch.nn.SiLU()).to(device)
@@ -25,7 +34,11 @@ def check_backend(backend, max_autotune=True):
     expected = model(inputs)
     gradients = torch.autograd.grad(expected.square().mean(), tuple(model.parameters()))
     expected = expected.detach()
-    with clear_compile_cache():
+    api = graph_backend(device) if backend in ("cuda", "rocm", "xpu") else None
+    stream = api.Stream(device=device) if api is not None else None
+    if stream is not None:
+        stream.wait_stream(api.current_stream(device))
+    with clear_compile_cache(), api.stream(stream) if stream is not None else nullcontext():
         for mode, graphs in conditions(backend, max_autotune):
             candidate = model if mode == "eager" else torch.compile(model, fullgraph=True, options={
                 "max_autotune": mode == "max-autotune", "triton.cudagraphs": False,
@@ -38,7 +51,11 @@ def check_backend(backend, max_autotune=True):
                 return output, loss
 
             model.zero_grad(set_to_none=True)
-            call = capture_phase(training, model)[0] if graphs else training
+            with compilation_budget():
+                training()
+                synchronize(device)
+            model.zero_grad(set_to_none=True)
+            call = capture_phase(training, model, stream=stream, device=device)[0] if graphs else training
             output, loss = call()
             synchronize(device)
             torch.testing.assert_close(output, expected, rtol=1e-4, atol=1e-6)
@@ -51,7 +68,9 @@ def check_backend(backend, max_autotune=True):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", choices=("cuda", "rocm", "xpu", "mps", "cpu"), required=True)
-    parser.add_argument("--no-max-autotune", dest="max_autotune", action="store_false", default=True)
+    search = parser.add_mutually_exclusive_group()
+    search.add_argument("--max-autotune", action="store_true", default=False)
+    search.add_argument("--no-max-autotune", dest="max_autotune", action="store_false", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if platform.python_version() != PYTHON_VERSION:
         parser.error(f"use Python {PYTHON_VERSION}")

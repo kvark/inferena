@@ -4,9 +4,16 @@
 //! using the meganeura crate (e-graph optimized NN on blade-graphics).
 
 use meganeura::data::safetensors::SafeTensorsModel;
-use meganeura::{CoopPolicy, Graph, Mode, Session, SessionConfig};
+use meganeura::{CoopPolicy, Graph, Mode, Session, SessionConfig, tune::TuneOptions};
 use sha2::{Digest, Sha256};
-use std::time::Instant;
+use std::{
+    cell::RefCell,
+    time::{Duration, Instant},
+};
+
+thread_local! {
+    static SESSION_PREPARATION: RefCell<Vec<serde_json::Value>> = const { RefCell::new(Vec::new()) };
+}
 
 fn build_inference_session(graph: &Graph) -> Session {
     build_session_for(graph, Mode::Inference)
@@ -19,6 +26,9 @@ fn build_session(graph: &Graph) -> Session {
 fn build_session_for(graph: &Graph, mode: Mode) -> Session {
     let mut config = session_config();
     config.mode = mode;
+    // This runner owns search options and retains its evidence, rather than
+    // asking the convenience builder to tune with library defaults.
+    config.tune = false;
     // The library's process-global default is never destroyed. Own the context
     // so dropping a session releases its device and flushes vendor trace data.
     config.gpu.get_or_insert_with(|| {
@@ -26,14 +36,66 @@ fn build_session_for(graph: &Graph, mode: Mode) -> Session {
             meganeura::runtime::init_gpu_context().expect("GPU initialization failed"),
         )
     });
-    meganeura::build(graph, config).0
+    let policy = format!("{:?}", config.runtime.coop);
+    let mut session = meganeura::build(graph, config).0;
+    let mut preparation = serde_json::json!({
+        "mode": format!("{mode:?}"),
+        "cooperative_matrix_policy": policy,
+        "search": null,
+    });
+    if meganeura::config::TUNE.bool_or(true) {
+        let seconds = std::env::var("INFERENA_TUNE_SECONDS")
+            .unwrap_or_else(|_| "10".to_owned())
+            .parse::<f64>()
+            .expect("INFERENA_TUNE_SECONDS must be a positive number");
+        assert!(seconds.is_finite() && seconds > 0.0);
+        let report = session
+            .tune_with(TuneOptions {
+                max_classes: usize::MAX,
+                max_time: Duration::from_secs_f64(seconds),
+                max_scratch_bytes: 1024 * 1024 * 1024,
+                ..TuneOptions::default()
+            })
+            .expect("valid search options");
+        let mut decisions = std::collections::BTreeMap::<String, usize>::new();
+        for outcome in &report.outcomes {
+            *decisions
+                .entry(format!("{:?}", outcome.decision))
+                .or_default() += 1;
+        }
+        preparation["search"] = serde_json::json!({
+            "scope": report.options.scope,
+            "class_limit": null,
+            "max_seconds": report.options.max_time.as_secs_f64(),
+            "max_scratch_bytes": report.options.max_scratch_bytes,
+            "eligible_classes": report.eligible_classes,
+            "visited_classes": report.visited_classes,
+            "excluded_dispatches": report.excluded_dispatches,
+            "comparisons": report.outcomes.len(),
+            "decisions": decisions,
+            "class_limit_reached": report.class_limit_reached,
+            "time_budget_exhausted": report.time_budget_exhausted,
+            "elapsed_seconds": report.elapsed.as_secs_f64(),
+            "scratch": report.scratch,
+        });
+    }
+    preparation["cooperative_dispatches"] = serde_json::json!(
+        session
+            .plan()
+            .dispatches
+            .iter()
+            .filter(|dispatch| dispatch.use_coop)
+            .count()
+    );
+    SESSION_PREPARATION.with_borrow_mut(|reports| reports.push(preparation));
+    session
 }
 
 fn session_config() -> SessionConfig<'static> {
     let strict = std::env::var("INFERENA_STRICT").as_deref() == Ok("1");
     let mut config = SessionConfig::from_env();
     config.runtime.coop = if strict {
-        CoopPolicy::Disabled
+        CoopPolicy::NativeF32
     } else {
         CoopPolicy::Auto
     };
@@ -870,6 +932,7 @@ fn kernel_release() -> Option<String> {
 /// result itself rather than left to the operator's notes.
 fn environment_json(session: &meganeura::Session) -> serde_json::Value {
     let information = session.device_information();
+    let cooperative = session.context().capabilities().cooperative_matrix;
     // Match the enumerated device against the one this context selected, so
     // the row carries a device identifier as well as a marketing name.
     let device_id = session
@@ -887,6 +950,8 @@ fn environment_json(session: &meganeura::Session) -> serde_json::Value {
         "gpu_driver_info": information.driver_info,
         "gpu_software_emulated": information.is_software_emulated,
         "gpu_device_id": device_id,
+        "cooperative_f32_tile": cooperative.f32_tile,
+        "cooperative_f16_tile": cooperative.f16_tile,
         "gpu_device_local_budget_bytes": session
             .device_memory_stats()
             .map(|stats| stats.budget_bytes),
@@ -945,7 +1010,7 @@ fn emit_result(
     } else {
         serde_json::json!({
             "comparison_class": "strict-f32",
-            "cooperative_matrix_policy": "Disabled: includes native-f32 cooperative tiles",
+            "cooperative_matrix_policy": "NativeF32",
             "tensor_storage": "f32",
             "matmul_inputs": "f32",
             "attention_inputs": "f32",
@@ -954,6 +1019,7 @@ fn emit_result(
             "output": "f32",
             "reduced_precision_allowed": false,
             "f16_cooperative_matrix_permitted": false,
+            "native_f32_cooperative_matrix_permitted": true,
             "persistent_f16_tensors": false,
         })
     };
@@ -984,7 +1050,7 @@ fn emit_result(
             "statistic": "median",
             "training_requested": training.is_some(),
             "training_scope": training.map(|_| "forward + loss + backward; no optimizer update"),
-            "compile_scope": "graph construction, optimization, and GPU pipeline creation for requested sessions",
+            "compile_scope": "graph construction, optimization, GPU pipeline creation and qualified kernel search for requested sessions",
             "diagnostic": std::env::var_os("INFERENA_NSYS").is_some(),
             "context_lifetime": "owned per session; destroyed after use",
         },
@@ -992,7 +1058,8 @@ fn emit_result(
         "optimizer": {
             "mode": std::env::var("MEGANEURA_OPTIMIZER").unwrap_or_else(|_| "greedy".to_string()),
             "extraction_cost": std::env::var("MEGANEURA_EGRAPH_COST").unwrap_or_else(|_| "tensor-traffic".to_string()),
-            "measured_kernel_search": meganeura::config::TUNE.bool_or(false),
+            "measured_kernel_search": meganeura::config::TUNE.bool_or(true),
+            "sessions": SESSION_PREPARATION.with_borrow(Clone::clone),
         },
         "timings": {
             "compile_s": (compile_s * 1000.0).round() / 1000.0,

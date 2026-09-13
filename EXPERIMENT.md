@@ -89,6 +89,13 @@ receipts. Only `status: complete` establishes completed declared coverage.
 An incomplete run may contain valid partial records and a failure finding;
 it is not a complete aggregate or permission to retry until favorable.
 
+The collector automatically writes **`../inferena-results/latest.tgz`** for a
+finished or caught-failure campaign, including qualification runs. Send that
+file: it contains only the current run's directory, manifest, records and logs.
+Each archive replaces the previous `latest.tgz`; original result directories
+remain untouched. With `--results-dir`, the archive sits beside that directory.
+If archiving fails, a warning is printed and the previous archive is left intact.
+
 For the cloud GPUs only, collect the larger models separately:
 
 ```sh

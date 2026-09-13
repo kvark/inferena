@@ -15,6 +15,7 @@ import socket
 import statistics
 import subprocess
 import sys
+import tempfile
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,6 +93,15 @@ def positive_seconds(value):
     if not math.isfinite(seconds) or seconds <= 0:
         raise argparse.ArgumentTypeError("seconds must be finite and positive")
     return seconds
+
+
+def archive_results(destination):
+    archive = destination.parent / "latest.tgz"
+    with tempfile.TemporaryDirectory(prefix=".p3hpc-archive-", dir=destination.parent) as temporary:
+        staged = shutil.make_archive(str(Path(temporary) / "latest"), "gztar",
+                                     root_dir=destination.parent, base_dir=destination.name)
+        Path(staged).replace(archive)
+    return archive
 
 
 def _replicated_candidate(record):
@@ -531,6 +541,10 @@ def main():
         raise
     finally:
         save()
+        try:
+            print(f"Archive: {archive_results(destination)}", flush=True)
+        except OSError as error:
+            print(f"Archive not updated: {error}; results remain in {destination}", file=sys.stderr)
     print(f"Complete: {destination / 'campaign.json'}")
 
 

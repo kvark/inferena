@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import tarfile
 import tempfile
 import subprocess
 import time
@@ -20,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from p3hpc import (MODELS, PYTHON_VERSION, TORCH_REVISION, TORCH_VERSION, TUNE_SCRATCH_BYTES, SDPA_BACKENDS,
                   check_pair, check_torch_identity,
                   conditions, create_parser, gpu_matches, validate_replicated_gradients,
-                  runner_bash, select_native_device)
+                  runner_bash, select_native_device, archive_results)
 
 
 class CampaignTest(unittest.TestCase):
@@ -158,6 +159,24 @@ class CampaignTest(unittest.TestCase):
                 (directory / "model.safetensors").write_bytes(b"wrong")
                 with self.assertRaisesRegex(ValueError, "does not match"):
                     prepare_models.prepare_model("Test")
+        with tempfile.TemporaryDirectory() as temporary:
+            campaign = Path(temporary) / "run with spaces"
+            campaign.mkdir()
+            (campaign / "runner.log").write_text("runner output", encoding="utf-8")
+            for status in ("incomplete", "complete"):
+                (campaign / "campaign.json").write_text(json.dumps({"status": status}), encoding="utf-8")
+                archive = archive_results(campaign)
+                self.assertEqual(archive, campaign.parent / "latest.tgz")
+                with tarfile.open(archive, "r:gz") as contents:
+                    self.assertEqual(set(contents.getnames()), {
+                        campaign.name, f"{campaign.name}/campaign.json", f"{campaign.name}/runner.log"})
+                    self.assertEqual(json.load(contents.extractfile(f"{campaign.name}/campaign.json")), {"status": status})
+                self.assertTrue((campaign / "runner.log").is_file())
+            previous = archive.read_bytes()
+            with patch("p3hpc.shutil.make_archive", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    archive_results(campaign)
+            self.assertEqual(archive.read_bytes(), previous)
 
     def test_explicit_backend_is_probed_and_synchronized_without_fallback(self):
         from bench import bench, detect_device

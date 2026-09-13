@@ -123,6 +123,17 @@ are not numerically equivalent.
 - **uv** for automatic installation of the Python version in `.python-version`
 - **GPU drivers** for your hardware
 
+### RunPod setup
+
+Based on Ubuntu-22 template:
+```bash
+apt update
+apt install vulkan-tools libvulkan-dev glslang-tools libssl-dev pkg-config nvidia-cuda-toolkit
+curl -LsSf https://astral.sh/uv/install.sh | sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.bashrc
+```
+
 ### Ubuntu/Debian system packages
 
 ```bash

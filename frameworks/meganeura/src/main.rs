@@ -11,8 +11,24 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod graphics;
+
 thread_local! {
     static SESSION_PREPARATION: RefCell<Vec<serde_json::Value>> = const { RefCell::new(Vec::new()) };
+    static CAPTURE_GPU: RefCell<Option<std::sync::Arc<blade_graphics::Context>>> =
+        const { RefCell::new(None) };
+}
+
+struct CaptureGpuOwner;
+
+impl Drop for CaptureGpuOwner {
+    fn drop(&mut self) {
+        CAPTURE_GPU.with_borrow_mut(|gpu| drop(gpu.take()));
+    }
+}
+
+fn shared_capture_gpu() -> bool {
+    std::env::var("INFERENA_SHARED_CAPTURE_GPU").as_deref() == Ok("1")
 }
 
 fn build_inference_session(graph: &Graph) -> Session {
@@ -93,7 +109,30 @@ fn build_session_for(graph: &Graph, mode: Mode) -> Session {
 
 fn session_config() -> SessionConfig<'static> {
     let strict = std::env::var("INFERENA_STRICT").as_deref() == Ok("1");
-    let mut config = SessionConfig::from_env();
+    let mut config = if shared_capture_gpu() {
+        assert!(std::env::var_os("INFERENA_NSYS").is_some());
+        if let Some(directory) = meganeura::config::DUMP_WGSL.text() {
+            meganeura::codegen::set_wgsl_dump_dir(directory);
+        }
+        let gpu = CAPTURE_GPU.with_borrow_mut(|slot| {
+            slot.get_or_insert_with(|| {
+                std::sync::Arc::new(
+                    meganeura::init_gpu_context_with(meganeura::GpuOptions::from_env())
+                        .expect("capture GPU initialization failed"),
+                )
+            })
+            .clone()
+        });
+        SessionConfig {
+            gpu: Some(gpu),
+            options: meganeura::CompileOptions::from_env(),
+            optimize: meganeura::OptimizeConfig::from_env(),
+            runtime: meganeura::SessionOptions::from_env(),
+            ..Default::default()
+        }
+    } else {
+        SessionConfig::from_env()
+    };
     config.runtime.coop = if strict {
         CoopPolicy::NativeF32
     } else {
@@ -403,6 +442,7 @@ fn bench_session(
         session.wait();
     }
     drop(warmup_range);
+    graphics::start_phase(phase);
     let _measure_range = nsys_range(&format!("meganeura/{phase}/measure"));
     let mut samples_ms = Vec::with_capacity(samples);
     for _ in 0..samples {
@@ -1052,7 +1092,7 @@ fn emit_result(
             "training_scope": training.map(|_| "forward + loss + backward; no optimizer update"),
             "compile_scope": "graph construction, optimization, GPU pipeline creation and qualified kernel search for requested sessions",
             "diagnostic": std::env::var_os("INFERENA_NSYS").is_some(),
-            "context_lifetime": "owned per session; destroyed after use",
+            "context_lifetime": if shared_capture_gpu() { "diagnostic shared context; destroyed after all sessions" } else { "owned per session; destroyed after use" },
         },
         "precision": precision,
         "optimizer": {
@@ -1580,6 +1620,7 @@ fn bench_whisper() {
 }
 
 fn main() {
+    let _capture_gpu_owner = CaptureGpuOwner;
     env_logger::init();
 
     let model_name = std::env::args().nth(1).unwrap_or("SmolLM2-135M".into());

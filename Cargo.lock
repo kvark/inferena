@@ -521,7 +521,7 @@ dependencies = [
 [[package]]
 name = "blade-graphics"
 version = "0.9.0"
-source = "git+https://github.com/kvark/blade?rev=f6f2729e850cc0aefdc0bb18523da58a72765169#f6f2729e850cc0aefdc0bb18523da58a72765169"
+source = "git+https://github.com/kvark/blade?rev=7bba67943db18fffc218290f78984f36b9e08ce4#7bba67943db18fffc218290f78984f36b9e08ce4"
 dependencies = [
  "ash",
  "ash-window",
@@ -538,7 +538,7 @@ dependencies = [
  "libloading 0.9.0",
  "log",
  "mint",
- "naga 30.0.0",
+ "naga 30.0.1",
  "objc2",
  "objc2-app-kit",
  "objc2-core-foundation",
@@ -5218,7 +5218,7 @@ checksum = "7ebb8d8732c6a6df3d8f032a82911cfc747e00efb95cc46e8d0acd5b5b88570c"
 [[package]]
 name = "meganeura"
 version = "0.3.0"
-source = "git+https://github.com/kvark/meganeura?rev=493326075d76da900be10876a0297305682eec5b#493326075d76da900be10876a0297305682eec5b"
+source = "git+https://github.com/kvark/meganeura?rev=037c209e2574c4364c581f522ce9668586741207#037c209e2574c4364c581f522ce9668586741207"
 dependencies = [
  "blade-graphics",
  "blade-macros",
@@ -5228,7 +5228,7 @@ dependencies = [
  "half",
  "hf-hub",
  "log",
- "naga 30.0.0",
+ "naga 30.0.1",
  "oxionnx-core",
  "oxionnx-proto",
  "ron",
@@ -5405,9 +5405,9 @@ dependencies = [
 
 [[package]]
 name = "naga"
-version = "30.0.0"
+version = "30.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23bf0a141a9ab6f07dbb492db53245e464bc9db42f407772d9ae03d83a2c1033"
+checksum = "a616d2fb8c89516ac2723a581f69d6c18576046bed761bd6b305e5618e6ae130"
 dependencies = [
  "arrayvec",
  "bit-set 0.10.0",
@@ -8769,7 +8769,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "js-sys",
  "log",
- "naga 30.0.0",
+ "naga 30.0.1",
  "parking_lot",
  "portable-atomic",
  "profiling",
@@ -8833,7 +8833,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "indexmap",
  "log",
- "naga 30.0.0",
+ "naga 30.0.1",
  "naga-types",
  "once_cell",
  "parking_lot",
@@ -8983,7 +8983,7 @@ dependencies = [
  "libc",
  "libloading 0.8.9",
  "log",
- "naga 30.0.0",
+ "naga 30.0.1",
  "naga-types",
  "ndk-sys",
  "objc2",
@@ -9031,7 +9031,7 @@ version = "30.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c9eaac644e5008925c78567d272b9d66ef83da55a53cc17fc7daade7bb6e66e5"
 dependencies = [
- "naga 30.0.0",
+ "naga 30.0.1",
  "wgpu-types 30.0.0",
 ]
 

@@ -81,6 +81,14 @@ struct Error {
 }
 
 impl Error {
+    fn merge(&mut self, other: &Self) {
+        self.elements += other.elements;
+        self.max_error = self.max_error.max(other.max_error);
+        self.max_reference = self.max_reference.max(other.max_reference);
+        self.square_error += other.square_error;
+        self.square_reference += other.square_reference;
+    }
+
     fn include(&mut self, actual: &[f32], reference: &[f32]) -> Result<(), String> {
         if actual.is_empty() || actual.len() != reference.len() {
             return Err("tensor shape changed or empty".into());
@@ -148,16 +156,15 @@ impl Qualification {
         if session.num_outputs() != self.output_lengths.len() {
             return Err("output inventory changed".into());
         }
-        let outputs: Vec<_> = self
-            .output_lengths
-            .iter()
-            .enumerate()
-            .map(|(index, &len)| {
-                let mut values = vec![0.0; len];
-                session.read_output_by_index(index, &mut values);
-                values
-            })
-            .collect();
+        // Candidate allocations are short-lived. A staged batch avoids paying
+        // the mapped-read calibration cost again for every new candidate.
+        let mut outputs = session.read_buffers(&session.plan().output_buffers);
+        for (values, &len) in outputs.iter_mut().zip(&self.output_lengths) {
+            if values.len() < len {
+                return Err("output buffer is smaller than its logical tensor".into());
+            }
+            values.truncate(len);
+        }
         let gradients = if self.mode == Mode::Training {
             gradients(session)?
         } else {
@@ -182,14 +189,14 @@ impl Qualification {
         let mut total = Error::default();
         for (name, actual) in &gradients {
             let reference = &reference_gradients[name];
-            total.include(actual, reference)?;
+            let mut error = Error::default();
+            error.include(actual, reference)?;
             if !accelerated {
-                let mut error = Error::default();
-                error.include(actual, reference)?;
                 error
                     .check(1e-4)
                     .map_err(|error| format!("gradient {name}: {error}"))?;
             }
+            total.merge(&error);
         }
         if self.mode == Mode::Training {
             total.check(if accelerated { 0.01 } else { 1e-4 })?;
@@ -233,5 +240,11 @@ mod tests {
             .include(&[0.00001, 0.00001, 0.00001, 1.0], &[0.0, 0.0, 0.0, 1.0])
             .unwrap();
         assert!(error.check(0.0).is_err());
+        let mut total = Error::default();
+        total.merge(&error);
+        total.merge(&error);
+        assert_eq!(total.elements, 2 * error.elements);
+        assert_eq!(total.check(1e-4).is_ok(), error.check(1e-4).is_ok());
+        assert!(total.check(0.0).is_err());
     }
 }

@@ -171,7 +171,8 @@ uses two. In-flight driver work and qualification can overrun the soft deadline.
 Every candidate's full outputs and canonical parameter gradients are compared
 with the ordinary untuned construction, before/after tuning and after paired
 measurement. Packed gradients are unpacked into the original checkpoint
-coordinates. The fixed maximum/RMS gates match the replay policy below; only
+coordinates. Outputs use staged batch readback, avoiding repeated mapped-read
+calibration for short-lived candidates. The fixed maximum/RMS gates match the replay policy below; only
 accelerated gradients have the separate 1% whole-gradient tolerance. The outer
 PyTorch comparison remains an independent gate. No optimizer update is part of
 these workloads. Construction measurements are not publication samples; the
@@ -192,9 +193,10 @@ numerical qualification are outside this compile interval and have a separate
 ten-minute process safety cap. The setup probe uses the same supervisor.
 
 This is a bounded-startup comparison, **not an identical total wall-clock
-budget for both engines**: native graph/pipeline construction is timed but
-outside the per-session search deadline, which can overrun by an in-flight
-driver operation. Report measured preparation costs; do not assume every
+budget for both engines**: Meganeura has a per-session construction deadline,
+while PyTorch has a per-process compilation deadline. Both can overrun during
+in-flight work; native qualification also counts toward its deadline. Report
+measured preparation costs; do not assume every
 Meganeura search finishes sooner than every PyTorch compilation.
 
 Optional, separate studies:

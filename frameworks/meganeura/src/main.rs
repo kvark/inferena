@@ -1051,7 +1051,6 @@ fn emit_result(
         "optimizer": {
             "mode": std::env::var("MEGANEURA_OPTIMIZER").unwrap_or_else(|_| "egglog-outlined".to_string()),
             "extraction_cost": std::env::var("MEGANEURA_EGRAPH_COST").unwrap_or_else(|_| "tensor-traffic".to_string()),
-            "measured_kernel_search": meganeura::config::TUNE.bool_or(true),
             "measured_construction": meganeura::config::TUNE.bool_or(true),
             "sessions": SESSION_PREPARATION.with_borrow(Clone::clone),
         },

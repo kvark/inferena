@@ -184,9 +184,9 @@ git switch experiment/p3hpc-cuda-graphs
 git pull --ff-only
 ```
 
-The [readiness findings](EXPERIMENT.md#current-collection-readiness-september-12)
-explain the precision-aware replay checks and preserved failed attempts.
-Cross-engine accuracy gates are unchanged.
+Read the [current protocol and readiness notes](EXPERIMENT.md) before starting
+a cohort. Qualify the pinned revision on each platform first; previous-cohort
+success does not qualify a new compiler.
 
 For the paired P3HPC campaign, install [uv](https://docs.astral.sh/uv/getting-started/installation/)
 once, then let the setup script install Python and the pinned requirements:
@@ -215,37 +215,22 @@ exclusion, discarded sample, or retry is allowed. Strict gradients must pass
 the 5% gate in every process. Accelerated gradients retain every sample under
 a 10% safety ceiling, then require the median cross-engine error to remain
 below 5% across the three processes. Every raw result remains in the campaign.
-The full campaign can take a while because compilation caches are private to
-each process (90 on CUDA with the default matrix).
-
-Preparation policy is independent of arithmetic precision. The `light`
-conditions use default PyTorch compilation and disable Meganeura's empirical
-kernel search; the `searched` conditions request PyTorch max-autotune and
-Meganeura's bounded on-device tuner. CUDA Graph replay is retained in both
-primary conditions, with default/no-graph as the replay ablation. Thus strict
-and accelerated results each cover startup-oriented and searched deployment
-without adding another campaign condition.
-
-When stock PyTorch max-autotune fails on an AMD consumer GPU, preserve that
-failure as a portability result, then collect the runnable conditions as an
-explicitly labelled availability dataset:
-
-```bash
-bash scripts/setup.sh rocm7.2 --no-max-autotune
-.venv-p3hpc/bin/python scripts/p3hpc.py --no-max-autotune
-```
-
-This is not the full reference-condition matrix. The manifest records the
-declared, selected and omitted conditions and marks its coverage as
-`availability-subset`. See the [Radeon 780M case study](EXPERIMENT.md#radeon-780m-availability-case).
+The primary matrix has 30 paired processes per device. Meganeura always uses
+qualified calibrated graph/kernel search. PyTorch uses default compilation
+with a 120-second compilation deadline, not max-autotune. CUDA, ROCm and XPU
+use qualified whole-phase graph replay; MPS compiles without an equivalent
+public replay API. No `--no-max-autotune` argument is needed. Optional search
+and replay ablations are separate overrides, not the primary matrix.
 
 The printed `../inferena-results/<host>-<UTC>-<source>/` directory contains the
 manifest, records and logs. Keep that whole directory; `campaign.json` must say
 `"status": "complete"` before treating it as a complete cohort. Nothing is
-overwritten or added to Git. Optional `--qualify-only --models ResNet-50
+added to Git; `../inferena-results/latest.tgz` is replaced with an archive of
+the latest run, while older result directories remain intact. Copy that archive
+before another run. Optional `--qualify-only --models ResNet-50
 --precisions strict` provides a short new-device check; it does not collect
 publication timings. Larger SmolLM2 sizes are a separate opt-in
-[scaling campaign](EXPERIMENT.md#matched-smollm2-scaling).
+cloud-GPU-only collection: `python scripts/p3hpc.py --models SmolLM2-360M SmolLM2-1.7B`.
 
 Windows still needs Git for Windows: the Python collector locates Git Bash for
 the underlying runners. CUDA setup also installs the matching Windows Triton

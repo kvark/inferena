@@ -225,14 +225,24 @@ class CampaignTest(unittest.TestCase):
                           "native_f32_cooperative_matrix_permitted": True,
                           "f16_cooperative_matrix_permitted": False},
         }
+        tuning = {"scope": "All", "max_classes": 2 * sys.maxsize + 1,
+                  "max_time": {"secs": 2, "nanos": 0}, "max_scratch_bytes": TUNE_SCRATCH_BYTES}
         mg = {**copy.deepcopy(base), "framework": "meganeura", "optimizer": {
-            "measured_kernel_search": True, "sessions": [{
+            "measured_construction": True, "mode": "egglog-outlined", "sessions": [{
                 "mode": mode, "cooperative_matrix_policy": "NativeF32", "search": {
-                    "scope": "All", "class_limit": None, "class_limit_reached": False,
-                    "max_seconds": args.tune_seconds, "max_scratch_bytes": TUNE_SCRATCH_BYTES,
-                    "visited_classes": 1, "eligible_classes": 1, "elapsed_seconds": 0.1,
-                    "time_budget_exhausted": False,
+                    "options": {"max_time": {"secs": 60, "nanos": 0}, "max_graphs": 4,
+                                "max_programs": 64, "warmup_runs": 2,
+                                "max_plan_bytes": 3 * 1024**3, "tuning": tuning},
+                    "selected": 0, "trials": [{"outcome": {"qualified": True}, "kernel_tuning": {
+                        "options": tuning, "class_limit_reached": False,
+                        "visited_classes": 1, "eligible_classes": 1, "time_budget_exhausted": False,
+                    }}],
                 },
+                "memory_budget": {"device_budget_bytes": 4 * 1024**3, "device_usage_bytes": 0,
+                                  "plan_fraction_of_available": 0.75},
+                "qualification": {"policy": "fixed-full-tensor-v4", "rtol": 1e-4, "atol": 1e-6,
+                                  "accelerated_gradient_rtol": 0.01, "qualified_calls": 2,
+                                  "output_elements": 1, "gradient_elements": int(mode == "Training")},
             } for mode in ("Inference", "Training")],
         }}
         pt = {**copy.deepcopy(base), "framework": "pytorch", "backend": "CUDA",
@@ -259,12 +269,14 @@ class CampaignTest(unittest.TestCase):
         check = lambda records: check_pair(records, args, "default", True, 1, "source", precision="strict")
         check([mg, pt])
         for engine, path, wrong in (
-            (0, ("optimizer", "measured_kernel_search"), False),
+            (0, ("optimizer", "measured_construction"), False),
             (0, ("precision", "cooperative_matrix_policy"), "Disabled"),
             (0, ("precision", "f16_cooperative_matrix_permitted"), True),
             (0, ("optimizer", "sessions"), []),
-            (0, ("optimizer", "sessions", 0, "search", "class_limit"), 8),
-            (0, ("optimizer", "sessions", 0, "search", "visited_classes"), 0),
+            (0, ("optimizer", "sessions", 0, "search", "options", "tuning", "max_classes"), 8),
+            (0, ("optimizer", "sessions", 0, "search", "trials", 0, "kernel_tuning", "visited_classes"), 0),
+            (0, ("optimizer", "sessions", 0, "search", "trials", 0, "outcome", "qualified"), False),
+            (0, ("optimizer", "sessions", 1, "qualification", "gradient_elements"), 0),
             (1, ("execution", "compiled"), False),
             (1, ("execution", "sdpa_policy"), "math"),
             (1, ("execution", "sdpa_enabled_backends"), ["MATH"]),

@@ -4,7 +4,9 @@ Use branch `experiment/p3hpc-cuda-graphs`. Meganeura is pinned to merged
 `71c202cbb3813ed60396fd156cd876b5cb15d749`. Protocol
 `p3hpc-paired-campaign-v10` uses calibrated Meganeura construction, not just
 kernel tuning after a fixed graph has been built. Workloads, arithmetic
-classes, PyTorch settings and numerical thresholds are unchanged. Do not
+classes, PyTorch execution settings and numerical thresholds are unchanged.
+Gradient norms now use original parameter names on both sides; PyTorch no
+longer combines gate/up entries to match one particular native packing. Do not
 combine this revision with the previous cohort or relabel its records.
 
 **Collection candidate: qualify every backend before launching the common

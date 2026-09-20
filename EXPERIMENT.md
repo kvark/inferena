@@ -1,7 +1,7 @@
 # P3HPC paired collection
 
 Use branch `experiment/p3hpc-cuda-graphs`. Meganeura is pinned to merged
-`71c202cbb3813ed60396fd156cd876b5cb15d749`. Protocol
+`dbb43648b31237409075bbd3fa077ce06ee510bc`. Protocol
 `p3hpc-paired-campaign-v10` uses calibrated Meganeura construction, not just
 kernel tuning after a fixed graph has been built. Workloads, arithmetic
 classes, PyTorch execution settings and numerical thresholds are unchanged.
@@ -56,7 +56,7 @@ machine. CPU PyTorch is only a correctness oracle for graphics-only qualificatio
 not a timing competitor. `--eager` avoids compiling this oracle; it does not
 disable Meganeura tuning or relax validation. Verify the exact native name with
 `cargo run --release --locked -p inferena-meganeura -- --list-devices` before
-selecting an integrated GPU. See the [qualification instructions](https://github.com/kvark/meganeura/blob/71c202cbb3813ed60396fd156cd876b5cb15d749/paper/p3hpc/QUALIFICATION.md)
+selecting an integrated GPU. See the [qualification instructions](https://github.com/kvark/meganeura/blob/dbb43648b31237409075bbd3fa077ce06ee510bc/paper/p3hpc/QUALIFICATION.md)
 for device disambiguation, archive lifetime and the still-pending Mendocino result.
 
 For example, the Mac qualification is:
@@ -113,6 +113,9 @@ explicitly separate inference study; it does not produce training data.
 The family shares batch 1, 128-token prefill and stateless one-token forward,
 but differs in depth, width and attention layout. It is not a parameter-count-only
 scaling law. Do not quantize, offload or shrink workloads to make them fit.
+The recent cached-attention and KV-cache optimizations are not exercised by
+this stateless workload. Measuring those gains needs a separate decode study;
+they must not be inferred from the minimal-forward timings here.
 
 ## The executed contract
 
@@ -172,7 +175,8 @@ Every candidate's full outputs and canonical parameter gradients are compared
 with the ordinary untuned construction, before/after tuning and after paired
 measurement. Packed gradients are unpacked into the original checkpoint
 coordinates. Outputs use staged batch readback, avoiding repeated mapped-read
-calibration for short-lived candidates. The fixed maximum/RMS gates match the replay policy below; only
+calibration for short-lived candidates. The fixed maximum/RMS gates match the
+replay policy below; only
 accelerated gradients have the separate 1% whole-gradient tolerance. The outer
 PyTorch comparison remains an independent gate. No optimizer update is part of
 these workloads. Construction measurements are not publication samples; the
@@ -328,12 +332,22 @@ failures.
 
 ## Local acceptance evidence
 
-The release build, Clippy and ten broad Rust tests pass locally. The initial
-RTX 5070 strict SmolLM2 pilot exercises four graph forms, validates all 134.5M
-gradient elements in checkpoint coordinates, and rejects invalid single-token
-fusion candidates. Full paired qualification of this revision is still pending.
+The release build, Clippy, ten broad Rust tests and five Python campaign-contract
+tests pass locally. At Inferena `689f924`, all ten RTX 5070 model/precision pairs
+pass against PyTorch on Meganeura `71c202c`. Candidate qualification exposed an
+RMSNorm fusion bug; merged fix `dbb4364` has the identical source tree to `c74ea82`,
+which passes strict and accelerated full-model SmolLM2 checks with every formerly
+invalid candidate now qualifying. Its focused GPU regressions pass on both the
+5070 and B570, and upstream CI passes. Full paired B570 qualification is pending.
+
+A same-pin strict SmolLM2 pilot measured staged output readback and single-pass
+gradient checking: inference qualification fell from 38.4 to 4.7 seconds while
+completed program trials increased from 24 to 28; total three-session preparation
+fell from 144.2 to 113.6 seconds. All 134.5M gradient elements are still checked.
+These are preparation diagnostics, not replicated publication speedups. Training
+search can still exhaust its deadline before visiting every kernel class.
 Raw evidence stays outside Git. Previous-cohort acceptance is available in Git
-history; it is not a certificate for the new construction path.
+history; it is not a certificate for this construction path on other backends.
 
 ## Separate diagnostics
 

@@ -1,16 +1,15 @@
 # P3HPC paired collection
 
 Use branch `experiment/p3hpc-cuda-graphs`. Meganeura is pinned to merged
-`428fc2d2322229e5338f5d80a10d700340d593cd`. Protocol
-`p3hpc-paired-campaign-v9` replaces the v8 candidate's pointwise output
-repeatability gate with fixed per-tensor maximum/RMS gates. Do not relabel
-v8 records as v9 or combine this cohort with v7 / `efb1e520`, which did not
-implement always-tuned Meganeura or native-f32 strict.
+`71c202cbb3813ed60396fd156cd876b5cb15d749`. Protocol
+`p3hpc-paired-campaign-v10` uses calibrated Meganeura construction, not just
+kernel tuning after a fixed graph has been built. Workloads, arithmetic
+classes, PyTorch settings and numerical thresholds are unchanged. Do not
+combine this revision with the previous cohort or relabel its records.
 
-**Collection candidate: qualify the new MPS and ROCm paths before launching
-the common cohort or renting H100 again.** Local v8 full-model and v9 Whisper
-checks pass on CUDA/XPU as detailed below; Linux success does not certify
-macOS/ROCm/Windows.
+**Collection candidate: qualify every backend before launching the common
+cohort or renting H100 again.** Previous acceptance results do not qualify
+the updated optimizer. Linux success does not certify macOS/ROCm/Windows.
 
 ## What to run
 
@@ -55,7 +54,7 @@ machine. CPU PyTorch is only a correctness oracle for graphics-only qualificatio
 not a timing competitor. `--eager` avoids compiling this oracle; it does not
 disable Meganeura tuning or relax validation. Verify the exact native name with
 `cargo run --release --locked -p inferena-meganeura -- --list-devices` before
-selecting an integrated GPU. See the [qualification instructions](https://github.com/kvark/meganeura/blob/6a5e9c3a7863692a6e0cb91e3c85503fe2b40d80/paper/p3hpc/QUALIFICATION.md)
+selecting an integrated GPU. See the [qualification instructions](https://github.com/kvark/meganeura/blob/71c202cbb3813ed60396fd156cd876b5cb15d749/paper/p3hpc/QUALIFICATION.md)
 for device disambiguation, archive lifetime and the still-pending Mendocino result.
 
 For example, the Mac qualification is:
@@ -117,13 +116,13 @@ scaling law. Do not quantize, offload or shrink workloads to make them fit.
 
 | Component | Primary policy |
 |---|---|
-| Meganeura | Empirical tuning enabled independently of the reference mode |
+| Meganeura | Calibrated egglog construction enabled independently of the reference mode |
 | Strict arithmetic | f32 operands/accumulators; native-f32 cooperative tiles permitted; f16-input tiles forbidden |
 | Accelerated arithmetic | Reduced-input paths permitted, with f32 accumulation and the declared validation gates |
 | CUDA and ROCm | Default PyTorch compilation plus qualified whole-phase `torch.cuda.CUDAGraph` replay |
 | XPU | Default PyTorch compilation, public math SDPA setting, qualified whole-phase `torch.xpu.XPUGraph` replay |
 | MPS | Default PyTorch compilation, including first Metal specializations; no equivalent public whole-phase replay API |
-| CPU availability control | Explicit default-compiled CPU reference, no GPU replay |
+| Graphics-only qualification | Explicit eager CPU oracle, no CPU-versus-GPU performance comparison |
 
 ROCm exposes HIP graph capture through PyTorch's CUDA-named API. It is not
 disabled because the backend is AMD. Apple compilation / internal MPSGraph
@@ -141,32 +140,46 @@ Do not call this a measurement of PyTorch's best achievable steady state.
 
 ### Preparation budgets and evidence
 
-Meganeura searches all classes in its **current legal tuning domain**, with
-no eight-class cutoff, a **60-second soft deadline per session**, and at most
-**1 GiB private scratch**, including staging. This is a ceiling, not a
-reservation; the engine also checks the available device-memory budget.
-The larger ceiling admits substantial language-model matrix bindings that
-the old 64 MiB limit excluded. Most workloads create three sessions; Whisper
-reuses its inference session for minimal forward and creates two.
-Search returns as soon as the legal candidates finish; 60 seconds is not a
-mandatory wait. A local ResNet check reached all 71 strict / 59 accelerated
-training classes in 29 / 24 seconds, while a 10-second cap reached only
-22 / 25. These are qualification observations, not a replicated speed claim.
+Meganeura uses `train::build_measured`: representative weights and inputs are
+initialized before candidate execution. A **60-second soft total deadline per
+session** includes graph search, lowering, GPU pipelines, initialization and
+qualification. Up to **4 graph forms and 64 programs** explore dispatch fusion
+and submission chunking; applicable cached-attention plans also explore splits.
+Large graphs search one verified repeated region. Missing/unsupported regions,
+extraction truncation and rejected candidates are recorded, not hidden.
 
-The legal domain includes scalar f32 matmul tiles, compatible native-f32
-cooperative alternatives, and scalar convolution forward/dX/dW shapes and
-staging choices. It does not yet include arbitrary graph rewrites, GEMV,
-reduced-input cooperative kernels, complex fused prologues/epilogues,
-overlapping bindings or split-K. “All” is not an exhaustive search of all
-possible programs. Every candidate retains the existing numerical
-qualification and paired timing gates. An incomplete or invalid comparison
-keeps its incumbent.
+Each program receives up to **2 seconds of private kernel search**, with no
+class-count cutoff and **1 GiB maximum scratch**. Completed comparisons are
+reused across programs. This interleaves physical choices with logical forms
+instead of exhausting the total budget on the first form. The kernel domain
+includes scalar matmul/convolution shapes, legal native-f32 cooperative tiles,
+GEMV widths/reductions and reduction kernels. Reduced-input cooperative paths
+remain available under the accelerated arithmetic contract, but are not an
+exhaustive measured search. “All” means the library's current legal kernel
+domain, not every implementation or a guarantee to finish it within the budget.
 
-Each session records its actual cooperative policy, eligible/visited classes,
-excluded dispatches, comparison decisions, scratch use, time consumed and
-whether the deadline was hit. The collector checks these executed receipts,
-not just an environment variable. Hardware capability fields distinguish
-permission to use native f32 from its availability and actual use.
+The combined logical-plan/snapshot bound is **75% of the device's reported
+available budget** at construction. This conservative bound precedes allocation;
+padding, driver objects, staging and private probes are additional. It is not
+a peak-VRAM measurement. An unavailable budget fails explicitly. Phases release
+their sessions before constructing the next shape; calibration may temporarily
+hold an incumbent and challenger. Most models construct three sessions; Whisper
+uses two. In-flight driver work and qualification can overrun the soft deadline.
+
+Every candidate's full outputs and canonical parameter gradients are compared
+with the ordinary untuned construction, before/after tuning and after paired
+measurement. Packed gradients are unpacked into the original checkpoint
+coordinates. The fixed maximum/RMS gates match the replay policy below; only
+accelerated gradients have the separate 1% whole-gradient tolerance. The outer
+PyTorch comparison remains an independent gate. No optimizer update is part of
+these workloads. Construction measurements are not publication samples; the
+selected session is warmed up and measured again afterwards.
+
+Receipts retain actual limits, every trial, kernel coverage/decisions, selected
+program, qualification coverage, cooperative policy and time breakdowns.
+The collector checks these receipts, not just an environment variable.
+`compile_s` now includes weight/input initialization and full-tensor checks;
+do not interpret a change from the preceding cohort as shader-compiler time.
 
 PyTorch has a **120-second compilation deadline per process**, covering
 `torch.compile` and the first specializations of all requested phases,
@@ -311,40 +324,12 @@ failures.
 
 ## Local acceptance evidence
 
-On September 13, RTX 5070 passed all ten model/arithmetic pairs at `7d671a0`;
-the expanded ResNet search passed again with the final default budgets and
-receipt checks at `1430d0d`. B570 passed all ten pairs at `d8335a8`, using
-the declared math SDPA policy; all receipts also pass the `1430d0d` checker.
-Both installed vendor wheels pass the six broad execution/contract tests,
-both setup probes pass, and the nine Rust harness tests pass. Raw qualification
-outputs stay outside Git; these single-pair checks are not publication data.
-
-The B570 ResNet training search can reach its 60-second deadline before
-visiting all classes; this is recorded and retains untested incumbents.
-macOS/ROCm/Windows hardware qualification and cloud-model coverage remain
-outstanding. In particular, local tests do not prove MPS compilation or actual
-native-f32 cooperative use on a Mac. Do not launch the paid cloud campaign
-until the new backend paths have qualified.
-
-The archived RX 7900 XT v8 candidate (`d5b46f2`) completed nine pairs before
-accelerated Whisper failed its ordinary training-output repeatability check,
-before training graph capture. Compilation finished in 7.09 seconds. Two of
-576,000 output elements failed the pointwise gate (largest mismatch
-`1.185e-6`). Successful strict Whisper already had a larger full-tensor maximum
-variation (`1.529e-6`) but small RMS error (`7.171e-8`). This supports treating
-near-zero sensitivity as a validation-metric issue, not claiming a graph or
-Meganeura failure. The failed process did not retain full comparison metrics;
-its acceptance under v9 must be tested, not inferred from the strict result.
-The pinned [PyTorch reproducibility notes](https://github.com/pytorch/pytorch/blob/cf30153c4c131c8164ee7798e5022d810682e2cb/docs/source/notes/randomness.md)
-explain that nondeterministic algorithms are permitted unless disabled. They
-do not identify which kernel caused this particular forward variation.
-
-At `8826ef7`, v9 paired Whisper qualification passes in strict and accelerated
-modes on both RTX 5070 and B570; the six broad execution/contract tests pass
-with each vendor wheel, as do nine Rust harness tests. Rechecking retained
-output statistics finds no maximum/RMS failure among 192 comparisons from the
-nine valid AMD pairs or 220 from each local v8 full-model check. This is an
-offline metric audit, not new v9 samples or qualification of the failed pair.
+The release build, Clippy and ten broad Rust tests pass locally. The initial
+RTX 5070 strict SmolLM2 pilot exercises four graph forms, validates all 134.5M
+gradient elements in checkpoint coordinates, and rejects invalid single-token
+fusion candidates. Full paired qualification of this revision is still pending.
+Raw evidence stays outside Git. Previous-cohort acceptance is available in Git
+history; it is not a certificate for the new construction path.
 
 ## Separate diagnostics
 

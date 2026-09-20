@@ -117,6 +117,54 @@ def _replicated_candidate(record):
     )
 
 
+def duration_seconds(duration):
+    return duration["secs"] + duration["nanos"] / 1e9
+
+
+def check_native_search(session, seconds):
+    search = session.get("search")
+    if not search:
+        raise ValueError("native session did not use calibrated construction")
+    options = search["options"]
+    tuning = options["tuning"]
+    memory = session["memory_budget"]
+    if (duration_seconds(options["max_time"]) != seconds
+            or options["max_graphs"] != 4 or options["max_programs"] != 64
+            or options["warmup_runs"] != 2
+            or memory["plan_fraction_of_available"] != 0.75
+            or options["max_plan_bytes"] != (memory["device_budget_bytes"] - memory["device_usage_bytes"]) // 4 * 3
+            or options["max_plan_bytes"] <= 0
+            or tuning["scope"] != "All" or tuning["max_classes"] != 2 * sys.maxsize + 1
+            or duration_seconds(tuning["max_time"]) != min(seconds, 2.0)
+            or tuning["max_scratch_bytes"] != TUNE_SCRATCH_BYTES):
+        raise ValueError("native construction limits differ from the declared policy")
+    trials = search["trials"]
+    if not trials or not 0 <= search["selected"] < len(trials):
+        raise ValueError("native construction has no selected program")
+    selected = trials[search["selected"]]
+    if selected["outcome"]["qualified"] is not True or not selected["kernel_tuning"]:
+        raise ValueError("native selected program was not tuned and qualified")
+    for trial in trials:
+        kernel = trial["kernel_tuning"]
+        if kernel is None:
+            continue
+        if (kernel["options"]["scope"] != "All"
+                or kernel["options"]["max_classes"] != tuning["max_classes"]
+                or kernel["options"]["max_scratch_bytes"] != TUNE_SCRATCH_BYTES
+                or not 0 <= duration_seconds(kernel["options"]["max_time"]) <= min(seconds, 2.0)
+                or kernel["class_limit_reached"]
+                or not 0 <= kernel["visited_classes"] <= kernel["eligible_classes"]
+                or kernel["visited_classes"] < kernel["eligible_classes"] and not kernel["time_budget_exhausted"]):
+            raise ValueError("native kernel search stopped outside the declared limits")
+    qualification = session["qualification"]
+    if (qualification["policy"] != "fixed-full-tensor-v4"
+            or qualification["rtol"] != 1e-4 or qualification["atol"] != 1e-6
+            or qualification["accelerated_gradient_rtol"] != 0.01
+            or qualification["qualified_calls"] < 2 or qualification["output_elements"] <= 0
+            or session["mode"] == "Training" and qualification["gradient_elements"] <= 0):
+        raise ValueError("native construction lacks full-output/gradient qualification")
+
+
 def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
                replicated=False, precision=None):
     phases = PHASES[:2] if args.inference_only else PHASES
@@ -168,8 +216,9 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
     if precision is not None and any(record["precision"]["comparison_class"] != expected_class
                                      for record in (mg, pt)):
         raise ValueError("requested arithmetic contract did not execute")
-    if mg.get("optimizer", {}).get("measured_kernel_search") is not True:
-        raise ValueError("Meganeura search must be enabled independently of PyTorch mode")
+    if (mg.get("optimizer", {}).get("measured_construction") is not True
+            or mg["optimizer"].get("mode") != "egglog-outlined"):
+        raise ValueError("Meganeura calibrated egglog construction must be enabled")
     strict = not mg["precision"]["reduced_precision_allowed"]
     if strict and (mg["precision"].get("cooperative_matrix_policy") != "NativeF32"
                    or mg["precision"].get("native_f32_cooperative_matrix_permitted") is not True
@@ -183,17 +232,7 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
     for session in sessions:
         if session["cooperative_matrix_policy"] != ("NativeF32" if strict else "Auto"):
             raise ValueError("native session used the wrong cooperative policy")
-        search = session.get("search")
-        if not search or search["scope"] != "All" or search["class_limit"] is not None:
-            raise ValueError("native search did not explore the full legal domain")
-        if (search["max_seconds"] != getattr(args, "tune_seconds", TUNE_SECONDS)
-                or search["max_scratch_bytes"] != TUNE_SCRATCH_BYTES
-                or search["class_limit_reached"]
-                or not 0 <= search["visited_classes"] <= search["eligible_classes"]
-                or not math.isfinite(search["elapsed_seconds"]) or search["elapsed_seconds"] < 0):
-            raise ValueError("native search budget or coverage differs from the declared policy")
-        if search["visited_classes"] < search["eligible_classes"] and not search["time_budget_exhausted"]:
-            raise ValueError("native search stopped early without exhausting its budget")
+        check_native_search(session, getattr(args, "tune_seconds", TUNE_SECONDS))
     execution = pt["execution"]
     if execution["sdpa_policy"] != ("math" if args.backend == "xpu" else "auto"):
         raise ValueError("reference attention policy differs from the declared backend configuration")
@@ -319,7 +358,7 @@ def create_parser():
     parser.add_argument("--no-graphs", action="store_true", help="explicitly omit whole-phase replay; recorded as an override")
     parser.add_argument("--eager", action="store_true", help="explicit eager reference; never an automatic compiler fallback")
     parser.add_argument("--tune-seconds", type=positive_seconds, default=TUNE_SECONDS,
-                        help="Meganeura soft search deadline per session (default: 60 s); no class-count cutoff")
+                        help="Meganeura soft construction deadline per session (default: 60 s), including initialization/qualification")
     parser.add_argument("--compile-seconds", type=positive_seconds, default=COMPILE_SECONDS,
                         help="PyTorch compilation/first-specialization deadline (default: 120 s)")
     stage = parser.add_mutually_exclusive_group()
@@ -411,14 +450,18 @@ def main():
                INFERENA_REQUIRE_LOCAL_WEIGHTS="1", INFERENA_TORCH_BACKEND=args.backend)
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v9", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v10", "source": revision,
         "model_revisions": {name: SMOLLM2_REVISIONS[name] for name in args.models if name in SMOLLM2_REVISIONS},
         "meganeura": dependency, "python": sys.version, "packages": packages,
         "torch": {"version": torch.__version__, "git_version": torch.version.git_version,
                   "build_config": torch.__config__.show()},
         "args": {**vars(args), "results_dir": str(destination)}, "sha256": hashes,
-        "native_policy": {"measured_kernel_search": True, "scope": "All", "class_limit": None,
+        "native_policy": {"measured_construction": True, "optimizer": "egglog-outlined",
+                          "scope": "All", "class_limit": None,
                           "max_scratch_bytes": TUNE_SCRATCH_BYTES,
+                          "kernel_seconds_per_program": min(args.tune_seconds, 2.0),
+                          "max_graphs": 4, "max_programs": 64, "plan_fraction_of_available": 0.75,
+                          "qualification": "fixed-full-tensor-v4",
                           "search_seconds_per_session": args.tune_seconds, "strict_coop": "NativeF32"},
         "reference_compile_seconds": args.compile_seconds,
         "reference_sdpa_policy": "math" if args.backend == "xpu" else "auto",

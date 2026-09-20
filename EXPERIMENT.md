@@ -44,14 +44,19 @@ max-autotune by default. No existing venv is overwritten.
 | AMD / 7900 XT, 780M | `bash scripts/setup.sh rocm7.2` | `python scripts/p3hpc.py --backend rocm` |
 | Intel Arc B570 | `bash scripts/setup.sh xpu` | `python scripts/p3hpc.py --backend xpu` |
 | Apple M3 | `bash scripts/setup.sh mps` | `python scripts/p3hpc.py --backend mps` |
-| Intel iGPU with unsupported XPU | `bash scripts/setup.sh cpu` | `python scripts/p3hpc.py --backend cpu` |
+| Intel RPL-U, qualification only | `bash scripts/setup.sh cpu` | `python scripts/p3hpc.py --backend cpu --gpu RPL-U --qualify-only --eager` |
+| AMD Mendocino, prospective qualification | `bash scripts/setup.sh cpu` | `python scripts/p3hpc.py --backend cpu --gpu MENDOCINO --qualify-only --eager` |
 
 Here `python` means the created environment's interpreter:
 `.venv-p3hpc/bin/python` on Linux/macOS or
 `.venv-p3hpc/Scripts/python.exe` on native Windows. After activation,
 `python scripts/p3hpc.py` needs no arguments on a supported single-GPU
-machine. CPU comparison is always explicit; it is GPU-versus-CPU availability
-evidence, not part of GPU speed-ratio aggregates.
+machine. CPU PyTorch is only a correctness oracle for graphics-only qualification,
+not a timing competitor. `--eager` avoids compiling this oracle; it does not
+disable Meganeura tuning or relax validation. Verify the exact native name with
+`cargo run --release --locked -p inferena-meganeura -- --list-devices` before
+selecting an integrated GPU. See the [qualification instructions](https://github.com/kvark/meganeura/blob/6a5e9c3a7863692a6e0cb91e3c85503fe2b40d80/paper/p3hpc/QUALIFICATION.md)
+for device disambiguation, archive lifetime and the still-pending Mendocino result.
 
 For example, the Mac qualification is:
 

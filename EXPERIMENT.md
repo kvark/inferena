@@ -303,6 +303,14 @@ The runner selects Triton's backend explicitly from the requested Torch
 device, avoiding ambiguous auto-detection when NVIDIA and Intel drivers are
 both installed. It records the selection and rejects a conflicting override.
 
+On B570 with Mesa 26.0.3, the advertised f16-input/f32-accumulate matrix shape
+is 8x16x16. The pinned Blade probe and WGSL kernel path accept only square
+8x8x8 or 16x16x16 tiles, so Meganeura reports no usable cooperative tiles and
+uses scalar kernels even under the accelerated policy. This is a stack shape
+limitation, not missing matrix hardware or a setup failure. Rectangular-tile
+support would benefit the accelerated path; it would not make f16 operands
+eligible for the strict contract.
+
 On the Radeon 780M configuration previously reported in
 [issue #61](https://github.com/kvark/inferena/issues/61), retain the needed
 runtime workarounds:
@@ -338,7 +346,11 @@ pass against PyTorch on Meganeura `71c202c`. Candidate qualification exposed an
 RMSNorm fusion bug; merged fix `dbb4364` has the identical source tree to `c74ea82`,
 which passes strict and accelerated full-model SmolLM2 checks with every formerly
 invalid candidate now qualifying. Its focused GPU regressions pass on both the
-5070 and B570, and upstream CI passes. Full paired B570 qualification is pending.
+5070 and B570, and upstream CI passes. At Inferena `028a414`, all ten B570
+model/precision pairs pass against GPU PyTorch on the merged pin. Six strict
+StableDiffusion training alternatives exceed the full-gradient gate and are
+discarded; the selected program passes. No accelerated candidates are rejected.
+These are qualification runs, not a new publication timing cohort.
 
 A same-pin strict SmolLM2 pilot measured staged output readback and single-pass
 gradient checking: inference qualification fell from 38.4 to 4.7 seconds while

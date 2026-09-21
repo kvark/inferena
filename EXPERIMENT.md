@@ -2,12 +2,13 @@
 
 Use branch `experiment/p3hpc-cuda-graphs`. Meganeura is pinned to merged
 `dbb43648b31237409075bbd3fa077ce06ee510bc`. Protocol
-`p3hpc-paired-campaign-v10` uses calibrated Meganeura construction, not just
-kernel tuning after a fixed graph has been built. Workloads, arithmetic
-classes, PyTorch execution settings and numerical thresholds are unchanged.
-Gradient norms now use original parameter names on both sides; PyTorch no
-longer combines gate/up entries to match one particular native packing. Do not
-combine this revision with the previous cohort or relabel its records.
+`p3hpc-paired-campaign-v11` keeps calibrated e-graph construction and removes
+the two-second per-program kernel cap. Kernel comparisons now use the remaining
+shared 60-second session budget. Both engines also run each phase's workload
+for at least two seconds and five calls before retaining samples. Workloads,
+arithmetic classes, PyTorch compilation/replay settings and numerical thresholds
+are unchanged. Do not combine this revision with the previous cohort or relabel
+its records.
 
 **Collection candidate: qualify every backend before launching the common
 cohort or renting H100 again.** Previous acceptance results do not qualify
@@ -87,7 +88,8 @@ matches or a different reference GPU stop the run. Do not run both collectors
 together. Avoid host suspension, competing GPU work and profiling.
 
 Defaults collect five models, strict and accelerated arithmetic, three fresh
-processes per condition, five warmups and twenty samples per phase:
+processes per condition, at least five warmup calls and two seconds of actual
+workload execution, then twenty samples per phase:
 **30 paired processes per device**, not the former 90 CUDA pairs. Results go
 to a new `../inferena-results/<host>-<UTC>-<source>/` directory outside Git.
 Copy that entire directory, including `campaign.json`, logs and compilation
@@ -153,10 +155,13 @@ and submission chunking; applicable cached-attention plans also explore splits.
 Large graphs search one verified repeated region. Missing/unsupported regions,
 extraction truncation and rejected candidates are recorded, not hidden.
 
-Each program receives up to **2 seconds of private kernel search**, with no
-class-count cutoff and **1 GiB maximum scratch**. Completed comparisons are
-reused across programs. This interleaves physical choices with logical forms
-instead of exhausting the total budget on the first form. The kernel domain
+Private kernel search uses the **remaining shared session budget**, with no
+separate two-second slice, no class-count cutoff and **1 GiB maximum scratch**.
+The ordinary e-graph extraction is tuned first; remaining time explores graph
+and physical alternatives. Completed kernel comparisons are reused across
+programs. Search can still end before every class or graph is explored, but
+short candidate slices no longer repeatedly interrupt costly qualification
+before later kernel classes are reached. The kernel domain
 includes scalar matmul/convolution shapes, legal native-f32 cooperative tiles,
 GEMV widths/reductions and reduction kernels. Reduced-input cooperative paths
 remain available under the accelerated arithmetic contract, but are not an
@@ -181,6 +186,16 @@ accelerated gradients have the separate 1% whole-gradient tolerance. The outer
 PyTorch comparison remains an independent gate. No optimizer update is part of
 these workloads. Construction measurements are not publication samples; the
 selected session is warmed up and measured again afterwards.
+
+Both engines warm up with the actual phase workload until **both** five calls
+and two seconds have completed. Actual warmup counts and elapsed seconds are
+retained for each phase and checked by the collector. This addresses observed
+post-construction timing drift; it does not guarantee thermal equilibrium or
+constant clocks. There is no CPU busy-loop priming, forced clock setting,
+adaptive selection of a favorable window, or discarded measurement sample.
+Do not suspend the host or run competing work. Keep the same power policy
+throughout a campaign. Search timings remain separate from these held-out
+publication samples.
 
 Receipts retain actual limits, every trial, kernel coverage/decisions, selected
 program, qualification coverage, cooperative policy and time breakdowns.

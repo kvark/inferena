@@ -218,7 +218,10 @@ class CampaignTest(unittest.TestCase):
             "status": "ok", "benchmark_rev": "source", "gpu_name": args.gpu,
             "validation": {"comparison_performed": True, "forward_valid": True,
                            "training_valid": True, "reference_framework": "pytorch"},
-            "protocol": {"training_requested": True, "diagnostic": False, "warmup_runs": 5},
+            "protocol": {"name": "inferena-paper-v2", "training_requested": True,
+                         "diagnostic": False, "warmup_runs": 5, "warmup_seconds": 2.0,
+                         "warmup": {phase: {"runs": 5, "seconds": 2.1}
+                                    for phase in ("inference", "latency", "training")}},
             "timing_samples_ms": {phase: [1.0] for phase in ("inference", "latency", "training")},
             "precision": {"comparison_class": "strict-f32", "reduced_precision_allowed": False,
                           "cooperative_matrix_policy": "NativeF32",
@@ -226,7 +229,7 @@ class CampaignTest(unittest.TestCase):
                           "f16_cooperative_matrix_permitted": False},
         }
         tuning = {"scope": "All", "max_classes": 2 * sys.maxsize + 1,
-                  "max_time": {"secs": 2, "nanos": 0}, "max_scratch_bytes": TUNE_SCRATCH_BYTES}
+                  "max_time": {"secs": 60, "nanos": 0}, "max_scratch_bytes": TUNE_SCRATCH_BYTES}
         mg = {**copy.deepcopy(base), "framework": "meganeura", "optimizer": {
             "measured_construction": True, "mode": "egglog-outlined", "sessions": [{
                 "mode": mode, "cooperative_matrix_policy": "NativeF32", "search": {
@@ -246,6 +249,7 @@ class CampaignTest(unittest.TestCase):
             } for mode in ("Inference", "Training")],
         }}
         pt = {**copy.deepcopy(base), "framework": "pytorch", "backend": "CUDA",
+              "protocol": {**copy.deepcopy(base["protocol"]), "name": "inferena-graph-replay-v5"},
               "torch_version": TORCH_VERSION,
               "environment": {"torch_git_version": TORCH_REVISION, "python_version": PYTHON_VERSION,
                               "triton_backend": "nvidia"},
@@ -269,11 +273,16 @@ class CampaignTest(unittest.TestCase):
         check = lambda records: check_pair(records, args, "default", True, 1, "source", precision="strict")
         check([mg, pt])
         for engine, path, wrong in (
+            (0, ("protocol", "warmup_seconds"), 0),
+            (1, ("protocol", "warmup", "inference", "seconds"), 1.9),
+            (1, ("protocol", "warmup", "latency", "runs"), 4),
+            (0, ("protocol", "name"), "inferena-paper-v1"),
             (0, ("optimizer", "measured_construction"), False),
             (0, ("precision", "cooperative_matrix_policy"), "Disabled"),
             (0, ("precision", "f16_cooperative_matrix_permitted"), True),
             (0, ("optimizer", "sessions"), []),
             (0, ("optimizer", "sessions", 0, "search", "options", "tuning", "max_classes"), 8),
+            (0, ("optimizer", "sessions", 0, "search", "options", "tuning", "max_time"), {"secs": 2, "nanos": 0}),
             (0, ("optimizer", "sessions", 0, "search", "trials", 0, "kernel_tuning", "visited_classes"), 0),
             (0, ("optimizer", "sessions", 0, "search", "trials", 0, "outcome", "qualified"), False),
             (0, ("optimizer", "sessions", 1, "qualification", "gradient_elements"), 0),
@@ -294,6 +303,17 @@ class CampaignTest(unittest.TestCase):
             target[path[-1]] = wrong
             with self.subTest(path=path), self.assertRaises(ValueError):
                 check(records)
+
+        from bench import _measure_call
+        for duration, expected_runs in ((0.125, 16), (1.0, 5)):
+            clock = [0.0]
+            def step():
+                clock[0] += duration
+            with patch("bench.time.perf_counter", side_effect=lambda: clock[0]), \
+                 patch("bench.synchronize"):
+                _, samples, warmup = _measure_call(step, 5, 3, "cpu", "inference")
+            self.assertEqual(warmup, {"runs": expected_runs, "seconds": expected_runs * duration})
+            self.assertEqual(samples, [duration * 1000] * 3)
 
     def test_compilation_watchdog_preserves_failure_and_kills_workers(self):
         directory = Path(__file__).resolve().parent

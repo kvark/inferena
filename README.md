@@ -210,7 +210,7 @@ collection revision on each machine. It prepares missing pinned 135M weights,
 or verifies/adopts an exact legacy cache, detects the reference backend and
 matching native GPU, and validates all five common models in both precision
 classes inside three fresh-process measurement replicates
-per condition (5 warmups, 20 samples). No CPU/eager fallback, automatic model
+per condition (at least 5 warmup calls and 2 seconds, then 20 samples). No CPU/eager fallback, automatic model
 exclusion, discarded sample, or retry is allowed. Strict gradients must pass
 the 5% gate in every process. Accelerated gradients retain every sample under
 a 10% safety ceiling, then require the median cross-engine error to remain

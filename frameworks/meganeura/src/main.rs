@@ -17,6 +17,8 @@ thread_local! {
 
 mod qualification;
 
+const WARMUP_TIME: Duration = Duration::from_secs(2);
+
 fn build_session(graph: &Graph, mode: Mode, initialize: impl Fn(&mut Session)) -> Session {
     let mut config = session_config();
     config.mode = mode;
@@ -55,7 +57,7 @@ fn build_session(graph: &Graph, mode: Mode, initialize: impl Fn(&mut Session)) -
             max_plan_bytes: ((memory.budget - memory.usage) / 4 * 3) as usize,
             tuning: TuneOptions {
                 max_classes: usize::MAX,
-                max_time: Duration::from_secs_f64(seconds.min(2.0)),
+                max_time: Duration::from_secs_f64(seconds),
                 max_scratch_bytes: 1024 * 1024 * 1024,
                 ..TuneOptions::default()
             },
@@ -256,6 +258,7 @@ struct BenchStats {
     median_ms: f64,
     p25_ms: f64,
     p75_ms: f64,
+    warmup: serde_json::Value,
 }
 
 fn benchmark_counts() -> (usize, usize) {
@@ -283,7 +286,7 @@ fn quantile(sorted: &[f64], q: f64) -> f64 {
 }
 
 impl BenchStats {
-    fn from_samples(samples_ms: Vec<f64>) -> Self {
+    fn from_samples(samples_ms: Vec<f64>, warmup: serde_json::Value) -> Self {
         let mut sorted = samples_ms.clone();
         sorted.sort_by(f64::total_cmp);
         Self {
@@ -291,6 +294,7 @@ impl BenchStats {
             p25_ms: quantile(&sorted, 0.25),
             p75_ms: quantile(&sorted, 0.75),
             samples_ms,
+            warmup,
         }
     }
 }
@@ -385,11 +389,18 @@ fn bench_session(
 ) -> BenchStats {
     let (warmups, samples) = benchmark_counts();
     let warmup_range = nsys_range(&format!("meganeura/{phase}/warmup"));
-    for _ in 0..warmups {
+    let warmup_start = Instant::now();
+    let mut warmup_runs = 0;
+    while warmup_runs < warmups || warmup_start.elapsed() < WARMUP_TIME {
         set_inputs(session);
         session.step();
         session.wait();
+        warmup_runs += 1;
     }
+    let warmup = serde_json::json!({
+        "runs": warmup_runs,
+        "seconds": warmup_start.elapsed().as_secs_f64(),
+    });
     drop(warmup_range);
     let _measure_range = nsys_range(&format!("meganeura/{phase}/measure"));
     let mut samples_ms = Vec::with_capacity(samples);
@@ -405,7 +416,7 @@ fn bench_session(
         drop(wait_range);
         samples_ms.push(t0.elapsed().as_secs_f64() * 1000.0);
     }
-    BenchStats::from_samples(samples_ms)
+    BenchStats::from_samples(samples_ms, warmup)
 }
 
 fn capture_gap_profile(
@@ -478,7 +489,7 @@ fn capture_gap_profile(
             "mode": std::env::var("MEGANEURA_OPTIMIZER").unwrap_or_else(|_| "egglog-outlined".to_string()),
             "extraction_cost": std::env::var("MEGANEURA_EGRAPH_COST").unwrap_or_else(|_| "tensor-traffic".to_string()),
         },
-        "benchmark_protocol": "inferena-paper-v1",
+        "benchmark_protocol": "inferena-paper-v2",
         "normal_benchmark": {
             "samples_ms": &benchmark.samples_ms,
             "median_ms": benchmark.median_ms,
@@ -1037,8 +1048,14 @@ fn emit_result(
         "backend": backend,
         "environment": environment,
         "protocol": {
-            "name": "inferena-paper-v1",
+            "name": "inferena-paper-v2",
             "warmup_runs": warmup_runs,
+            "warmup_seconds": WARMUP_TIME.as_secs_f64(),
+            "warmup": {
+                "inference": forward.warmup,
+                "latency": latency.warmup,
+                "training": training.map(|stats| &stats.warmup),
+            },
             "measurement_runs": measurement_runs,
             "statistic": "median",
             "training_requested": training.is_some(),

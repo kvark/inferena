@@ -1072,12 +1072,18 @@ def _timing_summary(samples):
     }
 
 
+WARMUP_SECONDS = 2.0
+
+
 def _measure_call(fn, warmup_runs: int, measurement_runs: int, device, phase, before=None):
     last = None
     samples = []
+    warmup = None
     for stage, count in (("warmup", warmup_runs), ("measure", measurement_runs)):
         with nsys_range(f"pytorch/{phase}/{stage}"):
-            for _ in range(count):
+            stage_start = time.perf_counter()
+            runs = 0
+            while runs < count or stage == "warmup" and time.perf_counter() - stage_start < WARMUP_SECONDS:
                 if before is not None:
                     before()
                 synchronize(device)
@@ -1088,7 +1094,10 @@ def _measure_call(fn, warmup_runs: int, measurement_runs: int, device, phase, be
                     elapsed = (time.perf_counter() - start) * 1000.0
                 if stage == "measure":
                     samples.append(elapsed)
-    return last, samples
+                runs += 1
+            if stage == "warmup":
+                warmup = {"runs": runs, "seconds": time.perf_counter() - stage_start}
+    return last, samples, warmup
 
 
 ALLOCATOR_MEMORY_BASIS = "caching-allocator peak allocated bytes for the phase"
@@ -1481,7 +1490,7 @@ def _bench(model_name, spec, dev, stream):
     }
 
     print(
-        f"[pytorch] inferena-graph-replay-v4: {precision_mode}, {warmup_runs} warmups, "
+        f"[pytorch] inferena-graph-replay-v5: {precision_mode}, at least {warmup_runs} warmups / {WARMUP_SECONDS}s, "
         f"{measurement_runs} samples",
         file=sys.stderr,
     )
@@ -1571,9 +1580,10 @@ def _bench(model_name, spec, dev, stream):
         return fn
 
     phase_memory = {}
+    phase_warmup = {}
     inference_call = prepare_phase("inference", inference_call)
     _reset_peak_memory(dev)
-    inference_outputs, inference_samples = _measure_call(
+    inference_outputs, inference_samples, phase_warmup["inference"] = _measure_call(
         inference_call, warmup_runs, measurement_runs, dev, "inference"
     )
     phase_memory["inference"] = _phase_memory(dev)
@@ -1590,7 +1600,7 @@ def _bench(model_name, spec, dev, stream):
     if training_requested:
         train_call = prepare_phase("training", train_call, model)
         _reset_peak_memory(dev)
-        _, training_samples = _measure_call(
+        _, training_samples, phase_warmup["training"] = _measure_call(
             train_call, warmup_runs, measurement_runs, dev, "training",
             before=None if use_graphs else lambda: model.zero_grad(set_to_none=True),
         )
@@ -1615,7 +1625,7 @@ def _bench(model_name, spec, dev, stream):
 
     no_grad_latency = prepare_phase("latency", no_grad_latency)
     _reset_peak_memory(dev)
-    _, latency_samples = _measure_call(
+    _, latency_samples, phase_warmup["latency"] = _measure_call(
         no_grad_latency, warmup_runs, measurement_runs, dev, "latency"
     )
     phase_memory["latency"] = _phase_memory(dev)
@@ -1738,8 +1748,10 @@ def _bench(model_name, spec, dev, stream):
         "execution": execution,
         "profile_artifacts": profiles,
         "protocol": {
-            "name": "inferena-graph-replay-v4",
+            "name": "inferena-graph-replay-v5",
             "warmup_runs": warmup_runs,
+            "warmup_seconds": WARMUP_SECONDS,
+            "warmup": phase_warmup,
             "measurement_runs": measurement_runs,
             "statistic": "median",
             "training_requested": training_requested,

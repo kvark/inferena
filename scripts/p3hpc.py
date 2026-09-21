@@ -32,6 +32,7 @@ ACCELERATED_SAMPLE_LIMIT = 0.10
 TUNE_SECONDS = 60.0
 TUNE_SCRATCH_BYTES = 1024**3
 COMPILE_SECONDS = 120.0
+WARMUP_SECONDS = 2.0
 SDPA_BACKENDS = {"MATH", "FLASH_ATTENTION", "EFFICIENT_ATTENTION", "CUDNN_ATTENTION", "OVERRIDEABLE"}
 
 
@@ -135,7 +136,7 @@ def check_native_search(session, seconds):
             or options["max_plan_bytes"] != (memory["device_budget_bytes"] - memory["device_usage_bytes"]) // 4 * 3
             or options["max_plan_bytes"] <= 0
             or tuning["scope"] != "All" or tuning["max_classes"] != 2 * sys.maxsize + 1
-            or duration_seconds(tuning["max_time"]) != min(seconds, 2.0)
+            or duration_seconds(tuning["max_time"]) != seconds
             or tuning["max_scratch_bytes"] != TUNE_SCRATCH_BYTES):
         raise ValueError("native construction limits differ from the declared policy")
     trials = search["trials"]
@@ -151,7 +152,7 @@ def check_native_search(session, seconds):
         if (kernel["options"]["scope"] != "All"
                 or kernel["options"]["max_classes"] != tuning["max_classes"]
                 or kernel["options"]["max_scratch_bytes"] != TUNE_SCRATCH_BYTES
-                or not 0 <= duration_seconds(kernel["options"]["max_time"]) <= min(seconds, 2.0)
+                or not 0 <= duration_seconds(kernel["options"]["max_time"]) <= seconds
                 or kernel["class_limit_reached"]
                 or not 0 <= kernel["visited_classes"] <= kernel["eligible_classes"]
                 or kernel["visited_classes"] < kernel["eligible_classes"] and not kernel["time_budget_exhausted"]):
@@ -195,6 +196,16 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
             raise ValueError("source changed during collection")
         if record["protocol"]["warmup_runs"] != 5:
             raise ValueError("unexpected warmup count")
+        protocol = record["protocol"]
+        expected = "inferena-paper-v2" if engine == "meganeura" else "inferena-graph-replay-v5"
+        if protocol.get("name") != expected or protocol.get("warmup_seconds") != WARMUP_SECONDS:
+            raise ValueError("runner did not declare the workload warmup policy")
+        for phase in phases:
+            warmup = protocol.get("warmup", {}).get(phase, {})
+            seconds = warmup.get("seconds", 0)
+            if (warmup.get("runs", 0) < 5 or not math.isfinite(seconds)
+                    or seconds < WARMUP_SECONDS):
+                raise ValueError(f"{engine} {phase} did not complete its workload warmup")
         for phase in phases:
             samples = record["timing_samples_ms"][phase]
             if len(samples) != count or any(not math.isfinite(x) or x <= 0 for x in samples):
@@ -450,7 +461,7 @@ def main():
                INFERENA_REQUIRE_LOCAL_WEIGHTS="1", INFERENA_TORCH_BACKEND=args.backend)
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v10", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v11", "source": revision,
         "model_revisions": {name: SMOLLM2_REVISIONS[name] for name in args.models if name in SMOLLM2_REVISIONS},
         "meganeura": dependency, "python": sys.version, "packages": packages,
         "torch": {"version": torch.__version__, "git_version": torch.version.git_version,
@@ -459,11 +470,12 @@ def main():
         "native_policy": {"measured_construction": True, "optimizer": "egglog-outlined",
                           "scope": "All", "class_limit": None,
                           "max_scratch_bytes": TUNE_SCRATCH_BYTES,
-                          "kernel_seconds_per_program": min(args.tune_seconds, 2.0),
+                          "kernel_seconds_per_program": args.tune_seconds,
                           "max_graphs": 4, "max_programs": 64, "plan_fraction_of_available": 0.75,
                           "qualification": "fixed-full-tensor-v4",
                           "search_seconds_per_session": args.tune_seconds, "strict_coop": "NativeF32"},
         "reference_compile_seconds": args.compile_seconds,
+        "warmup": {"minimum_runs": 5, "minimum_seconds": WARMUP_SECONDS},
         "reference_sdpa_policy": "math" if args.backend == "xpu" else "auto",
         "reference_conditions": {
             "declared": [{"mode": mode, "graph_replay": graphs}

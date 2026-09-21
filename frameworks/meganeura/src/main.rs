@@ -374,11 +374,15 @@ fn bench_session(
     set_inputs: &dyn Fn(&mut meganeura::Session),
 ) -> BenchStats {
     let (warmups, samples) = benchmark_counts();
+    let static_inputs = std::env::var_os("GAP_STATIC_INPUTS").is_some();
+    set_inputs(session);
     let warmup_range = nsys_range(&format!("meganeura/{phase}/warmup"));
     let warmup_start = Instant::now();
     let mut warmup_runs = 0;
     while warmup_runs < warmups || warmup_start.elapsed() < WARMUP_TIME {
-        set_inputs(session);
+        if !static_inputs {
+            set_inputs(session);
+        }
         session.step();
         session.wait();
         warmup_runs += 1;
@@ -393,7 +397,9 @@ fn bench_session(
     let mut samples_ms = Vec::with_capacity(samples);
     for _ in 0..samples {
         let _sample_range = nsys_range("meganeura/sample");
-        set_inputs(session);
+        if !static_inputs {
+            set_inputs(session);
+        }
         let t0 = Instant::now();
         let step_range = nsys_range("meganeura/step");
         session.step();

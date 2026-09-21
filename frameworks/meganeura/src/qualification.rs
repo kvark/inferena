@@ -33,22 +33,16 @@ pub fn gradients(session: &Session) -> Result<BTreeMap<String, Vec<f32>>, String
         }
         Ok(())
     };
-    let parameters: Vec<_> = plan
-        .param_buffers
-        .iter()
-        .filter_map(|&(ref name, parameter)| {
-            let &(_, gradient) = plan
-                .param_grad_pairs
-                .iter()
-                .find(|entry| entry.0 == parameter)?;
-            Some((name, parameter, gradient))
-        })
-        .collect();
-    let buffers: Vec<_> = parameters.iter().map(|entry| entry.2).collect();
-    for ((name, parameter, _), mut values) in
-        parameters.into_iter().zip(session.read_buffers(&buffers))
-    {
-        values.truncate(session.param_size(name).unwrap());
+    for &(ref name, parameter) in &plan.param_buffers {
+        let Some(&(_, gradient)) = plan
+            .param_grad_pairs
+            .iter()
+            .find(|entry| entry.0 == parameter)
+        else {
+            continue;
+        };
+        let mut values = vec![0.0; session.param_size(name).unwrap()];
+        session.read_buffer(gradient, &mut values);
         if let Some((_, sources, transform)) = plan
             .derived_params
             .iter()

@@ -14,6 +14,13 @@ its records.
 cohort or renting H100 again.** Previous acceptance results do not qualify
 the updated optimizer. Linux success does not certify macOS/ROCm/Windows.
 
+**Collection hold (September 21):** the 5070 passed all ten v11 conditions,
+but B570 stopped on strict StableDiffusion training: private kernel choices
+passed their isolated checks and then failed full-gradient qualification.
+The current engine aborts when that happens to its first program. A native
+rollback fix is being qualified; do not launch the common cohort until it is
+merged, pinned here and qualified. No tolerance is being relaxed.
+
 ## What to run
 
 First qualify the candidate on macOS, ROCm and Windows, using an existing

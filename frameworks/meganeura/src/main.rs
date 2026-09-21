@@ -924,6 +924,7 @@ fn kernel_release() -> Option<String> {
 fn environment_json(session: &meganeura::Session) -> serde_json::Value {
     let information = session.device_information();
     let cooperative = session.context().capabilities().cooperative_matrix;
+    let square = meganeura::runtime::auto_tune(&session.context(), 0).coop_caps;
     // Match the enumerated device against the one this context selected, so
     // the row carries a device identifier as well as a marketing name.
     let device_id = session
@@ -941,8 +942,11 @@ fn environment_json(session: &meganeura::Session) -> serde_json::Value {
         "gpu_driver_info": information.driver_info,
         "gpu_software_emulated": information.is_software_emulated,
         "gpu_device_id": device_id,
-        "cooperative_f32_tile": cooperative.f32_tile,
-        "cooperative_f16_tile": cooperative.f16_tile,
+        "cooperative_f32_tile": square.f32_tile,
+        "cooperative_f16_tile": square.f16_tile,
+        "cooperative_f32_shapes": cooperative.f32,
+        "cooperative_f16_shapes": cooperative.f16,
+        "subgroup_size": cooperative.subgroup_size,
         "gpu_device_local_budget_bytes": session
             .device_memory_stats()
             .map(|stats| stats.budget_bytes),

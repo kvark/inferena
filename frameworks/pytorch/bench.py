@@ -323,7 +323,7 @@ class ExpertLayer(nn.Module):
         self.mlp = SwiGLU(dim, intermediate)
 
     def forward(self, x, vlm_kv):
-        kv_input = vlm_kv if self.is_cross_attention else x
+        kv_input = vlm_kv if self.is_cross_attention else None
         x = x + self.self_attn(
             self.input_layernorm(x),
             kv_input,

@@ -25,6 +25,24 @@ from p3hpc import (MODELS, PYTHON_VERSION, TORCH_REVISION, TORCH_VERSION, TUNE_S
 
 
 class CampaignTest(unittest.TestCase):
+    def test_smolvla_attention_uses_normalized_self_keys_and_external_cross_keys(self):
+        from bench import ExpertLayer
+
+        x = torch.arange(24, dtype=torch.float32).reshape(1, 3, 8) / 7
+        context = torch.arange(8, dtype=torch.float32).reshape(1, 2, 4) / 3
+        for cross in (False, True):
+            layer = ExpertLayer(8, 4, 16, 2, 1, 4, cross)
+            normalized = layer.input_layernorm(x)
+            residual = x + layer.self_attn(
+                normalized, context if cross else normalized, causal=not cross)
+            expected = residual + layer.mlp(layer.post_attention_layernorm(residual))
+            actual = layer(x, context)
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+            actual_gradients = torch.autograd.grad(actual.sum(), tuple(layer.parameters()))
+            expected_gradients = torch.autograd.grad(expected.sum(), tuple(layer.parameters()))
+            for actual_gradient, expected_gradient in zip(actual_gradients, expected_gradients):
+                torch.testing.assert_close(actual_gradient, expected_gradient, rtol=0, atol=0)
+
     def test_synthetic_parameters_match_native_layout_without_low_rank_weights(self):
         from bench import (_INIT_AMPLITUDE, _parameter_values, _name_seeded_init,
                            _transposed_init, _sd_parameter_name, _smolvla_parameter_name)

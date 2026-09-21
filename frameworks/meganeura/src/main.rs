@@ -15,6 +15,7 @@ thread_local! {
     static SESSION_PREPARATION: RefCell<Vec<serde_json::Value>> = const { RefCell::new(Vec::new()) };
 }
 
+mod graphics;
 mod initialization;
 mod qualification;
 
@@ -387,6 +388,7 @@ fn bench_session(
         "seconds": warmup_start.elapsed().as_secs_f64(),
     });
     drop(warmup_range);
+    graphics::start_phase(phase);
     let _measure_range = nsys_range(&format!("meganeura/{phase}/measure"));
     let mut samples_ms = Vec::with_capacity(samples);
     for _ in 0..samples {

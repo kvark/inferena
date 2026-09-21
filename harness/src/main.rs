@@ -5,9 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Frozen workload/validation contract; this branch explicitly versions the
-/// PyTorch execution experiment below without relabelling Meganeura's runner.
-pub const PAPER_PROTOCOL: &str = "inferena-paper-v2";
+/// Workload/validation contract; the PyTorch execution protocol is versioned separately.
+pub const PAPER_PROTOCOL: &str = "inferena-paper-v3";
 
 /// Result produced by each framework benchmark runner.
 /// Every runner must print exactly one JSON object matching this schema to stdout.
@@ -620,7 +619,7 @@ fn run_framework(
         Ok(r) => {
             if matches!(framework, "pytorch" | "meganeura") {
                 let expected_protocol = if framework == "pytorch" {
-                    "inferena-graph-replay-v5"
+                    "inferena-graph-replay-v6"
                 } else {
                     PAPER_PROTOCOL
                 };

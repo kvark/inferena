@@ -25,6 +25,37 @@ from p3hpc import (MODELS, PYTHON_VERSION, TORCH_REVISION, TORCH_VERSION, TUNE_S
 
 
 class CampaignTest(unittest.TestCase):
+    def test_synthetic_parameters_match_native_layout_without_low_rank_weights(self):
+        from bench import (_INIT_AMPLITUDE, _parameter_values, _name_seeded_init,
+                           _transposed_init, _sd_parameter_name, _smolvla_parameter_name)
+
+        name = "time_embed.0.weight"
+        values = _parameter_values(name, 8)
+        # Shared with Rust's synthetic_parameter_bits test, including u32 overflow.
+        self.assertEqual(values.view(torch.uint32).tolist(), [
+            0x3b10bfaf, 0xbb65c670, 0x3adfd0cc, 0xbb06e742,
+            0x3b887a65, 0x3c9f5be6, 0xbcb7f94b, 0x3cafdd01,
+        ])
+        self.assertTrue(torch.equal(_parameter_values(name, 8, _INIT_AMPLITUDE * 0.5), values * 0.5))
+        self.assertFalse(torch.equal(values, _parameter_values("time_embed.1.weight", 8)))
+        self.assertEqual(_parameter_values("empty", 0).numel(), 0)
+        for canonical in (
+            _sd_parameter_name("encoder_attn.0.self_attn.q_proj.weight"),
+            _smolvla_parameter_name("layers.0.self_attn.q_proj.weight"),
+            "fc.weight", "layers.0.fc1.weight",
+        ):
+            native = _parameter_values(canonical, 32 * 64).reshape(32, 64)
+            ordinary = torch.empty_like(native)
+            transposed = torch.empty(64, 32)
+            _name_seeded_init(ordinary, canonical)
+            _transposed_init(transposed, canonical)
+            self.assertTrue(torch.equal(ordinary, native))
+            self.assertTrue(torch.equal(transposed.T, native))
+            # A sinusoid reshaped as a matrix has rank <= 2 in exact arithmetic.
+            energy = torch.linalg.svdvals(native.double()).square()
+            self.assertLess(float(energy[:2].sum() / energy.sum()), 0.25)
+            self.assertAlmostEqual(float(native.square().mean()), 0.02**2 / 2, delta=2e-5)
+
     def test_common_source_with_platform_specific_builds(self):
         # Full-vector bounds admit cancellation noise, not corrupt/stale data.
         reference = torch.tensor([1.0, -1.0, 0.0])
@@ -218,7 +249,8 @@ class CampaignTest(unittest.TestCase):
             "status": "ok", "benchmark_rev": "source", "gpu_name": args.gpu,
             "validation": {"comparison_performed": True, "forward_valid": True,
                            "training_valid": True, "reference_framework": "pytorch"},
-            "protocol": {"name": "inferena-paper-v2", "training_requested": True,
+            "protocol": {"name": "inferena-paper-v3", "training_requested": True,
+                         "synthetic_parameter_init": "name-index-uniform-v1",
                          "diagnostic": False, "warmup_runs": 5, "warmup_seconds": 2.0,
                          "warmup": {phase: {"runs": 5, "seconds": 2.1}
                                     for phase in ("inference", "latency", "training")}},
@@ -249,7 +281,7 @@ class CampaignTest(unittest.TestCase):
             } for mode in ("Inference", "Training")],
         }}
         pt = {**copy.deepcopy(base), "framework": "pytorch", "backend": "CUDA",
-              "protocol": {**copy.deepcopy(base["protocol"]), "name": "inferena-graph-replay-v5"},
+              "protocol": {**copy.deepcopy(base["protocol"]), "name": "inferena-graph-replay-v6"},
               "torch_version": TORCH_VERSION,
               "environment": {"torch_git_version": TORCH_REVISION, "python_version": PYTHON_VERSION,
                               "triton_backend": "nvidia"},
@@ -276,7 +308,10 @@ class CampaignTest(unittest.TestCase):
             (0, ("protocol", "warmup_seconds"), 0),
             (1, ("protocol", "warmup", "inference", "seconds"), 1.9),
             (1, ("protocol", "warmup", "latency", "runs"), 4),
-            (0, ("protocol", "name"), "inferena-paper-v1"),
+            (0, ("protocol", "name"), "inferena-paper-v2"),
+            (1, ("protocol", "name"), "inferena-graph-replay-v5"),
+            (0, ("protocol", "synthetic_parameter_init"), None),
+            (1, ("protocol", "synthetic_parameter_init"), "sinusoidal"),
             (0, ("optimizer", "measured_construction"), False),
             (0, ("precision", "cooperative_matrix_policy"), "Disabled"),
             (0, ("precision", "f16_cooperative_matrix_permitted"), True),

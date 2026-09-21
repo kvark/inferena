@@ -676,23 +676,6 @@ def _load_pretrained(model_type: str, path_or_id: str):
         return AutoModelForCausalLM.from_pretrained(path_or_id, torch_dtype=torch.float32)
 
 
-def _name_seed(name: str) -> float:
-    """Deterministic seed from parameter name — framework-independent init."""
-    h = 0
-    for c in name.encode('ascii'):
-        h = ((h * 31) + c) & 0xFFFFFFFF
-    return float(h % 10000)
-
-
-def _deterministic_init(model):
-    """Match meganeura's deterministic init: sin(j * 0.01 + i) * 0.1."""
-    with torch.no_grad():
-        for i, p in enumerate(model.parameters()):
-            n = p.numel()
-            p.copy_(torch.sin(torch.arange(n, dtype=torch.float32) * 0.01 + i).view_as(p) * 0.1)
-    return model
-
-
 # Linear weight suffixes that meganeura stores as [in, out] (transposed vs PyTorch [out, in]).
 _TRANSPOSED_SUFFIXES = frozenset([
     'q_proj.weight', 'k_proj.weight', 'v_proj.weight', 'out_proj.weight',
@@ -700,34 +683,35 @@ _TRANSPOSED_SUFFIXES = frozenset([
 ])
 
 
-_INIT_SCALE = 0.02  # Standard transformer init scale (GPT-2/LLaMA convention)
+SYNTHETIC_PARAMETER_INIT = "name-index-uniform-v1"
+# Uniform variance is amplitude²/3; preserve the old 0.02 sinusoid's RMS.
+_INIT_AMPLITUDE = 0.024494898
 
 
-def _name_seeded_init(p, name, scale=_INIT_SCALE):
+def _parameter_values(name, count, amplitude=_INIT_AMPLITUDE):
+    """Match Rust's wrapping u32 hash and exact 24-bit f32 conversion on CPU."""
+    seed = 0
+    for byte in name.encode("utf-8"):
+        seed = (seed * 31 + byte) & 0xFFFFFFFF
+    value = (torch.arange(count, dtype=torch.int64, device="cpu") & 0xFFFFFFFF) ^ seed
+    value = ((value ^ (value >> 16)) * 0x7FEB352D) & 0xFFFFFFFF
+    value = ((value ^ (value >> 15)) * 0x846CA68B) & 0xFFFFFFFF
+    value ^= value >> 16
+    return ((value >> 8).to(torch.float32) * (1.0 / 8388608.0) - 1.0) * amplitude
+
+
+def _name_seeded_init(p, name, amplitude=_INIT_AMPLITUDE):
     """Fill a parameter from its cross-framework canonical name."""
-    seed = _name_seed(name)
-    n = p.numel()
-    p.copy_(
-        torch.sin(
-            torch.arange(n, dtype=torch.float32) * 0.01 + seed
-        ).view_as(p)
-        * scale
-    )
+    p.copy_(_parameter_values(name, p.numel(), amplitude).view_as(p))
 
 
-def _transposed_init(p, name, scale=_INIT_SCALE):
+def _transposed_init(p, name, amplitude=_INIT_AMPLITUDE):
     """Init as [in, out] (meganeura layout), store as [out, in] (PyTorch layout).
 
     Ensures x @ W_torch.T == x @ W_mega for matching forward passes.
     """
-    seed = _name_seed(name)
     out_f, in_f = p.shape
-    w = (
-        torch.sin(
-            torch.arange(in_f * out_f, dtype=torch.float32) * 0.01 + seed
-        ).view(in_f, out_f)
-        * scale
-    )
+    w = _parameter_values(name, p.numel(), amplitude).view(in_f, out_f)
     p.copy_(w.T)
 
 
@@ -805,13 +789,12 @@ def _smolvla_init(model):
 def _resnet_init(model):
     """Deterministic ResNet init matching meganeura's fused-BN approach.
 
-    Folded-BN channel biases → zero; conv/fc → name-seeded sin values.
+    Folded-BN channel biases are zero; conv/fc use name-seeded uniform values.
     FC weight uses transposed init to match meganeura's [in, out] matmul.
 
-    Scale 0.01 (not 0.1) prevents activation explosion through 50+ layers
-    with identity BN while preserving a non-trivial residual path.
+    Half amplitude preserves the lower RMS used with identity BN.
     """
-    scale = 0.01
+    amplitude = _INIT_AMPLITUDE * 0.5
     with torch.no_grad():
         for name, p in model.named_parameters():
             if (
@@ -821,14 +804,9 @@ def _resnet_init(model):
             ):
                 p.zero_()
             elif name == 'fc.weight':
-                seed = _name_seed(name)
-                out_f, in_f = p.shape
-                w = torch.sin(torch.arange(in_f * out_f, dtype=torch.float32) * 0.01 + seed).view(in_f, out_f) * scale
-                p.copy_(w.T)
+                _transposed_init(p, name, amplitude)
             else:
-                seed = _name_seed(name)
-                n = p.numel()
-                p.copy_(torch.sin(torch.arange(n, dtype=torch.float32) * 0.01 + seed).view_as(p) * scale)
+                _name_seeded_init(p, name, amplitude)
     model.eval()
     return model
 
@@ -841,9 +819,9 @@ def _whisper_encoder_init(encoder):
     with torch.no_grad():
         for name, p in encoder.named_parameters():
             if any(name.endswith(s) for s in _TRANSPOSED_SUFFIXES):
-                _transposed_init(p, name, scale=0.02)
+                _transposed_init(p, name)
             else:
-                _name_seeded_init(p, name, scale=0.02)
+                _name_seeded_init(p, name)
     return encoder
 
 
@@ -866,9 +844,9 @@ def _random_init(model_type: str, model_name: str):
                 elif ".norm" in canonical and canonical.endswith(".bias"):
                     p.zero_()
                 elif p.ndim == 2 and name.endswith(".weight"):
-                    _transposed_init(p, canonical, scale=0.02)
+                    _transposed_init(p, canonical)
                 else:
-                    _name_seeded_init(p, canonical, scale=0.02)
+                    _name_seeded_init(p, canonical)
         return model
     if model_type == "smolvla":
         model = ActionExpert().to(torch.float32)
@@ -1490,7 +1468,7 @@ def _bench(model_name, spec, dev, stream):
     }
 
     print(
-        f"[pytorch] inferena-graph-replay-v5: {precision_mode}, at least {warmup_runs} warmups / {WARMUP_SECONDS}s, "
+        f"[pytorch] inferena-graph-replay-v6: {precision_mode}, at least {warmup_runs} warmups / {WARMUP_SECONDS}s, "
         f"{measurement_runs} samples",
         file=sys.stderr,
     )
@@ -1748,7 +1726,8 @@ def _bench(model_name, spec, dev, stream):
         "execution": execution,
         "profile_artifacts": profiles,
         "protocol": {
-            "name": "inferena-graph-replay-v5",
+            "name": "inferena-graph-replay-v6",
+            "synthetic_parameter_init": SYNTHETIC_PARAMETER_INIT,
             "warmup_runs": warmup_runs,
             "warmup_seconds": WARMUP_SECONDS,
             "warmup": phase_warmup,

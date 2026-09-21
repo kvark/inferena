@@ -33,6 +33,7 @@ TUNE_SECONDS = 60.0
 TUNE_SCRATCH_BYTES = 1024**3
 COMPILE_SECONDS = 120.0
 WARMUP_SECONDS = 2.0
+SYNTHETIC_PARAMETER_INIT = "name-index-uniform-v1"
 SDPA_BACKENDS = {"MATH", "FLASH_ATTENTION", "EFFICIENT_ATTENTION", "CUDNN_ATTENTION", "OVERRIDEABLE"}
 
 
@@ -197,9 +198,11 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
         if record["protocol"]["warmup_runs"] != 5:
             raise ValueError("unexpected warmup count")
         protocol = record["protocol"]
-        expected = "inferena-paper-v2" if engine == "meganeura" else "inferena-graph-replay-v5"
+        expected = "inferena-paper-v3" if engine == "meganeura" else "inferena-graph-replay-v6"
         if protocol.get("name") != expected or protocol.get("warmup_seconds") != WARMUP_SECONDS:
             raise ValueError("runner did not declare the workload warmup policy")
+        if protocol.get("synthetic_parameter_init") != SYNTHETIC_PARAMETER_INIT:
+            raise ValueError("runner did not declare the synthetic parameter policy")
         for phase in phases:
             warmup = protocol.get("warmup", {}).get(phase, {})
             seconds = warmup.get("seconds", 0)
@@ -461,7 +464,8 @@ def main():
                INFERENA_REQUIRE_LOCAL_WEIGHTS="1", INFERENA_TORCH_BACKEND=args.backend)
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v11", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v12", "source": revision,
+        "synthetic_parameter_init": SYNTHETIC_PARAMETER_INIT,
         "model_revisions": {name: SMOLLM2_REVISIONS[name] for name in args.models if name in SMOLLM2_REVISIONS},
         "meganeura": dependency, "python": sys.version, "packages": packages,
         "torch": {"version": torch.__version__, "git_version": torch.version.git_version,

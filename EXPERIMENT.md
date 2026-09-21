@@ -1,33 +1,33 @@
 # P3HPC paired collection
 
 Use branch `experiment/p3hpc-cuda-graphs`. Meganeura is pinned to merged
-`dbb43648b31237409075bbd3fa077ce06ee510bc`. Protocol
-`p3hpc-paired-campaign-v11` keeps calibrated e-graph construction and removes
-the two-second per-program kernel cap. Kernel comparisons now use the remaining
-shared 60-second session budget. Both engines also run each phase's workload
-for at least two seconds and five calls before retaining samples. Workloads,
-arithmetic classes, PyTorch compilation/replay settings and numerical thresholds
-are unchanged. Do not combine this revision with the previous cohort or relabel
-its records.
+`8f4d23025478106364d236f156c8f19c24ff3854`. Protocol
+`p3hpc-paired-campaign-v12` replaces sinusoidal synthetic parameters with matched
+deterministic pseudorandom values in both engines. Model shapes, inputs, pinned
+SmolLM2 checkpoints, arithmetic classes and numerical thresholds are unchanged.
+Calibrated e-graph construction retains v11's shared 60-second session budget,
+with no two-second per-program kernel cap. Both engines run each phase's workload
+for at least two seconds and five calls before retaining samples. PyTorch's
+compilation/replay settings are unchanged. Do not combine this revision with
+previous cohorts or relabel their records.
 
 **Collection candidate: qualify every backend before launching the common
 cohort or renting H100 again.** Previous acceptance results do not qualify
 the updated optimizer. Linux success does not certify macOS/ROCm/Windows.
 
-**Collection hold (September 21):** the 5070 passed all ten v11 conditions,
-but B570 stopped on strict StableDiffusion training: private kernel choices
-passed their isolated checks and then failed full-gradient qualification.
-The investigation traced this to nearly rank-two sinusoidal synthetic weights;
-the same small perturbations also exceed the gradient bounds in PyTorch f32.
-It separately found a mismatched GELU derivative, addressed in Meganeura #203.
-The rollback proposal is withdrawn. A matched pseudorandom initializer is under
-review; neither that fixture change nor a new engine pin is released here.
-Do not launch the common cohort yet. No tolerance is being relaxed.
+**Ready for user-run qualification (September 21):** the new initializer and
+merged GELU derivative fix in
+[Meganeura #203](https://github.com/kvark/meganeura/pull/203) are both included.
+The v12 changes have only been checked on CPU; no GPU qualification or benchmark
+has been launched.
+The v11 failure investigation found nearly rank-two sinusoidal weights, with
+strong cancellation that also exceeded the gradient bounds in PyTorch f32.
+The initializer fixes that fixture defect; #203 separately fixes the derivative.
+Neither requires rollback of tuning or weaker numerical checks.
 
 ## What to run
 
-First qualify the candidate on macOS, ROCm and Windows, using an existing
-checkout/environment:
+First qualify the candidate on each backend, using an existing checkout/environment:
 
 ```sh
 git switch experiment/p3hpc-cuda-graphs
@@ -67,7 +67,7 @@ machine. CPU PyTorch is only a correctness oracle for graphics-only qualificatio
 not a timing competitor. `--eager` avoids compiling this oracle; it does not
 disable Meganeura tuning or relax validation. Verify the exact native name with
 `cargo run --release --locked -p inferena-meganeura -- --list-devices` before
-selecting an integrated GPU. See the [qualification instructions](https://github.com/kvark/meganeura/blob/dbb43648b31237409075bbd3fa077ce06ee510bc/paper/p3hpc/QUALIFICATION.md)
+selecting an integrated GPU. See the [qualification instructions](https://github.com/kvark/meganeura/blob/8f4d23025478106364d236f156c8f19c24ff3854/paper/p3hpc/QUALIFICATION.md)
 for device disambiguation, archive lifetime and the still-pending Mendocino result.
 
 For example, the Mac qualification is:
@@ -259,9 +259,24 @@ binary builds. Do not upgrade dependencies mid-cohort.
 Missing selected SmolLM2 base checkpoints download automatically, using
 `models/smollm2-revisions.json` and SHA-256 receipts. `--offline` requires
 them already prepared. A legacy model directory is adopted only if its files
-match the pins; mismatches are not overwritten. Other workloads retain the
-source-defined deterministic initialization. Rust builds are locked and
-finish before the first pair; build parallelism defaults to one job.
+match the pins; mismatches are not overwritten.
+
+SmolVLA, StableDiffusion, ResNet-50 and Whisper-tiny use synthetic parameters
+under `name-index-uniform-v1`, recorded in both runner receipts and the campaign
+manifest. A wrapping 32-bit hash of the canonical UTF-8 parameter name is XORed
+with the flattened native-layout index and mixed with two integer multipliers.
+Its upper 24 bits map exactly to f32 in `[-1, 1)`, then scale by `0.024494898`
+(`0.012247449` for ResNet). This preserves the old sinusoid's theoretical RMS
+without its rank-two matrix structure. PyTorch transposes linear storage after
+generation; registration order and framework RNGs do not affect the values.
+StableDiffusion's identity norms and ResNet's zero folded-BN biases are unchanged.
+Inputs remain unchanged, including sinusoidal inputs. SmolLM2 loads its pinned
+weights and does not use this synthetic policy. Other framework runners on this
+experimental branch have not been migrated to the new fixture.
+
+The collector requires native `inferena-paper-v3`, PyTorch
+`inferena-graph-replay-v6` and matching initializer policies. Rust builds are
+locked and finish before the first pair; build parallelism defaults to one job.
 
 Whole-phase replay checks every output/loss tensor separately, with exact
 shapes/dtypes/participating-gradient inventory and finite values. Outputs in
@@ -365,8 +380,15 @@ failures.
 
 ## Local acceptance evidence
 
-The release build, Clippy, ten broad Rust tests and five Python campaign-contract
-tests pass locally. At Inferena `689f924`, all ten RTX 5070 model/precision pairs
+For v12, CPU checks cover shared Rust/Python f32 bit patterns, transposed storage,
+matrix rank and scale, and refusal of missing or stale initializer receipts.
+An all-model CPU audit matches all 508 canonical parameter layouts/counts and
+SHA-256 digests (144,516,216 f32 values), including the norm/bias exceptions.
+Eleven Rust tests and six Python campaign-contract tests pass, as do Clippy and
+formatting for the two collection packages. These are not GPU qualification.
+
+The following evidence predates v12 and does not qualify its changed fixture.
+At Inferena `689f924`, all ten RTX 5070 model/precision pairs
 pass against PyTorch on Meganeura `71c202c`. Candidate qualification exposed an
 RMSNorm fusion bug; merged fix `dbb4364` has the identical source tree to `c74ea82`,
 which passes strict and accelerated full-model SmolLM2 checks with every formerly

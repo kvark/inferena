@@ -15,6 +15,7 @@ thread_local! {
     static SESSION_PREPARATION: RefCell<Vec<serde_json::Value>> = const { RefCell::new(Vec::new()) };
 }
 
+mod initialization;
 mod qualification;
 
 const WARMUP_TIME: Duration = Duration::from_secs(2);
@@ -169,26 +170,10 @@ fn validation_sample(data: &[f32], count: usize) -> Vec<f64> {
         .collect()
 }
 
-/// Deterministic seed from parameter name — framework-independent init.
-fn name_seed(name: &str) -> f32 {
-    let mut h: u32 = 0;
-    for c in name.bytes() {
-        h = h.wrapping_mul(31).wrapping_add(c as u32);
-    }
-    (h % 10000) as f32
-}
-
 /// Initialize all session parameters with deterministic name-seeded values.
-///
-/// Uses `sin(j * 0.01 + name_seed(name)) * 0.02` — the 0.02 scale matches
-/// standard transformer init (GPT-2/LLaMA convention) and produces
-/// realistic activation magnitudes through deep networks.
 fn init_params(session: &mut meganeura::Session) {
     for (name, n) in qualification::source_parameters(session) {
-        let seed = name_seed(&name);
-        let data: Vec<f32> = (0..n)
-            .map(|j| (j as f32 * 0.01 + seed).sin() * 0.02)
-            .collect();
+        let data = initialization::parameter_values(&name, n, initialization::AMPLITUDE);
         session.set_parameter(&name, &data);
     }
 }
@@ -489,7 +474,7 @@ fn capture_gap_profile(
             "mode": std::env::var("MEGANEURA_OPTIMIZER").unwrap_or_else(|_| "egglog-outlined".to_string()),
             "extraction_cost": std::env::var("MEGANEURA_EGRAPH_COST").unwrap_or_else(|_| "tensor-traffic".to_string()),
         },
-        "benchmark_protocol": "inferena-paper-v2",
+        "benchmark_protocol": "inferena-paper-v3",
         "normal_benchmark": {
             "samples_ms": &benchmark.samples_ms,
             "median_ms": benchmark.median_ms,
@@ -1048,7 +1033,8 @@ fn emit_result(
         "backend": backend,
         "environment": environment,
         "protocol": {
-            "name": "inferena-paper-v2",
+            "name": "inferena-paper-v3",
+            "synthetic_parameter_init": initialization::POLICY,
             "warmup_runs": warmup_runs,
             "warmup_seconds": WARMUP_TIME.as_secs_f64(),
             "warmup": {
@@ -1151,10 +1137,7 @@ fn bench_stable_diffusion() {
             } else if name.contains(".norm") && name.ends_with(".bias") {
                 vec![0.0; n]
             } else {
-                let seed = name_seed(&name);
-                (0..n)
-                    .map(|j| (j as f32 * 0.01 + seed).sin() * 0.02)
-                    .collect()
+                initialization::parameter_values(&name, n, initialization::AMPLITUDE)
             };
             session.set_parameter(&name, &data);
         }
@@ -1325,7 +1308,7 @@ fn bench_resnet() {
     let batch: u32 = 4;
     // Small enough to prevent explosion with synthetic identity BN while
     // preserving a non-trivial residual path.
-    let scale: f32 = 0.01;
+    let amplitude = initialization::AMPLITUDE * 0.5;
 
     eprintln!("[meganeura] building ResNet inference graph...");
     let compile_start = Instant::now();
@@ -1342,10 +1325,7 @@ fn bench_resnet() {
             let data: Vec<f32> = if name.contains("fused_bias") {
                 vec![0.0; n]
             } else {
-                let seed = name_seed(&name);
-                (0..n)
-                    .map(|j| (j as f32 * 0.01 + seed).sin() * scale)
-                    .collect()
+                initialization::parameter_values(&name, n, amplitude)
             };
             session.set_parameter(&name, &data);
         }
@@ -1502,15 +1482,11 @@ fn bench_whisper() {
         for (name, n) in qualification::source_parameters(session) {
             let seed_name = name.strip_prefix(prefix).unwrap_or(&name);
             let seed_name = seed_name.replace("fused_bias", "bias");
-            let seed = name_seed(&seed_name);
-
             // All Meganeura buffers, including [in, out] linear weights
             // and per-channel convolution biases, use this native-layout
             // sequence. The PyTorch runner transposes only its [out, in]
             // linear storage.
-            let data: Vec<f32> = (0..n)
-                .map(|j| (j as f32 * 0.01 + seed).sin() * 0.02)
-                .collect();
+            let data = initialization::parameter_values(&seed_name, n, initialization::AMPLITUDE);
             session.set_parameter(&name, &data);
         }
     };

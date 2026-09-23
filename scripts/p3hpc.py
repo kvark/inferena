@@ -37,6 +37,10 @@ SYNTHETIC_PARAMETER_INIT = "name-index-uniform-v1"
 SDPA_BACKENDS = {"MATH", "FLASH_ATTENTION", "EFFICIENT_ATTENTION", "CUDNN_ATTENTION", "OVERRIDEABLE"}
 
 
+class NumericalMismatch(ValueError):
+    pass
+
+
 def gpu_matches(expected, actual):
     def normalize(name):
         return " ".join(re.sub(r"\((?:tm|r)\)|[™®]", "", name.casefold()).split())
@@ -90,6 +94,12 @@ def conditions(backend, max_autotune=False, graph_ablation=False, no_graphs=Fals
     return configs
 
 
+def reference_sdpa_policy(args, model):
+    if override := getattr(args, "sdpa", None):
+        return override
+    return "math" if args.backend == "xpu" else "auto"
+
+
 def positive_seconds(value):
     seconds = float(value)
     if not math.isfinite(seconds) or seconds <= 0:
@@ -131,8 +141,9 @@ def check_native_search(session, seconds):
     tuning = options["tuning"]
     memory = session["memory_budget"]
     if (duration_seconds(options["max_time"]) != seconds
-            or options["max_graphs"] != 4 or options["max_programs"] != 64
+            or options["max_graphs"] != 16 or options["max_programs"] != 64
             or options["warmup_runs"] != 2
+            or duration_seconds(options["warmup_time"]) != 0.25
             or memory["plan_fraction_of_available"] != 0.75
             or options["max_plan_bytes"] != (memory["device_budget_bytes"] - memory["device_usage_bytes"]) // 4 * 3
             or options["max_plan_bytes"] <= 0
@@ -168,37 +179,37 @@ def check_native_search(session, seconds):
 
 
 def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
-               replicated=False, precision=None):
-    phases = PHASES[:2] if args.inference_only else PHASES
+               replicated=False, precision=None, phases=None, oracle=False):
+    requested_phases = PHASES[:2] if args.inference_only else PHASES
+    phases = requested_phases if phases is None else tuple(phases)
+    if set(phases) - set(requested_phases):
+        raise ValueError("unrequested phase")
     by_engine = {record["framework"]: record for record in records}
     if len(records) != 2 or set(by_engine) != {"pytorch", "meganeura"}:
         raise ValueError("both engine records are required")
     for engine, record in by_engine.items():
-        if record["status"] != "ok":
+        if record["status"] not in ("ok", "partial"):
             raise ValueError(f"{engine} failed: {record.get('error', record.get('reason'))}")
+        if record["status"] == "partial" and (
+                engine != "pytorch" or record.get("execution", {}).get("failure", {}).get("kind")
+                not in ("numerical", "capture")):
+            raise ValueError("partial result lacks a classified failure")
+    if len({record["model"] for record in records}) != 1:
+        raise ValueError("engine records have different models")
     for engine, record in by_engine.items():
         validation = record["validation"]
-        gates = ("comparison_performed", "forward_valid")
-        valid = all(validation.get(key) is True for key in gates)
-        if not args.inference_only:
-            valid = valid and (
-                validation.get("training_valid") is True
-                or replicated and _replicated_candidate(record)
-            )
-        if not valid or validation.get("reference_framework") != "pytorch":
-            raise ValueError(f"{engine} failed the requested numerical gates: {validation}")
         if record["protocol"]["training_requested"] != (not args.inference_only):
             raise ValueError("unexpected training scope")
         if args.inference_only and (validation.get("training_valid") is not None or record["timings"].get("training_ms") is not None):
             raise ValueError("inference-only run claims training results")
-        if record["protocol"].get("diagnostic") is not diagnostic:
+        if record["protocol"].get("diagnostic") is not (diagnostic or oracle and engine == "pytorch"):
             raise ValueError("diagnostic and benchmark samples must not be mixed")
         if not revision.startswith(record["benchmark_rev"]):
             raise ValueError("source changed during collection")
         if record["protocol"]["warmup_runs"] != 5:
             raise ValueError("unexpected warmup count")
         protocol = record["protocol"]
-        expected = "inferena-paper-v3" if engine == "meganeura" else "inferena-graph-replay-v6"
+        expected = "inferena-paper-v3" if engine == "meganeura" else "inferena-graph-replay-v7"
         if protocol.get("name") != expected or protocol.get("warmup_seconds") != WARMUP_SECONDS:
             raise ValueError("runner did not declare the workload warmup policy")
         if protocol.get("synthetic_parameter_init") != SYNTHETIC_PARAMETER_INIT:
@@ -211,7 +222,8 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
                 raise ValueError(f"{engine} {phase} did not complete its workload warmup")
         for phase in phases:
             samples = record["timing_samples_ms"][phase]
-            if len(samples) != count or any(not math.isfinite(x) or x <= 0 for x in samples):
+            expected_count = 1 if oracle and engine == "pytorch" else count
+            if len(samples) != expected_count or any(not math.isfinite(x) or x <= 0 for x in samples):
                 raise ValueError(f"{engine} has invalid {phase} samples")
     pt, mg = by_engine["pytorch"], by_engine["meganeura"]
     check_torch_identity(pt["torch_version"], pt["environment"].get("torch_git_version"), args.torch_version)
@@ -248,11 +260,15 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
             raise ValueError("native session used the wrong cooperative policy")
         check_native_search(session, getattr(args, "tune_seconds", TUNE_SECONDS))
     execution = pt["execution"]
-    if execution["sdpa_policy"] != ("math" if args.backend == "xpu" else "auto"):
+    sdpa = "math" if oracle else reference_sdpa_policy(args, pt["model"])
+    if execution["sdpa_policy"] != sdpa:
         raise ValueError("reference attention policy differs from the declared backend configuration")
-    expected_sdpa = {"MATH"} if args.backend == "xpu" else SDPA_BACKENDS
+    expected_sdpa = {"auto": SDPA_BACKENDS, "math": {"MATH"}, "efficient": {"EFFICIENT_ATTENTION"}}[sdpa]
     if set(execution["sdpa_enabled_backends"]) != expected_sdpa:
         raise ValueError("active attention backends differ from the declared policy")
+    sdpa_compile = "eager" if mode == "eager" else "compiled"
+    if execution.get("sdpa_compile") != sdpa_compile:
+        raise ValueError("reference SDPA compilation differs from the declared model/backend policy")
     if args.backend in ("cuda", "rocm", "xpu") and execution.get("stream_policy") != "single dedicated preparation/run stream":
         raise ValueError("preparation and execution must share the declared stream policy")
     if execution["requested_mode"] != mode or execution["compiled"] != (mode != "eager"):
@@ -272,31 +288,119 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
         raise ValueError("unexpected graph configuration")
     for phase in phases:
         report = execution["graph_replay"]["phases"][phase]
-        expected = "captured-and-validated" if graphs else "not-requested"
+        expected = "captured-and-validated" if graphs else "validated-uncaptured"
         if report["status"] != expected:
             raise ValueError(f"{phase} did not execute the requested capture mode")
         if graphs:
             expected_api = "torch.xpu.XPUGraph" if args.backend == "xpu" else "torch.cuda.CUDAGraph"
             if report["api"] != expected_api:
                 raise ValueError("requested replay backend did not execute")
-            validation = report["validation"]
-            repeats = 8 if phase == "training" and pt["precision"]["reduced_precision_allowed"] else 2
-            if (validation.get("policy") != "fixed-full-tensor-v4"
-                    or validation.get("output_metric") != "per-tensor RMS and maximum absolute error"
-                    or validation.get("rtol") != 1e-4 or validation.get("atol") != 1e-6
-                    or validation.get("accelerated_gradient_rtol") != 0.01
-                    or validation.get("uncaptured_calls") != repeats + 1
-                    or validation.get("uncaptured_repeats") != repeats
-                    or validation.get("consecutive_replays") != 2):
-                raise ValueError(f"{phase} did not use the declared replay qualification policy")
+        validation = report["validation"]
+        repeats = 8 if phase == "training" and pt["precision"]["reduced_precision_allowed"] else 2
+        if (validation.get("policy") != "fixed-full-tensor-v4"
+                or validation.get("output_metric") != "per-tensor RMS and maximum absolute error"
+                or validation.get("rtol") != 1e-4 or validation.get("atol") != 1e-6
+                or validation.get("accelerated_gradient_rtol") != 0.01
+                or validation.get("uncaptured_calls") != repeats + 1
+                or validation.get("uncaptured_repeats") != repeats
+                or validation.get("consecutive_replays") != (2 if graphs else 0)):
+            raise ValueError(f"{phase} did not use the declared qualification policy")
+    for engine, record in by_engine.items():
+        validation = record["validation"]
+        valid = all(validation.get(key) is True for key in ("comparison_performed", "forward_valid"))
+        if "training" in phases:
+            valid = valid and (validation.get("training_valid") is True
+                              or replicated and _replicated_candidate(record))
+        if phases and (not valid or validation.get("reference_framework") != "pytorch"):
+            raise NumericalMismatch(f"{engine} failed the requested numerical gates: {validation}")
     return by_engine
+
+
+def assess_phases(records, args, mode, graphs, count, revision, preparation, *, precision, oracle=False):
+    """Classify numerical failures, but let missing receipts and execution faults stop collection."""
+    pair = {record["framework"]: record for record in records}
+    if len(records) != 2 or set(pair) != {"pytorch", "meganeura"}:
+        raise ValueError("both engine records are required")
+    native, reference = pair["meganeura"], pair["pytorch"]
+    if native["status"] != "ok":
+        raise ValueError(f"meganeura failed: {native.get('error', native.get('reason'))}")
+    failure = reference.get("execution", {}).get("failure") or preparation.get("qualification_failure")
+    if reference["status"] != "ok" and (
+            not failure or failure.get("kind") not in ("numerical", "capture")
+            or failure.get("phase") not in PHASES):
+        raise ValueError(f"unclassified pytorch failure: {reference.get('error', reference.get('reason'))}")
+    phases = PHASES[:2] if args.inference_only else PHASES
+    outcomes = {}
+    if reference["status"] == "error":
+        # An inference failure has no usable result. The sidecar is written
+        # only by the numerical/capture gate, never by an arbitrary exception.
+        if failure["phase"] != "inference":
+            raise ValueError("unexpected error after a completed inference phase")
+        return {phase: {"status": "failed" if phase == "inference" else "not-attempted",
+                        "failure": failure} for phase in phases}, pair
+    check_pair(records, args, mode, graphs, count, revision, phases=(), precision=precision, oracle=oracle)
+    for phase in phases:
+        report = reference["execution"]["graph_replay"]["phases"][phase]
+        if report["status"] in ("failed", "not-attempted"):
+            if not failure or reference["status"] != "partial":
+                raise ValueError("missing phase without a classified failure")
+            if (report["status"] == "failed") != (phase == failure["phase"]):
+                raise ValueError("failed phase disagrees with the failure receipt")
+            if reference["timing_samples_ms"].get(phase) is not None:
+                raise ValueError("unqualified phase claims timing samples")
+            outcomes[phase] = {"status": report["status"], "failure": failure}
+            continue
+        try:
+            check_pair(records, args, mode, graphs, count, revision, phases=(phase,),
+                       precision=precision, replicated=args.collect and not oracle, oracle=oracle)
+            outcomes[phase] = {"status": "valid"}
+        except NumericalMismatch as error:
+            outcomes[phase] = {"status": "mismatch", "error": str(error)}
+    return outcomes, pair
+
+
+def eager_diagnostic(command, env, folder, model, args, count, revision, precision):
+    """One fresh, uncaptured reference; never rewrite the failed primary pair."""
+    diagnostic = folder / "diagnostic-eager"
+    diagnostic.mkdir()
+    command = list(command)
+    for flag, value in (("-f", "pytorch"), ("--measurement-runs", "1"), ("--results-dir", str(diagnostic))):
+        command[command.index(flag) + 1] = value
+    environment = dict(env, INFERENA_TORCH_MODE="eager", INFERENA_GRAPH_REPLAY="0", INFERENA_SDPA="math",
+                       INFERENA_REFERENCE_DIAGNOSTIC="1",
+                       INFERENA_PREPARATION_REPORT=str(diagnostic / "torch-preparation.json"))
+    with (diagnostic / "runner.log").open("w", encoding="utf-8") as log:
+        result = subprocess.run(command, cwd=ROOT, env=environment, stdout=log, stderr=subprocess.STDOUT)
+    native_path = folder / f"{model}_meganeura.json"
+    reference_path = diagnostic / f"{model}_pytorch.json"
+    reference = json.loads(reference_path.read_text())
+    preparation_path = diagnostic / "torch-preparation.json"
+    preparation = json.loads(preparation_path.read_text()) if preparation_path.exists() else {}
+    if result.returncode and reference["status"] != "error":
+        raise RuntimeError(f"eager diagnostic runner failed; inspect {diagnostic / 'runner.log'}")
+    records = [json.loads(native_path.read_text()), reference]
+    if reference["status"] in ("ok", "partial"):
+        harness = ROOT / "target/release" / ("inferena.exe" if sys.platform == "win32" else "inferena")
+        records = json.loads(subprocess.check_output(
+            [str(harness), "--compare-results", str(native_path), str(reference_path)],
+            cwd=ROOT, text=True, encoding="utf-8"))
+        (diagnostic / "comparison.json").write_text(json.dumps(records, indent=2) + "\n")
+    phases, _ = assess_phases(records, args, "eager", False, count, revision, preparation,
+                              precision=precision, oracle=True)
+    return {"path": "diagnostic-eager", "command": command, "returncode": result.returncode,
+            "mode": "eager", "graph_replay": False, "sdpa": "math", "diagnostic": True,
+            "status": "valid" if all(p["status"] == "valid" for p in phases.values()) else "failed",
+            "phases": phases, "timing_substituted": False}
 
 
 def validate_replicated_gradients(groups, replicates):
     reports = []
     for (precision, model, mode, graphs), pairs in groups.items():
+        identity = {"precision": precision, "model": model, "mode": mode, "graph_replay": graphs}
         if len(pairs) != replicates:
-            raise ValueError(f"{precision}/{model}/{mode}/graph{int(graphs)} has {len(pairs)} replicates")
+            reports.append({**identity, "status": "incomplete", "valid_replicates": len(pairs),
+                            "required_replicates": replicates})
+            continue
         validations = [pair["meganeura"]["validation"] for pair in pairs]
         metrics = {
             "parameter_gradient_relative_l2": [
@@ -314,7 +418,7 @@ def validate_replicated_gradients(groups, replicates):
         )
         reports.append({
             "status": "pass" if accepted else "fail",
-            "precision": precision, "model": model, "mode": mode, "graph_replay": graphs,
+            **identity,
             "sample_limit": sample_limit, "median_limit": GRADIENT_LIMIT,
             "metrics": {
                 name: {"samples": values, "median": statistics.median(values)}
@@ -371,6 +475,8 @@ def create_parser():
     parser.add_argument("--graph-ablation", action="store_true", help="also measure the uncaptured reference")
     parser.add_argument("--no-graphs", action="store_true", help="explicitly omit whole-phase replay; recorded as an override")
     parser.add_argument("--eager", action="store_true", help="explicit eager reference; never an automatic compiler fallback")
+    parser.add_argument("--sdpa", choices=("auto", "math", "efficient"),
+                        help="override PyTorch attention for all models; default: math on XPU, auto otherwise")
     parser.add_argument("--tune-seconds", type=positive_seconds, default=TUNE_SECONDS,
                         help="Meganeura soft construction deadline per session (default: 60 s), including initialization/qualification")
     parser.add_argument("--compile-seconds", type=positive_seconds, default=COMPILE_SECONDS,
@@ -402,7 +508,7 @@ def main():
         "TORCH_LOGS", "TORCH_TRACE", "CARGO_TARGET_DIR",
         "INFERENA_TORCH_MODE", "INFERENA_GRAPH_REPLAY", "INFERENA_CUDA_GRAPHS",
         "INFERENA_TUNE_SECONDS", "INFERENA_COMPILE_SECONDS", "INFERENA_PREPARATION_REPORT", "INFERENA_BUDGET_ENFORCED",
-        "INFERENA_SDPA",
+        "INFERENA_SDPA", "INFERENA_REFERENCE_DIAGNOSTIC",
     )]
     if overrides:
         parser.error(f"remove experimental/profiling overrides: {', '.join(overrides)}")
@@ -458,13 +564,14 @@ def main():
     declared_conditions = conditions(args.backend, max_autotune=True, graph_ablation=True)
     selected_conditions = conditions(args.backend, args.max_autotune, args.graph_ablation, args.no_graphs, args.eager)
     omitted_conditions = [config for config in declared_conditions if config not in selected_conditions]
+    sdpa = {model: reference_sdpa_policy(args, model) for model in args.models}
     destination.mkdir(parents=True, exist_ok=False)
     env = dict(os.environ, PYTHON=Path(sys.executable).as_posix(), PYTHONUTF8="1", PYTHONIOENCODING="utf-8",
                INFERENA_BASH=runner_bash(), HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
                INFERENA_REQUIRE_LOCAL_WEIGHTS="1", INFERENA_TORCH_BACKEND=args.backend)
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v12", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v14", "source": revision,
         "synthetic_parameter_init": SYNTHETIC_PARAMETER_INIT,
         "model_revisions": {name: SMOLLM2_REVISIONS[name] for name in args.models if name in SMOLLM2_REVISIONS},
         "meganeura": dependency, "python": sys.version, "packages": packages,
@@ -475,12 +582,20 @@ def main():
                           "scope": "All", "class_limit": None,
                           "max_scratch_bytes": TUNE_SCRATCH_BYTES,
                           "kernel_seconds_per_program": args.tune_seconds,
-                          "max_graphs": 4, "max_programs": 64, "plan_fraction_of_available": 0.75,
+                          "max_graphs": 16, "max_programs": 64, "plan_fraction_of_available": 0.75,
+                          "warmup_pairs": 2, "warmup_seconds": 0.25,
                           "qualification": "fixed-full-tensor-v4",
                           "search_seconds_per_session": args.tune_seconds, "strict_coop": "NativeF32"},
         "reference_compile_seconds": args.compile_seconds,
         "warmup": {"minimum_runs": 5, "minimum_seconds": WARMUP_SECONDS},
-        "reference_sdpa_policy": "math" if args.backend == "xpu" else "auto",
+        "reference_sdpa_policy": sdpa,
+        "reference_sdpa_compile": {
+            model: "eager" if args.eager else "compiled"
+            for model in args.models
+        },
+        "failure_policy": {"recoverable": ["numerical", "capture", "cross-engine-mismatch"],
+                           "eager_diagnostic_attempts": 1, "eager_sdpa": "math",
+                           "timing_substitution": False, "retry_failed_primary": False},
         "reference_conditions": {
             "declared": [{"mode": mode, "graph_replay": graphs}
                          for mode, graphs in declared_conditions],
@@ -489,7 +604,7 @@ def main():
             "omitted": [{"mode": mode, "graph_replay": graphs,
                          "reason": "not selected; omission alone is not a backend failure"}
                         for mode, graphs in omitted_conditions],
-            "coverage": "explicit-reference-override" if args.no_graphs or args.eager else "primary",
+            "coverage": "explicit-reference-override" if args.no_graphs or args.eager or args.sdpa is not None else "primary",
         },
         "device_selection": {key: env[key] for key in (
             "CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "VK_ICD_FILENAMES",
@@ -527,7 +642,9 @@ def main():
               f"{'validated collection' if args.collect else 'qualification only'}", flush=True)
         stages = ([('measurement', args.replicates, 20)] if args.collect
                   else [('qualification', 1, 1)])
-        measurement_pairs = {}
+        measurement_pairs = {(precision, model, mode, graphs): []
+                             for precision in args.precisions for model in args.models
+                             for mode, graphs in selected_conditions}
         sequence = 0
         for stage, replicates, count in stages:
             for replicate in range(replicates):
@@ -552,33 +669,43 @@ def main():
                             if args.allow_integrated_gpu:
                                 command.append("--allow-integrated-gpu")
                             run = {"path": str(folder.relative_to(destination)), "command": command,
-                                   "mode": mode, "graphs": graphs,
+                                   "mode": mode, "graphs": graphs, "model": model,
+                                   "precision": precision, "replicate": replicate + 1,
                                    "preparation_policy": "native-tuned/reference-" + mode, "status": "running"}
                             manifest["runs"].append(run)
                             save()
                             print(run["path"], flush=True)
-                            with (folder / "runner.log").open("w") as log:
+                            run_env = dict(env, INFERENA_TORCH_MODE=mode,
+                                           INFERENA_SDPA=sdpa[model], INFERENA_GRAPH_REPLAY=str(int(graphs)),
+                                           MEGANEURA_TUNE="1", INFERENA_TUNE_SECONDS=str(args.tune_seconds),
+                                           INFERENA_COMPILE_SECONDS=str(args.compile_seconds),
+                                           INFERENA_PREPARATION_REPORT=str(folder / "torch-preparation.json"))
+                            with (folder / "runner.log").open("w", encoding="utf-8") as log:
                                 result = subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
-                                                        env=dict(env, INFERENA_TORCH_MODE=mode,
-                                                                 INFERENA_GRAPH_REPLAY=str(int(graphs)),
-                                                                 MEGANEURA_TUNE="1",
-                                                                 INFERENA_TUNE_SECONDS=str(args.tune_seconds),
-                                                                 INFERENA_COMPILE_SECONDS=str(args.compile_seconds),
-                                                                 INFERENA_PREPARATION_REPORT=str(folder / "torch-preparation.json")))
+                                                        env=run_env)
                             run["returncode"] = result.returncode
                             if result.returncode:
                                 raise RuntimeError(f"runner failed; inspect {folder / 'runner.log'}")
                             records = json.loads((folder / f"{model}_summary.json").read_text())
-                            pair = check_pair(
-                                records, args, mode, graphs, count, revision,
-                                replicated=args.collect, precision=precision,
-                            )
+                            preparation_path = folder / "torch-preparation.json"
+                            preparation = json.loads(preparation_path.read_text()) if preparation_path.exists() else {}
+                            phases, pair = assess_phases(records, args, mode, graphs, count, revision,
+                                                       preparation, precision=precision)
                             if not dependency["rev"].startswith(pair["meganeura"]["framework_rev"]):
                                 raise ValueError("Meganeura dependency revision changed")
                             if pair["meganeura"]["environment"].get("gpu_device_id") != native["device_id"]:
                                 raise ValueError("Meganeura ran on a different device than the preflight selected")
-                            run["status"] = "valid"
-                            if stage == "measurement":
+                            run["phases"] = phases
+                            run["status"] = ("valid" if all(p["status"] == "valid" for p in phases.values())
+                                             else "partial" if any(p["status"] == "valid" for p in phases.values())
+                                             else "failed")
+                            save()
+                            if run["status"] != "valid" and mode != "eager":
+                                run["eager_diagnostic"] = {"path": "diagnostic-eager", "status": "running"}
+                                save()
+                                run["eager_diagnostic"] = eager_diagnostic(
+                                    command, run_env, folder, model, args, count, revision, precision)
+                            if stage == "measurement" and phases.get("training", {}).get("status") == "valid":
                                 key = (precision, model, mode, graphs)
                                 measurement_pairs.setdefault(key, []).append(pair)
                             save()
@@ -587,16 +714,25 @@ def main():
                 measurement_pairs, args.replicates
             )
             save()
-            if manifest["replicated_gradient_validation"]["status"] != "pass":
-                raise ValueError("replicated gradient validation failed")
         if input_hashes(args.models) != hashes:
             raise ValueError("input changed during collection")
-        manifest["status"] = "complete"
+        manifest["phase_coverage"] = {
+            phase: {"planned": len(manifest["runs"]),
+                    "valid": sum(run["phases"][phase]["status"] == "valid" for run in manifest["runs"])}
+            for phase in (PHASES[:2] if args.inference_only else PHASES)
+        }
+        valid = (all(run["status"] == "valid" for run in manifest["runs"])
+                 and manifest.get("replicated_gradient_validation", {}).get("status", "pass") == "pass")
+        manifest["status"] = "complete" if valid else "complete-with-failures"
     except (Exception, KeyboardInterrupt) as error:
         manifest["status"] = "incomplete"
         manifest["error"] = str(error)
         if manifest["runs"] and manifest["runs"][-1]["status"] == "running":
             manifest["runs"][-1]["status"] = "failed"
+        if manifest["runs"]:
+            diagnostic = manifest["runs"][-1].get("eager_diagnostic", {})
+            if diagnostic.get("status") == "running":
+                diagnostic.update(status="incomplete", error=str(error))
         raise
     finally:
         save()
@@ -604,7 +740,9 @@ def main():
             print(f"Archive: {archive_results(destination)}", flush=True)
         except OSError as error:
             print(f"Archive not updated: {error}; results remain in {destination}", file=sys.stderr)
-    print(f"Complete: {destination / 'campaign.json'}")
+    print(f"{manifest['status']}: {destination / 'campaign.json'}")
+    if manifest["status"] != "complete":
+        sys.exit(1)
 
 
 if __name__ == "__main__":

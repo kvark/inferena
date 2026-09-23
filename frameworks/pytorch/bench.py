@@ -20,14 +20,15 @@ import shutil
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from execution import capture_phase, graph_backend, profile_phase, synchronize, nsys_range
-from budget import compilation_budget
+from execution import QualificationError, capture_phase, graph_backend, profile_phase, synchronize, nsys_range
+from budget import compilation_budget, save
 
 
 # --- Conditioned latent-diffusion U-Net (matches meganeura::models::sd_unet) ---
@@ -1401,20 +1402,27 @@ def select_compiler_backend(device):
         os.environ["TRITON_DEFAULT_BACKEND"] = selected
 
 
-def attention_policy(device):
+def attention_policy(device, model_type=None):
     # The pinned XPU fused attention waits on an event during graph capture.
     # Keep one public SDPA policy for both replay and its uncaptured ablation.
-    policy = os.environ.get("INFERENA_SDPA", "math" if device.startswith("xpu") else "auto")
-    if policy not in ("auto", "math"):
-        raise ValueError("INFERENA_SDPA must be auto or math")
+    default = "math" if device.startswith("xpu") else "auto"
+    policy = os.environ.get("INFERENA_SDPA", default)
+    if policy not in ("auto", "math", "efficient"):
+        raise ValueError("INFERENA_SDPA must be auto, math or efficient")
     return policy
+
+
+def attention_context(device, model_type=None):
+    backend = {"math": SDPBackend.MATH, "efficient": SDPBackend.EFFICIENT_ATTENTION}.get(
+        attention_policy(device, model_type))
+    return sdpa_kernel(backend) if backend is not None else nullcontext()
 
 
 def bench(model_name: str, spec: dict):
     """Matched benchmark: symmetric samples and full forward/loss/backward."""
     dev = detect_device()
     select_compiler_backend(dev)
-    attention = sdpa_kernel(SDPBackend.MATH) if attention_policy(dev) == "math" else nullcontext()
+    attention = attention_context(dev, spec.get("type"))
     api = graph_backend(dev) if torch.device(dev).type in ("cuda", "xpu") else None
     stream = api.Stream(device=dev) if api is not None else None
     if stream is not None:
@@ -1427,7 +1435,7 @@ def bench(model_name: str, spec: dict):
         api.current_stream(dev).wait_stream(stream)
 
 
-def _bench(model_name, spec, dev, stream):
+def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
     dev_name = device_name(dev)
     backend = backend_name(dev)
     model_type = spec["type"]
@@ -1456,7 +1464,8 @@ def _bench(model_name, spec, dev, stream):
     execution = {
         "requested_mode": mode,
         "compiled": False,
-        "sdpa_policy": attention_policy(dev),
+        "sdpa_policy": attention_policy(dev, model_type),
+        "sdpa_compile": "eager" if mode == "eager" else sdpa_compile,
         "sdpa_enabled_backends": [backend.name for backend in torch.nn.attention._cur_sdpa_kernel_backends()],
         "compile_budget_seconds": float(os.environ.get("INFERENA_COMPILE_SECONDS", "120")),
         "compile_budget_enforced": os.environ.get("INFERENA_BUDGET_ENFORCED") == "1",
@@ -1471,7 +1480,7 @@ def _bench(model_name, spec, dev, stream):
     }
 
     print(
-        f"[pytorch] inferena-graph-replay-v6: {precision_mode}, at least {warmup_runs} warmups / {WARMUP_SECONDS}s, "
+        f"[pytorch] inferena-graph-replay-v7: {precision_mode}, at least {warmup_runs} warmups / {WARMUP_SECONDS}s, "
         f"{measurement_runs} samples",
         file=sys.stderr,
     )
@@ -1481,6 +1490,7 @@ def _bench(model_name, spec, dev, stream):
         file=sys.stderr,
     )
     print(f"[pytorch] determinism: {json.dumps(execution['determinism'])}", file=sys.stderr)
+    print(f"[pytorch] SDPA: {execution['sdpa_policy']}, {execution['sdpa_compile']}", file=sys.stderr)
 
     load_start = time.perf_counter()
     eager_model = load_model(model_name, spec, dev)
@@ -1552,11 +1562,26 @@ def _bench(model_name, spec, dev, stream):
             return _benchmark_logits(model_type, _benchmark_forward(model_type, model, inputs))
 
     def prepare_phase(name, fn, training_model=None):
-        if use_graphs:
+        if "failure" in execution:
+            execution["graph_replay"]["phases"][name] = {"status": "not-attempted"}
+            return None
+        try:
             fn, report = capture_phase(fn, training_model, stream=stream,
-                                       reduced_precision=precision["reduced_precision_allowed"], device=dev)
-        else:
-            report = {"status": "not-requested"}
+                                       reduced_precision=precision["reduced_precision_allowed"],
+                                       device=dev, capture=use_graphs)
+        except QualificationError as error:
+            failure = {**error.details, "phase": name}
+            execution["failure"] = failure
+            report = {"status": "failed", "failure": failure}
+            print(f"[pytorch] {name} qualification failed: {failure}", file=sys.stderr)
+            if path := os.environ.get("INFERENA_PREPARATION_REPORT"):
+                path = Path(path)
+                preparation = json.loads(path.read_text()) if path.exists() else {}
+                preparation["qualification_failure"] = failure
+                save(path, preparation)
+            if name == "inference":
+                raise
+            fn = None
         execution["graph_replay"]["phases"][name] = report
         return fn
 
@@ -1570,6 +1595,9 @@ def _bench(model_name, spec, dev, stream):
     phase_memory["inference"] = _phase_memory(dev)
     logits = _benchmark_logits(model_type, inference_outputs)
     loss = _benchmark_loss(model_type, inference_outputs, inputs)
+    # Preserve the qualified phase before later work can reuse its storage.
+    logits = logits.detach().cpu().clone()
+    loss = float(loss.item())
 
     def train_call():
         outputs = _benchmark_forward(model_type, model, inputs)
@@ -1580,23 +1608,24 @@ def _bench(model_name, spec, dev, stream):
     training_samples = None
     if training_requested:
         train_call = prepare_phase("training", train_call, model)
-        _reset_peak_memory(dev)
-        _, training_samples, phase_warmup["training"] = _measure_call(
-            train_call, warmup_runs, measurement_runs, dev, "training",
-            before=None if use_graphs else lambda: model.zero_grad(set_to_none=True),
-        )
-        phase_memory["training"] = _phase_memory(dev)
+        if train_call is not None:
+            _reset_peak_memory(dev)
+            _, training_samples, phase_warmup["training"] = _measure_call(
+                train_call, warmup_runs, measurement_runs, dev, "training",
+                before=None if use_graphs else lambda: model.zero_grad(set_to_none=True),
+            )
+            phase_memory["training"] = _phase_memory(dev)
     grad_norm_sq = 0.0
     gradient_norms = {}
     for name, parameter in model.named_parameters():
-        if parameter.grad is not None:
+        if training_samples is not None and parameter.grad is not None:
             grad = parameter.grad.detach().float()
             parameter_norm_sq = float(torch.sum(grad * grad).item())
             grad_norm_sq += parameter_norm_sq
             gradient_norms[
                 _gradient_parameter_name(model_type, name)
             ] = parameter_norm_sq ** 0.5
-    grad_norm = grad_norm_sq ** 0.5 if training_requested else None
+    grad_norm = grad_norm_sq ** 0.5 if training_samples is not None else None
 
     latency_call = _benchmark_latency_call(model_type, model, inputs, dev)
 
@@ -1605,15 +1634,17 @@ def _bench(model_name, spec, dev, stream):
             return _benchmark_logits(model_type, latency_call())
 
     no_grad_latency = prepare_phase("latency", no_grad_latency)
-    _reset_peak_memory(dev)
-    _, latency_samples, phase_warmup["latency"] = _measure_call(
-        no_grad_latency, warmup_runs, measurement_runs, dev, "latency"
-    )
-    phase_memory["latency"] = _phase_memory(dev)
+    latency_samples = None
+    if no_grad_latency is not None:
+        _reset_peak_memory(dev)
+        _, latency_samples, phase_warmup["latency"] = _measure_call(
+            no_grad_latency, warmup_runs, measurement_runs, dev, "latency"
+        )
+        phase_memory["latency"] = _phase_memory(dev)
 
     inference_summary = _timing_summary(inference_samples)
-    training_summary = _timing_summary(training_samples) if training_requested else None
-    latency_summary = _timing_summary(latency_samples)
+    training_summary = _timing_summary(training_samples) if training_samples is not None else None
+    latency_summary = _timing_summary(latency_samples) if latency_samples is not None else None
     precision["torch_float32_matmul_precision"] = (
         torch.get_float32_matmul_precision()
     )
@@ -1709,7 +1740,7 @@ def _bench(model_name, spec, dev, stream):
             ("inference", inference_call), ("training", train_call),
             ("latency", no_grad_latency),
         ):
-            if name == "training" and not training_requested:
+            if fn is None or name == "training" and not training_requested:
                 continue
             before = (
                 lambda: model.zero_grad(set_to_none=True)
@@ -1718,6 +1749,7 @@ def _bench(model_name, spec, dev, stream):
             profiles[name] = profile_phase(fn, path, samples, before, device=dev)
 
     result = {
+        "status": "partial" if "failure" in execution else "ok",
         "framework": "pytorch",
         "framework_rev": torch.__version__,
         "model": model_name,
@@ -1729,7 +1761,7 @@ def _bench(model_name, spec, dev, stream):
         "execution": execution,
         "profile_artifacts": profiles,
         "protocol": {
-            "name": "inferena-graph-replay-v6",
+            "name": "inferena-graph-replay-v7",
             "synthetic_parameter_init": SYNTHETIC_PARAMETER_INIT,
             "warmup_runs": warmup_runs,
             "warmup_seconds": WARMUP_SECONDS,
@@ -1738,7 +1770,7 @@ def _bench(model_name, spec, dev, stream):
             "statistic": "median",
             "training_requested": training_requested,
             "training_scope": "forward + loss + backward; no optimizer update" if training_requested else None,
-            "diagnostic": "INFERENA_NSYS" in os.environ,
+            "diagnostic": "INFERENA_NSYS" in os.environ or os.environ.get("INFERENA_REFERENCE_DIAGNOSTIC") == "1",
             "timing_scope": "synchronized host wall time; resident inputs; no readback",
             "gradient_reset": (
                 "captured backward overwrites stable gradient buffers"
@@ -1753,8 +1785,8 @@ def _bench(model_name, spec, dev, stream):
         "timings": {
             "compile_s": round(compile_s, 3),
             "inference_ms": round(inference_summary["median"], 3),
-            "latency_ms": round(latency_summary["median"], 3),
-            "training_ms": round(training_summary["median"], 3) if training_requested else None,
+            "latency_ms": round(latency_summary["median"], 3) if latency_summary else None,
+            "training_ms": round(training_summary["median"], 3) if training_summary else None,
         },
         "timing_samples_ms": {
             "inference": inference_samples,
@@ -1771,8 +1803,8 @@ def _bench(model_name, spec, dev, stream):
             "logits_hash": logits_hash,
             "output_shape": list(logits.shape),
             "logits_sample": [round(v, 6) for v in logits_sample],
-            "loss": round(float(loss.item()), 6),
-            "grad_norm": round(grad_norm, 6) if training_requested else None,
+            "loss": round(loss, 6),
+            "grad_norm": round(grad_norm, 6) if grad_norm is not None else None,
             "gradient_norms": {
                 name: round(value, 9)
                 for name, value in sorted(gradient_norms.items())
@@ -1784,7 +1816,7 @@ def _bench(model_name, spec, dev, stream):
         result["workload_metrics"] = {
             "prefill_ms": round(inference_summary["median"], 3),
             "prefill_tokens": int(inputs["input_ids"].shape[1]),
-            "stateless_one_token_ms": round(latency_summary["median"], 3),
+            "stateless_one_token_ms": round(latency_summary["median"], 3) if latency_summary else None,
             "has_kv_cache": False,
             "decode_ms": None,
         }

@@ -17,8 +17,7 @@ import torch
 from p3hpc import ROOT, PYTHON_VERSION, check_torch_identity, conditions, runner_bash
 
 sys.path.insert(0, str(ROOT / "frameworks/pytorch"))
-from bench import attention_policy, clear_compile_cache, detect_device, device_name, select_compiler_backend
-from torch.nn.attention import SDPBackend, sdpa_kernel
+from bench import attention_context, clear_compile_cache, detect_device, device_name, select_compiler_backend
 from budget import compilation_budget
 from execution import capture_phase, compare_tensors, graph_backend, synchronize
 from contextlib import nullcontext
@@ -39,7 +38,7 @@ def check_backend(backend, max_autotune=False):
     stream = api.Stream(device=device) if api is not None else None
     if stream is not None:
         stream.wait_stream(api.current_stream(device))
-    attention = sdpa_kernel(SDPBackend.MATH) if attention_policy(device) == "math" else nullcontext()
+    attention = attention_context(device)
     with clear_compile_cache(), attention, api.stream(stream) if stream is not None else nullcontext():
         for mode, graphs in conditions(backend, max_autotune):
             candidate = model if mode == "eager" else torch.compile(model, fullgraph=True, options={

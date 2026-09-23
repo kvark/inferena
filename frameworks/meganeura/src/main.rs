@@ -52,6 +52,10 @@ fn build_session(graph: &Graph, mode: Mode, initialize: impl Fn(&mut Session)) -
         );
         let mut qualification = qualification::Qualification::new(graph, mode);
         let options = train::BuildSearchOptions {
+            max_graphs: 16,
+            max_programs: 64,
+            warmup_runs: 2,
+            warmup_time: Duration::from_millis(250),
             max_time: Duration::from_secs_f64(seconds),
             // Leave room for padding, driver allocations, readback and private probes.
             // This is a logical-plan bound, not a measured heap peak.
@@ -62,7 +66,6 @@ fn build_session(graph: &Graph, mode: Mode, initialize: impl Fn(&mut Session)) -
                 max_scratch_bytes: 1024 * 1024 * 1024,
                 ..TuneOptions::default()
             },
-            ..Default::default()
         };
         let (session, report) = train::build_measured(
             graph,

@@ -59,7 +59,6 @@ pub fn gradients(session: &Session) -> Result<BTreeMap<String, Vec<f32>>, String
                     ParamTransform::VerticalConcat => {
                         values[offset * width..(offset + extent) * width].to_vec()
                     }
-                    _ => return Err(format!("unsupported gradient transform: {transform:?}")),
                 };
                 add(source, unpacked)?;
                 offset += extent;

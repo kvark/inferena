@@ -35,8 +35,8 @@ pub struct Timings {
     pub inference_ms: f64,
     /// Single-token / minimal-input latency (milliseconds).
     #[serde(default)]
-    pub latency_ms: f64,
-    /// Forward/loss/backward time, absent when training was not requested.
+    pub latency_ms: Option<f64>,
+    /// Forward/loss/backward time, absent when unrequested or unqualified.
     #[serde(default)]
     pub training_ms: Option<f64>,
 }
@@ -127,6 +127,9 @@ pub struct PhaseMemory {
 pub enum FrameworkOutcome {
     #[serde(rename = "ok")]
     Ok(BenchResult),
+    /// Earlier phases passed; a later qualification failed.
+    #[serde(rename = "partial")]
+    Partial(BenchResult),
     #[serde(rename = "error")]
     Error {
         framework: String,
@@ -163,6 +166,10 @@ struct Cli {
     /// Directory for per-framework JSON artifacts.
     #[arg(long)]
     results_dir: Option<PathBuf>,
+
+    /// Compare two preserved result files without executing either engine.
+    #[arg(long, num_args = 2)]
+    compare_results: Vec<PathBuf>,
 
     /// Dry-run: validate framework+model support without running benchmarks.
     #[arg(long)]
@@ -616,10 +623,12 @@ fn run_framework(
     };
 
     match serde_json::from_str::<BenchResult>(json_str) {
-        Ok(r) => {
+        Ok(mut r) => {
+            let partial =
+                r.extra.remove("status").as_ref().and_then(|v| v.as_str()) == Some("partial");
             if matches!(framework, "pytorch" | "meganeura") {
                 let expected_protocol = if framework == "pytorch" {
-                    "inferena-graph-replay-v6"
+                    "inferena-graph-replay-v7"
                 } else {
                     PAPER_PROTOCOL
                 };
@@ -666,8 +675,8 @@ fn run_framework(
                         .iter()
                         .any(|value| !value.is_finite())
                     || r.extra["protocol"]["training_requested"].as_bool() != Some(!inference_only)
-                    || r.timings.training_ms.is_some() == inference_only
-                    || (!inference_only
+                    || (!partial && r.timings.training_ms.is_some() == inference_only)
+                    || (r.timings.training_ms.is_some()
                         && (r.outputs.grad_norm.is_none() || r.outputs.gradient_norms.is_empty()))
                     || (inference_only
                         && (r.outputs.grad_norm.is_some() || !r.outputs.gradient_norms.is_empty()))
@@ -686,7 +695,11 @@ fn run_framework(
                     };
                 }
             }
-            FrameworkOutcome::Ok(r)
+            if partial {
+                FrameworkOutcome::Partial(r)
+            } else {
+                FrameworkOutcome::Ok(r)
+            }
         }
         Err(e) => FrameworkOutcome::Error {
             framework: framework.to_string(),
@@ -702,7 +715,7 @@ fn save_results(results_dir: &Path, model: &str, outcomes: &[FrameworkOutcome]) 
 
     for outcome in outcomes {
         let (fw, content) = match outcome {
-            FrameworkOutcome::Ok(r) => {
+            FrameworkOutcome::Ok(r) | FrameworkOutcome::Partial(r) => {
                 (&r.framework, serde_json::to_string_pretty(outcome).unwrap())
             }
             FrameworkOutcome::Error { framework, .. } => {
@@ -1067,18 +1080,24 @@ fn git_revision(path: &Path) -> String {
 
 fn annotate_validation(outcomes: &mut [FrameworkOutcome], benchmark_revision: &str) {
     let reference = outcomes.iter().find_map(|outcome| match outcome {
-        FrameworkOutcome::Ok(result) if result.framework == "pytorch" => Some(result.clone()),
+        FrameworkOutcome::Ok(result) | FrameworkOutcome::Partial(result)
+            if result.framework == "pytorch" =>
+        {
+            Some(result.clone())
+        }
         _ => None,
     });
 
     for outcome in outcomes {
-        let FrameworkOutcome::Ok(result) = outcome else {
+        let (FrameworkOutcome::Ok(result) | FrameworkOutcome::Partial(result)) = outcome else {
             continue;
         };
-        result.extra.insert(
-            "benchmark_rev".to_string(),
-            serde_json::json!(benchmark_revision),
-        );
+        if !benchmark_revision.is_empty() {
+            result.extra.insert(
+                "benchmark_rev".to_string(),
+                serde_json::json!(benchmark_revision),
+            );
+        }
         let validation = match &reference {
             None => serde_json::json!({
                 "comparison_performed": false,
@@ -1179,7 +1198,7 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
     let mut best_latency = f64::MAX;
     let mut best_training = f64::MAX;
     for o in outcomes {
-        if let FrameworkOutcome::Ok(r) = o {
+        if let FrameworkOutcome::Ok(r) | FrameworkOutcome::Partial(r) = o {
             let forward_valid = matching_forward.contains(&r.framework);
             let training_valid = matching_training.contains(&r.framework);
             if forward_valid && r.timings.compile_s < best_compile {
@@ -1188,8 +1207,12 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
             if forward_valid && r.timings.inference_ms < best_inference {
                 best_inference = r.timings.inference_ms;
             }
-            if forward_valid && r.timings.latency_ms > 0.0 && r.timings.latency_ms < best_latency {
-                best_latency = r.timings.latency_ms;
+            if forward_valid
+                && let Some(ms) = r.timings.latency_ms
+                && ms > 0.0
+                && ms < best_latency
+            {
+                best_latency = ms;
             }
             if training_valid
                 && r.timings
@@ -1220,7 +1243,7 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
     for outcome in outcomes {
         // Skip CPU-only rows when PyTorch is on GPU.
         if pytorch_on_gpu
-            && let FrameworkOutcome::Ok(r) = outcome
+            && let FrameworkOutcome::Ok(r) | FrameworkOutcome::Partial(r) = outcome
             && is_cpu_backend(result_backend(r))
         {
             continue;
@@ -1228,7 +1251,7 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
 
         // Show platform (device name) only on the first row.
         let platform = if !platform_shown {
-            if let FrameworkOutcome::Ok(r) = outcome {
+            if let FrameworkOutcome::Ok(r) | FrameworkOutcome::Partial(r) = outcome {
                 platform_shown = true;
                 if cfg!(target_os = "windows") {
                     format!("{} (Windows)", r.gpu_name)
@@ -1243,7 +1266,7 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
         };
 
         match outcome {
-            FrameworkOutcome::Ok(r) => {
+            FrameworkOutcome::Ok(r) | FrameworkOutcome::Partial(r) => {
                 let link = framework_md_link(&r.framework, &r.extra);
                 let forward_valid = matching_forward.contains(&r.framework);
                 let training_valid = matching_training.contains(&r.framework);
@@ -1273,9 +1296,18 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
                 let compile = fmt_val(r.timings.compile_s, best_compile, false, forward_valid);
                 let inference =
                     fmt_val(r.timings.inference_ms, best_inference, true, forward_valid);
-                let latency = fmt_val(r.timings.latency_ms, best_latency, true, forward_valid);
+                let latency = r.timings.latency_ms.map_or_else(
+                    || "unavailable".to_string(),
+                    |ms| fmt_val(ms, best_latency, true, forward_valid),
+                );
                 let training = r.timings.training_ms.map_or_else(
-                    || "not requested".to_string(),
+                    || {
+                        if r.extra["protocol"]["training_requested"] == true {
+                            "failed / unavailable".to_string()
+                        } else {
+                            "not requested".to_string()
+                        }
+                    },
                     |ms| fmt_val(ms, best_training, true, training_valid),
                 );
                 let loss = if forward_valid {
@@ -1312,6 +1344,20 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
 
 fn main() {
     let cli = Cli::parse();
+    if !cli.compare_results.is_empty() {
+        let mut outcomes: Vec<FrameworkOutcome> = cli
+            .compare_results
+            .iter()
+            .map(|path| {
+                serde_json::from_slice(&std::fs::read(path).expect("read preserved result"))
+                    .expect("parse preserved result")
+            })
+            .collect();
+        // Preserve source identities; only replace the derived comparison.
+        annotate_validation(&mut outcomes, "");
+        println!("{}", serde_json::to_string_pretty(&outcomes).unwrap());
+        return;
+    }
     if cli.measurement_runs == 0 {
         eprintln!("--measurement-runs must be at least 1");
         std::process::exit(2);
@@ -1383,7 +1429,7 @@ fn main() {
     let successes: Vec<&BenchResult> = outcomes
         .iter()
         .filter_map(|o| match o {
-            FrameworkOutcome::Ok(r) => Some(r),
+            FrameworkOutcome::Ok(r) | FrameworkOutcome::Partial(r) => Some(r),
             _ => None,
         })
         .collect();
@@ -1395,7 +1441,7 @@ fn main() {
         eprintln!("=== Dry-run: {model} ===");
         for outcome in &outcomes {
             match outcome {
-                FrameworkOutcome::Ok(r) => {
+                FrameworkOutcome::Ok(r) | FrameworkOutcome::Partial(r) => {
                     eprintln!("  ✓ {}", r.framework);
                 }
                 FrameworkOutcome::Error {
@@ -1546,7 +1592,7 @@ mod tests {
             timings: Timings {
                 compile_s: 0.0,
                 inference_ms: 0.0,
-                latency_ms: 0.0,
+                latency_ms: Some(0.0),
                 training_ms: Some(0.0),
             },
             outputs: Outputs {
@@ -1611,6 +1657,30 @@ mod tests {
             assert!(result.extra["validation"]["training_valid"].is_null());
             assert!(serde_json::to_value(result).unwrap()["timings"]["training_ms"].is_null());
         }
+        let mut reference = result(vec![1, 256], false);
+        reference.framework = "pytorch".to_string();
+        reference.timings.training_ms = None;
+        reference.timings.latency_ms = None;
+        reference
+            .extra
+            .insert("benchmark_rev".into(), "original".into());
+        let mut native = result(vec![1, 256], true);
+        native.framework = "meganeura".into();
+        let mut outcomes = [
+            FrameworkOutcome::Ok(native),
+            FrameworkOutcome::Partial(reference),
+        ];
+        annotate_validation(&mut outcomes, "");
+        let serialized = serde_json::to_value(&outcomes).unwrap();
+        assert_eq!(serialized[0]["validation"]["forward_valid"], true);
+        assert_eq!(serialized[0]["validation"]["training_valid"], false);
+        assert_eq!(serialized[1]["status"], "partial");
+        assert_eq!(serialized[1]["benchmark_rev"], "original");
+        assert!(serialized[1]["timings"]["latency_ms"].is_null());
+        assert!(matches!(
+            serde_json::from_value::<FrameworkOutcome>(serialized[1].clone()).unwrap(),
+            FrameworkOutcome::Partial(_)
+        ));
     }
 
     #[test]

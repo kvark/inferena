@@ -1,7 +1,9 @@
 """Campaign contract, bounded compilation and backend replay; no retained artifacts."""
 
 import copy
+from contextlib import redirect_stdout
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -15,16 +17,75 @@ from unittest.mock import patch
 
 import torch
 
-from execution import capture_phase, check_gradient_set, compare_tensors, graph_backend, profile_phase, synchronize
+from execution import QualificationError, capture_phase, check_gradient_set, compare_tensors, graph_backend, profile_phase, synchronize
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from p3hpc import (MODELS, PYTHON_VERSION, TORCH_REVISION, TORCH_VERSION, TUNE_SCRATCH_BYTES, SDPA_BACKENDS,
                   check_pair, check_torch_identity,
                   conditions, create_parser, gpu_matches, validate_replicated_gradients,
-                  runner_bash, select_native_device, archive_results)
+                  runner_bash, select_native_device, archive_results, reference_sdpa_policy,
+                  assess_phases, eager_diagnostic)
 
 
 class CampaignTest(unittest.TestCase):
+    def test_uncaptured_qualification_and_partial_training_failure(self):
+        from bench import _bench
+
+        class Model(torch.nn.Module):
+            def __init__(self, drift=False):
+                super().__init__()
+                self.weight = torch.nn.Parameter(torch.ones(8))
+                self.calls = 0
+                self.drift = drift
+
+            def forward(self, x):
+                if torch.is_grad_enabled():
+                    self.calls += 1
+                    if self.drift == "fault":
+                        raise RuntimeError("device execution fault")
+                return x * self.weight + (self.calls * 0.01 if self.drift else 0)
+
+        x = torch.arange(8, dtype=torch.float32).reshape(1, 8)
+        model = Model()
+        def training():
+            output = model(x)
+            loss = output.square().mean()
+            loss.backward()
+            return output, loss
+        _, report = capture_phase(training, model, device="cpu", capture=False)
+        self.assertEqual(report["status"], "validated-uncaptured")
+        self.assertEqual(report["validation"]["consecutive_replays"], 0)
+        self.assertEqual(report["validation"]["gradient_tensors"], 1)
+        model.drift = True
+        with self.assertRaises(QualificationError) as error:
+            capture_phase(training, model, device="cpu", capture=False)
+        self.assertEqual(error.exception.details["stage"], "uncaptured repeat 1")
+        self.assertEqual(error.exception.details["tensor"], "output 0")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            receipt = Path(temporary) / "preparation.json"
+            env = {"INFERENA_TORCH_MODE": "eager", "INFERENA_GRAPH_REPLAY": "0",
+                   "INFERENA_PREPARATION_REPORT": str(receipt), "INFERENA_REFERENCE_DIAGNOSTIC": "1"}
+            def measure(fn, *_, **__):
+                return fn(), [1.0], {"runs": 5, "seconds": 2.0}
+            with patch.dict(os.environ, env), patch("bench.load_model", return_value=Model(True)) as load, \
+                 patch("bench.prepare_inputs", return_value={"input_features": x}), \
+                 patch("bench._measure_call", side_effect=measure):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    _bench("test", {"type": "whisper"}, "cpu", None)
+                result = json.loads(output.getvalue())
+                self.assertEqual(result["status"], "partial")
+                self.assertEqual(result["timing_samples_ms"],
+                                 {"inference": [1.0], "latency": None, "training": None})
+                self.assertIsNone(result["outputs"]["grad_norm"])
+                self.assertEqual(result["outputs"]["logits_sample"], x.flatten().tolist())
+                self.assertTrue(result["protocol"]["diagnostic"])
+                self.assertEqual(json.loads(receipt.read_text())["qualification_failure"]["phase"], "training")
+                load.return_value = Model("fault")
+                with self.assertRaisesRegex(RuntimeError, "device execution fault"):
+                    _bench("test", {"type": "whisper"}, "cpu", None)
+
     def test_smolvla_attention_uses_normalized_self_keys_and_external_cross_keys(self):
         from bench import ExpertLayer
 
@@ -120,6 +181,8 @@ class CampaignTest(unittest.TestCase):
         self.assertIsNone(defaults.backend)
         self.assertIsNone(defaults.gpu)
         self.assertIsNone(defaults.results_dir)
+        self.assertIsNone(defaults.sdpa)
+        self.assertEqual(create_parser().parse_args(["--sdpa", "efficient"]).sdpa, "efficient")
         self.assertFalse(create_parser().parse_args(["--qualify-only"]).collect)
         self.assertFalse(create_parser().parse_args(["--no-max-autotune"]).max_autotune)
         for backend in ("cuda", "rocm", "xpu", "mps", "cpu"):
@@ -228,7 +291,32 @@ class CampaignTest(unittest.TestCase):
             self.assertEqual(archive.read_bytes(), previous)
 
     def test_explicit_backend_is_probed_and_synchronized_without_fallback(self):
-        from bench import bench, detect_device
+        from bench import MODEL_REGISTRY, attention_context, attention_policy, bench, detect_device
+        initial_sdpa = torch.nn.attention._cur_sdpa_kernel_backends()
+        args = create_parser().parse_args([])
+        for backend, device in (("cuda", "cuda:0"), ("rocm", "cuda:0"), ("xpu", "xpu:0"),
+                                ("cpu", "cpu"), ("mps", "mps")):
+            args.backend = backend
+            for model in MODELS:
+                default = "math" if backend == "xpu" else "auto"
+                for override in (None, "auto", "math", "efficient"):
+                    args.sdpa = override
+                    with patch.dict(os.environ), patch("torch.version.hip", "7.2" if backend == "rocm" else None):
+                        os.environ.pop("INFERENA_SDPA", None)
+                        if override is not None:
+                            os.environ["INFERENA_SDPA"] = override
+                        self.assertEqual(attention_policy(device, MODEL_REGISTRY[model]["type"]), override or default)
+                        self.assertEqual(reference_sdpa_policy(args, model), override or default)
+        for policy, expected in (("auto", initial_sdpa),
+                                 ("math", [torch.nn.attention.SDPBackend.MATH]),
+                                 ("efficient", [torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION])):
+            with patch.dict(os.environ, {"INFERENA_SDPA": policy}):
+                with attention_context("cuda:0"):
+                    self.assertEqual(torch.nn.attention._cur_sdpa_kernel_backends(), expected)
+            self.assertEqual(torch.nn.attention._cur_sdpa_kernel_backends(), initial_sdpa)
+        with patch.dict(os.environ, {"INFERENA_SDPA": "invalid"}):
+            with self.assertRaisesRegex(ValueError, "INFERENA_SDPA"):
+                attention_context("cuda:0")
         with patch.dict("os.environ", {"INFERENA_TORCH_BACKEND": "xpu"}), \
              patch("torch.xpu.is_available", return_value=True), \
              patch("bench._xpu_actually_works", return_value=False) as probe:
@@ -243,12 +331,26 @@ class CampaignTest(unittest.TestCase):
         with patch("bench.detect_device", return_value="xpu:0"), \
              patch("bench._bench") as run, patch("bench.graph_backend") as api, \
              patch.dict(os.environ, {"TRITON_DEFAULT_BACKEND": "intel"}):
-            run.side_effect = lambda *_: self.assertEqual(
+            run.side_effect = lambda *_, **__: self.assertEqual(
                 torch.nn.attention._cur_sdpa_kernel_backends(), [torch.nn.attention.SDPBackend.MATH])
             bench("model", {})
             stream = api.return_value.Stream.return_value
             run.assert_called_once_with("model", {}, "xpu:0", stream)
             api.return_value.stream.assert_called_once_with(stream)
+        original_sdpa = torch.nn.functional.scaled_dot_product_attention
+        for model_type, hip in (("whisper", "7.2"), ("whisper", None), ("sd_unet", "7.2")):
+            with patch("bench.detect_device", return_value="cuda:0"), \
+                 patch("bench.select_compiler_backend"), patch("bench.graph_backend"), \
+                 patch("torch.version.hip", hip), patch("bench._bench") as run:
+                def fail(*args):
+                    self.assertIs(torch.nn.functional.scaled_dot_product_attention, original_sdpa)
+                    self.assertEqual(torch.nn.attention._cur_sdpa_kernel_backends(), initial_sdpa)
+                    raise RuntimeError("test qualification failure")
+                run.side_effect = fail
+                with self.assertRaisesRegex(RuntimeError, "test qualification failure"):
+                    bench("model", {"type": model_type})
+            self.assertIs(torch.nn.functional.scaled_dot_product_attention, original_sdpa)
+            self.assertEqual(torch.nn.attention._cur_sdpa_kernel_backends(), initial_sdpa)
         # MPS must attempt compilation, not report an eager result with zero
         # compile time. A mock checks routing, not real Metal backend support.
         from bench import _bench
@@ -264,7 +366,7 @@ class CampaignTest(unittest.TestCase):
         args = create_parser().parse_args(["--backend", "cuda", "--gpu", "test GPU"])
         args.torch_version = TORCH_VERSION
         base = {
-            "status": "ok", "benchmark_rev": "source", "gpu_name": args.gpu,
+            "status": "ok", "benchmark_rev": "source", "gpu_name": args.gpu, "model": "Whisper-tiny",
             "validation": {"comparison_performed": True, "forward_valid": True,
                            "training_valid": True, "reference_framework": "pytorch"},
             "protocol": {"name": "inferena-paper-v3", "training_requested": True,
@@ -283,8 +385,9 @@ class CampaignTest(unittest.TestCase):
         mg = {**copy.deepcopy(base), "framework": "meganeura", "optimizer": {
             "measured_construction": True, "mode": "egglog-outlined", "sessions": [{
                 "mode": mode, "cooperative_matrix_policy": "NativeF32", "search": {
-                    "options": {"max_time": {"secs": 60, "nanos": 0}, "max_graphs": 4,
+                    "options": {"max_time": {"secs": 60, "nanos": 0}, "max_graphs": 16,
                                 "max_programs": 64, "warmup_runs": 2,
+                                "warmup_time": {"secs": 0, "nanos": 250000000},
                                 "max_plan_bytes": 3 * 1024**3, "tuning": tuning},
                     "selected": 0, "trials": [{"outcome": {"qualified": True}, "kernel_tuning": {
                         "options": tuning, "class_limit_reached": False,
@@ -299,13 +402,14 @@ class CampaignTest(unittest.TestCase):
             } for mode in ("Inference", "Training")],
         }}
         pt = {**copy.deepcopy(base), "framework": "pytorch", "backend": "CUDA",
-              "protocol": {**copy.deepcopy(base["protocol"]), "name": "inferena-graph-replay-v6"},
+              "protocol": {**copy.deepcopy(base["protocol"]), "name": "inferena-graph-replay-v7"},
               "torch_version": TORCH_VERSION,
               "environment": {"torch_git_version": TORCH_REVISION, "python_version": PYTHON_VERSION,
                               "triton_backend": "nvidia"},
               "execution": {
                   "stream_policy": "single dedicated preparation/run stream",
                   "requested_mode": "default", "compiled": True,
+                  "sdpa_compile": "compiled",
                   "sdpa_policy": "auto", "sdpa_enabled_backends": sorted(SDPA_BACKENDS),
                   "compile_budget_seconds": args.compile_seconds, "compile_budget_enforced": True,
                   "compiler_options": {key: False for key in (
@@ -322,6 +426,79 @@ class CampaignTest(unittest.TestCase):
               }}
         check = lambda records: check_pair(records, args, "default", True, 1, "source", precision="strict")
         check([mg, pt])
+        failure = {"kind": "numerical", "phase": "training", "stage": "uncaptured repeat 1",
+                   "tensor": "output 0", "metrics": {"max_abs_error": 0.002}}
+        partial = copy.deepcopy(pt)
+        partial["status"] = "partial"
+        partial["execution"]["failure"] = failure
+        for phase, status in (("training", "failed"), ("latency", "not-attempted")):
+            partial["execution"]["graph_replay"]["phases"][phase] = {"status": status}
+            partial["timing_samples_ms"][phase] = None
+        assess = lambda records, receipt={}: assess_phases(
+            records, args, "default", True, 1, "source", receipt, precision="strict")[0]
+        self.assertEqual({k: v["status"] for k, v in assess([mg, partial]).items()},
+                         {"inference": "valid", "training": "failed", "latency": "not-attempted"})
+        from generate_chart import load_summaries
+        with tempfile.TemporaryDirectory() as temporary:
+            summary = Path(temporary) / "Whisper-tiny_summary.json"
+            chart_record = {**partial, "timings": {"inference_ms": 1.0}}
+            summary.write_text(json.dumps([chart_record]))
+            self.assertEqual(load_summaries(temporary)[0][1][0]["inference_ms"], 1.0)
+            for invalid in (
+                {**chart_record, "protocol": {"diagnostic": True}},
+                {**chart_record, "execution": {}},
+                {**chart_record, "timings": {"inference_ms": None}},
+                {**chart_record, "validation": {"comparison_performed": True, "forward_valid": False}},
+            ):
+                summary.write_text(json.dumps([invalid]))
+                self.assertEqual(load_summaries(temporary), [])
+        mismatch = copy.deepcopy(mg)
+        mismatch["validation"]["forward_valid"] = False
+        self.assertEqual(assess([mismatch, pt])["inference"]["status"], "mismatch")
+        error = {"framework": "pytorch", "status": "error", "error": "traceback"}
+        with self.assertRaisesRegex(ValueError, "unclassified"):
+            assess([mg, error])
+        receipt = {"qualification_failure": {**failure, "phase": "inference"}}
+        self.assertEqual(assess([mg, error], receipt)["inference"]["status"], "failed")
+        self.assertEqual(assess([mg, pt])["training"]["status"], "valid")
+        # A separate eager reference can validate native outputs, not rescue
+        # the failed primary or enter its timing population.
+        eager = copy.deepcopy(pt)
+        eager["protocol"]["diagnostic"] = True
+        eager["execution"].update(requested_mode="eager", compiled=False,
+                                   sdpa_policy="math", sdpa_enabled_backends=["MATH"], sdpa_compile="eager")
+        eager["execution"]["graph_replay"]["requested"] = False
+        for report in eager["execution"]["graph_replay"]["phases"].values():
+            report.update(status="validated-uncaptured", api=None)
+            report["validation"]["consecutive_replays"] = 0
+        self.assertEqual(assess_phases([mg, eager], args, "eager", False, 1, "source", {},
+                                      precision="strict", oracle=True)[0]["training"]["status"], "valid")
+        with self.assertRaisesRegex(ValueError, "diagnostic"):
+            check([mg, eager])
+        groups = {("strict", "model", "default", True): []}
+        self.assertEqual(validate_replicated_gradients(groups, 3)["groups"][0]["status"], "incomplete")
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            (folder / "Whisper-tiny_meganeura.json").write_text(json.dumps(mg))
+            command = ["bash", "run.sh", "-f", "pytorch,meganeura", "--measurement-runs", "20",
+                       "--results-dir", str(folder)]
+            def run_diagnostic(command, **kwargs):
+                target = Path(command[command.index("--results-dir") + 1])
+                (target / "Whisper-tiny_pytorch.json").write_text(json.dumps(eager))
+                self.assertEqual(kwargs["env"]["INFERENA_REFERENCE_DIAGNOSTIC"], "1")
+                self.assertEqual(kwargs["env"]["INFERENA_GRAPH_REPLAY"], "0")
+                self.assertEqual(kwargs["env"]["INFERENA_SDPA"], "math")
+                self.assertEqual(command[command.index("-f") + 1], "pytorch")
+                return subprocess.CompletedProcess(command, 0)
+            with patch("p3hpc.subprocess.run", side_effect=run_diagnostic) as run, \
+                 patch("p3hpc.subprocess.check_output", return_value=json.dumps([mg, eager])):
+                report = eager_diagnostic(command, {}, folder, "Whisper-tiny", args, 1, "source", "strict")
+                run.assert_called_once()
+                self.assertFalse(report["timing_substituted"])
+                self.assertEqual(report["phases"]["training"]["status"], "valid")
+                self.assertEqual(json.loads((folder / "Whisper-tiny_meganeura.json").read_text()), mg)
+                with self.assertRaises(FileExistsError):
+                    eager_diagnostic(command, {}, folder, "Whisper-tiny", args, 1, "source", "strict")
         for engine, path, wrong in (
             (0, ("protocol", "warmup_seconds"), 0),
             (1, ("protocol", "warmup", "inference", "seconds"), 1.9),
@@ -334,6 +511,8 @@ class CampaignTest(unittest.TestCase):
             (0, ("precision", "cooperative_matrix_policy"), "Disabled"),
             (0, ("precision", "f16_cooperative_matrix_permitted"), True),
             (0, ("optimizer", "sessions"), []),
+            (0, ("optimizer", "sessions", 0, "search", "options", "max_graphs"), 4),
+            (0, ("optimizer", "sessions", 0, "search", "options", "warmup_time"), {"secs": 0, "nanos": 0}),
             (0, ("optimizer", "sessions", 0, "search", "options", "tuning", "max_classes"), 8),
             (0, ("optimizer", "sessions", 0, "search", "options", "tuning", "max_time"), {"secs": 2, "nanos": 0}),
             (0, ("optimizer", "sessions", 0, "search", "trials", 0, "kernel_tuning", "visited_classes"), 0),
@@ -341,6 +520,7 @@ class CampaignTest(unittest.TestCase):
             (0, ("optimizer", "sessions", 1, "qualification", "gradient_elements"), 0),
             (1, ("execution", "compiled"), False),
             (1, ("execution", "sdpa_policy"), "math"),
+            (1, ("execution", "sdpa_compile"), "eager"),
             (1, ("execution", "sdpa_enabled_backends"), ["MATH"]),
             (1, ("execution", "compile_budget_enforced"), False),
             (1, ("execution", "compiler_options", "max_autotune"), True),
@@ -356,6 +536,36 @@ class CampaignTest(unittest.TestCase):
             target[path[-1]] = wrong
             with self.subTest(path=path), self.assertRaises(ValueError):
                 check(records)
+
+        args.sdpa = "efficient"
+        with self.assertRaisesRegex(ValueError, "attention policy"):
+            check([mg, pt])
+        alternate = copy.deepcopy(pt)
+        alternate["execution"]["sdpa_policy"] = "efficient"
+        with self.assertRaisesRegex(ValueError, "attention backends"):
+            check([mg, alternate])
+        alternate["execution"]["sdpa_enabled_backends"] = ["EFFICIENT_ATTENTION"]
+        check([mg, alternate])
+        args.sdpa = None
+        with self.assertRaisesRegex(ValueError, "attention policy"):
+            check([mg, alternate])
+
+        args.backend = "rocm"
+        rocm = copy.deepcopy(pt)
+        rocm["backend"] = "ROCm 7.2"
+        rocm["environment"]["triton_backend"] = "amd"
+        check([mg, rocm])
+        # A labelled diagnostic override may still request the failing math path.
+        args.sdpa = "math"
+        rocm["execution"]["sdpa_policy"] = "math"
+        rocm["execution"]["sdpa_enabled_backends"] = ["MATH"]
+        check([mg, rocm])
+        args.sdpa = None
+        rocm["model"] = mg["model"]
+        rocm["execution"]["sdpa_policy"] = "auto"
+        rocm["execution"]["sdpa_enabled_backends"] = sorted(SDPA_BACKENDS)
+        check([mg, rocm])
+        args.backend = "cuda"
 
         from bench import _measure_call
         for duration, expected_runs in ((0.125, 16), (1.0, 5)):

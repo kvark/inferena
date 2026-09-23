@@ -210,21 +210,35 @@ collection revision on each machine. It prepares missing pinned 135M weights,
 or verifies/adopts an exact legacy cache, detects the reference backend and
 matching native GPU, and validates all five common models in both precision
 classes inside three fresh-process measurement replicates
-per condition (at least 5 warmup calls and 2 seconds, then 20 samples). No CPU/eager fallback, automatic model
+per condition (at least 5 warmup calls and 2 seconds, then 20 samples). No CPU/eager timing substitution, automatic model
 exclusion, discarded sample, or retry is allowed. Strict gradients must pass
 the 5% gate in every process. Accelerated gradients retain every sample under
 a 10% safety ceiling, then require the median cross-engine error to remain
 below 5% across the three processes. Every raw result remains in the campaign.
 The primary matrix has 30 paired processes per device. Meganeura always uses
-qualified calibrated graph/kernel search. PyTorch uses default compilation
+qualified calibrated graph/kernel search.
+The v14 native policy retains up to 16 graph/schedule forms and compares
+qualified programs after two warmup pairs and at least 250 ms, within the
+shared 60-second per-session budget. Qualify the new pin before collection;
+do not mix v14 records with earlier campaigns.
+PyTorch uses default compilation
 with a 120-second compilation deadline, not max-autotune. CUDA, ROCm and XPU
 use qualified whole-phase graph replay; MPS compiles without an equivalent
 public replay API. No `--no-max-autotune` argument is needed. Optional search
 and replay ablations are separate overrides, not the primary matrix.
+ROCm Whisper uses ordinary compiled automatic SDPA, with HIP graph replay
+enabled; the eager-efficient SDPA workaround did not restore repeatability.
+No `--sdpa` argument is needed. Classified numerical failures are retained
+per phase, and the remaining planned conditions continue. One separate eager,
+uncaptured, same-GPU math-attention diagnostic can validate native outputs,
+but its timings never replace failed compiled timings. Unknown execution or
+configuration errors still stop the campaign. See [the failure policy](EXPERIMENT.md#failed-references-and-the-separate-eager-diagnostic).
 
 The printed `../inferena-results/<host>-<UTC>-<source>/` directory contains the
 manifest, records and logs. Keep that whole directory; `campaign.json` must say
-`"status": "complete"` before treating it as a complete cohort. Nothing is
+`"status": "complete"` for all gates to have passed. `complete-with-failures`
+means all planned conditions were attempted, with failures preserved and
+exit code 1. Incomplete phase replicate groups are not aggregate timings. Nothing is
 added to Git; `../inferena-results/latest.tgz` is replaced with an archive of
 the latest run, while older result directories remain intact. Copy that archive
 before another run. Optional `--qualify-only --models ResNet-50

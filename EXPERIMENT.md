@@ -1,25 +1,44 @@
 # P3HPC paired collection
 
 Use branch `experiment/p3hpc-cuda-graphs`. Meganeura is pinned to merged
-`8f4d23025478106364d236f156c8f19c24ff3854`. Protocol
-`p3hpc-paired-campaign-v12` replaces sinusoidal synthetic parameters with matched
-deterministic pseudorandom values in both engines. Model shapes, inputs, pinned
-SmolLM2 checkpoints, arithmetic classes and numerical thresholds are unchanged.
-Calibrated e-graph construction retains v11's shared 60-second session budget,
-with no two-second per-program kernel cap. Both engines run each phase's workload
-for at least two seconds and five calls before retaining samples. PyTorch's
-compilation/replay settings are unchanged. Do not combine this revision with
-previous cohorts or relabel their records.
+`0dbfcc0029bf98b33a03fc792e1f4e90ead17f23`, with Blade
+`fbb4f28c4869e81ae15de58925945b423b9c1ac5`. Protocol
+`p3hpc-paired-campaign-v14` retains the merged joint graph/schedule search:
+up to 16 graph/implementation forms, interleaved physical-plan choices, and
+at least two warmup pairs and 250 ms before comparing whole programs, within
+the shared 60-second session deadline. Private kernel probes have no separate
+two-second cap. Held-out timing still warms both engines for at least two
+seconds and five calls per phase.
+
+V12's matched deterministic pseudorandom parameters are retained. Model shapes,
+inputs, pinned SmolLM2 checkpoints, arithmetic classes, and numerical thresholds
+are unchanged. The new pin includes #211's reference-interpreter checks and
+correctness fixes, including normalization, GELU and loss reductions, and #212's
+reference-check guards. #213 removes duplicate elementwise lowerings, changes
+implicit-convolution tile loading, enables Winograd for training forward/input
+gradients, and extends attention kernels. Collection settings and numerical
+gates are unchanged. Cached-attention improvements do not affect this stateless
+workload. #214 keeps shared search expressions compact in receipts and fixes
+reference error propagation through rotary embeddings. It changes neither
+GPU kernels nor the collection's numerical gates.
+The collector now retains phase-level failures and runs a separate eager
+diagnostic. The unsuccessful ROCm Whisper workaround is removed: the primary
+path uses ordinary compiled automatic SDPA again. Graph replay is still required. Do not
+combine this revision with previous cohorts or relabel their records.
 
 **Collection candidate: qualify every backend before launching the common
 cohort or renting H100 again.** Previous acceptance results do not qualify
 the updated optimizer. Linux success does not certify macOS/ROCm/Windows.
 
-**Ready for user-run qualification (September 21):** the new initializer and
-merged GELU derivative fix in
-[Meganeura #203](https://github.com/kvark/meganeura/pull/203) are both included.
-The v12 changes have only been checked on CPU; no GPU qualification or benchmark
-has been launched.
+**ROCm Whisper repeatability remains unresolved (September 23):** a later RX 7900 XT
+run fails repeatability with eager efficient SDPA enabled. The initial passing
+control did not establish a fix. Do not treat a successful retry as qualification,
+relax the tolerances, or substitute an eager timing. The failure-aware policy
+below lets the planned campaign finish with this condition marked failed.
+
+CPU contract tests check the attention policy and receipts. A passing NVIDIA
+test does not qualify the AMD path, and the independent reference suite does
+not replace full-model campaign qualification.
 The v11 failure investigation found nearly rank-two sinusoidal weights, with
 strong cancellation that also exceeded the gradient bounds in PyTorch f32.
 The initializer fixes that fixture defect; #203 separately fixes the derivative.
@@ -41,8 +60,9 @@ do not need reinstalling. No `--no-max-autotune` is needed on any platform;
 that old spelling remains accepted as a no-op.
 Qualification checks all five models and both arithmetic classes once. Keep
 the results, including any failure, and resolve protocol problems before
-starting the common cohort. Once those backend checks pass, full collection
-is simply `python scripts/p3hpc.py`, using the interpreter below.
+starting the common cohort. A classified numerical failure can remain an
+explicit coverage result; it need not block measuring the other conditions.
+Full collection is simply `python scripts/p3hpc.py`, using the interpreter below.
 
 For a new environment, install uv and Rust, then run the appropriate setup.
 Setup downloads managed Python **3.13.13**, installs the pinned requirements,
@@ -57,7 +77,7 @@ max-autotune by default. No existing venv is overwritten.
 | Intel Arc B570 | `bash scripts/setup.sh xpu` | `python scripts/p3hpc.py --backend xpu` |
 | Apple M3 | `bash scripts/setup.sh mps` | `python scripts/p3hpc.py --backend mps` |
 | Intel RPL-U, qualification only | `bash scripts/setup.sh cpu` | `python scripts/p3hpc.py --backend cpu --gpu RPL-U --qualify-only --eager` |
-| AMD Mendocino, prospective qualification | `bash scripts/setup.sh cpu` | `python scripts/p3hpc.py --backend cpu --gpu MENDOCINO --qualify-only --eager` |
+| Ryzen 5 9600X iGPU on rubik, qualification only | `bash scripts/setup.sh cpu` | `python scripts/p3hpc.py --backend cpu --gpu 'AMD Ryzen 5 9600X' --qualify-only --eager` |
 
 Here `python` means the created environment's interpreter:
 `.venv-p3hpc/bin/python` on Linux/macOS or
@@ -67,8 +87,10 @@ machine. CPU PyTorch is only a correctness oracle for graphics-only qualificatio
 not a timing competitor. `--eager` avoids compiling this oracle; it does not
 disable Meganeura tuning or relax validation. Verify the exact native name with
 `cargo run --release --locked -p inferena-meganeura -- --list-devices` before
-selecting an integrated GPU. See the [qualification instructions](https://github.com/kvark/meganeura/blob/8f4d23025478106364d236f156c8f19c24ff3854/paper/p3hpc/QUALIFICATION.md)
-for device disambiguation, archive lifetime and the still-pending Mendocino result.
+selecting an integrated GPU. The shared RADV name RAPHAEL_MENDOCINO does not
+identify a separate Mendocino APU. See the [qualification instructions](https://github.com/kvark/meganeura/blob/e8d7d9e3b2192671c0a9fb1aab2e3fc505153260/paper/p3hpc/QUALIFICATION.md)
+for device disambiguation and archive lifetime; older qualification results
+do not certify this pin.
 
 For example, the Mac qualification is:
 
@@ -103,9 +125,10 @@ workload execution, then twenty samples per phase:
 **30 paired processes per device**, not the former 90 CUDA pairs. Results go
 to a new `../inferena-results/<host>-<UTC>-<source>/` directory outside Git.
 Copy that entire directory, including `campaign.json`, logs and compilation
-receipts. Only `status: complete` establishes completed declared coverage.
-An incomplete run may contain valid partial records and a failure finding;
-it is not a complete aggregate or permission to retry until favorable.
+receipts. `status: complete` means all requested gates passed;
+`complete-with-failures` means every planned condition was attempted but some
+failed (exit code 1). `incomplete` means collection stopped. Neither of the
+latter statuses permits retrying until favorable or hiding failures.
 
 The collector automatically writes **`../inferena-results/latest.tgz`** for a
 finished or caught-failure campaign, including qualification runs. Send that
@@ -160,10 +183,23 @@ Do not call this a measurement of PyTorch's best achievable steady state.
 Meganeura uses `train::build_measured`: representative weights and inputs are
 initialized before candidate execution. A **60-second soft total deadline per
 session** includes graph search, lowering, GPU pipelines, initialization and
-qualification. Up to **4 graph forms and 64 programs** explore dispatch fusion
-and submission chunking; applicable cached-attention plans also explore splits.
-Large graphs search one verified repeated region. Missing/unsupported regions,
-extraction truncation and rejected candidates are recorded, not hidden.
+qualification. Up to **16 graph/implementation forms and 64 programs** explore
+fused/unfused expressions and scalar matrix tiles, K stages, counted/unrolled
+loops and split-K. This includes transposed products and packed projections.
+Lowering locks an explicit schedule; an automatic alternative retains ordinary
+kernel probes, including cooperative paths where legal. Gradient matrix products
+inherit the forward schedule with legality checks, rather than being tuned
+independently. Explicit cooperative tile dimensions are not searched yet.
+
+Small graphs are searched together. Larger pure graphs expose a bounded joint
+region of rewritable operators, including independent projections; opaque
+operators form its boundaries. If that region exceeds the bound or crosses
+precision domains, search falls back to one verified repeated region. It does
+not cross mutations. Missing regions, truncation and rejections are recorded.
+Graph and physical-plan ranks are interleaved so additional matrix schedules
+do not postpone every fusion, attention-layout/split, convolution weight-split,
+or submission-chunk choice. Logical tensor bytes order extraction; this is not
+an HBM or latency model. Qualified paired whole-step wall time selects winners.
 
 Private kernel search uses the **remaining shared session budget**, with no
 separate two-second slice, no class-count cutoff and **1 GiB maximum scratch**.
@@ -196,6 +232,11 @@ accelerated gradients have the separate 1% whole-gradient tolerance. The outer
 PyTorch comparison remains an independent gate. No optimizer update is part of
 these workloads. Construction measurements are not publication samples; the
 selected session is warmed up and measured again afterwards.
+
+Search comparisons first warm both candidate and incumbent for **two pairs and
+250 ms**, bounded by the remaining session deadline. This is separate from
+publication warmup. The collector checks these actual search options in every
+session receipt, alongside the graph/program limits.
 
 Both engines warm up with the actual phase workload until **both** five calls
 and two seconds have completed. Actual warmup counts and elapsed seconds are
@@ -234,6 +275,10 @@ Optional, separate studies:
 - `--graph-ablation`: also collect the uncaptured default reference.
 - `--compile-seconds N` / `--tune-seconds N`: explicitly different budgets.
 - `--no-graphs` / `--eager`: explicit reference overrides, never automatic fallbacks.
+- `--sdpa auto|math|efficient`: explicit PyTorch attention backend, recorded in
+  the campaign and checked against every runner receipt. This overrides all
+  selected models. Defaults are math on XPU and automatic otherwise.
+  Unavailable backends fail; no fallback.
 
 Do not use these for the common primary cohort. If a primary condition times
 out or fails, retain the failed record and diagnose it before choosing a
@@ -275,10 +320,10 @@ weights and does not use this synthetic policy. Other framework runners on this
 experimental branch have not been migrated to the new fixture.
 
 The collector requires native `inferena-paper-v3`, PyTorch
-`inferena-graph-replay-v6` and matching initializer policies. Rust builds are
+`inferena-graph-replay-v7` and matching initializer policies. Rust builds are
 locked and finish before the first pair; build parallelism defaults to one job.
 
-Whole-phase replay checks every output/loss tensor separately, with exact
+Both captured and uncaptured execution check every output/loss tensor separately, with exact
 shapes/dtypes/participating-gradient inventory and finite values. Outputs in
 both modes and strict per-parameter gradients use fixed maximum/RMS bounds:
 
@@ -300,7 +345,9 @@ Accelerated training uses one fixed reference, eight ordinary repeats and two
 replays, with complete-gradient maximum and element-weighted RMS bounds at
 `atol=1e-6, rtol=0.01`. It retains per-tensor diagnostics, but never learns
 tolerances from repeat samples. Strict and inference use two ordinary repeats
-and two replays. Numerical failures are not discarded as timing outliers.
+and, when capture is requested, two replays. Uncaptured execution has no
+replays but uses the same ordinary-call checks. Numerical failures are not
+discarded as timing outliers.
 
 Cross-engine validation retains the v7 policy: strict errors must remain below
 5% per process; accelerated forward must pass and each training error must
@@ -314,6 +361,37 @@ missing session evidence, unexpected class caps, uncompiled requested modes,
 missing budget supervision, wrong graph APIs, revision/device mismatches,
 diagnostic samples and invalid timing series. A successful subprocess exit
 alone is insufficient.
+
+### Failed references and the separate eager diagnostic
+
+A numerical repeatability failure or a narrowly identified rejected graph
+capture is a result, not permission to weaken the gate. The primary JSON and
+preparation receipt keep the failure phase, check, tensor and available error
+metrics. An already qualified inference result survives a later training
+failure as `status: partial`; failed or unattempted phases have no timing
+samples. Subsequent planned process conditions still run, exactly once each.
+Cross-engine mismatches are recorded without assuming which engine is wrong.
+Unknown exceptions, timeouts, OOM, device loss and configuration/identity
+errors still stop collection. An arbitrary traceback is not classified as a
+numerical failure by string matching.
+
+For each failed compiled condition, the controller runs **one** additional
+PyTorch process in `diagnostic-eager/`: eager execution, no graph capture,
+math SDPA, the same GPU, weights, inputs and precision. It must pass the same
+full-tensor ordinary-repeat checks. Its receipt sets `protocol.diagnostic`
+and its command is recorded. When it succeeds, the existing native result
+is compared with it in a separate `comparison.json`; the primary files are
+not rewritten and Meganeura is not rerun. This can provide a correctness
+reference when the compiled path fails, not proof of the underlying fault.
+If eager also fails, that failure remains visible. Neither path is retried.
+
+Eager diagnostic timings **never** enter compiled-reference ratios. Inspect
+`runs[].phases` and `phase_coverage`, including failed and unattempted phases.
+Aggregate a primary phase only with all declared process replicates present
+and valid; training additionally requires its replicated-gradient gate. That
+gate reports incomplete groups instead of accepting a smaller, lucky subset.
+The automatic diagnostic does not change `--eager`: an explicitly requested
+eager primary is a different labelled experiment and has no eager fallback.
 
 ## Platform notes
 
@@ -337,15 +415,77 @@ fused attention operator, reproduced by an isolated grouped-query attention
 call. The public `sdpa_kernel(SDPBackend.MATH)` setting passes isolated
 forward/backward capture. XPU uses this explicitly reported configuration
 for both replay and its uncaptured ablation; other backends retain automatic
-SDPA selection. The full-model workaround passes the same gates on B570.
+SDPA selection. The full-model workaround passes
+the same gates on B570.
 `execution.sdpa_policy` and `sdpa_enabled_backends` record the active setting.
+
+The September 23 RX 7900 XT campaign at Inferena `2a8cbf52` still failed strict
+Whisper after SDPA was excluded from compilation. Inference capture passed;
+two uncaptured training calls disagreed on the encoder output (max error
+0.00197 against a 9.1e-6 bound). This fails PyTorch's own repeatability check,
+before comparison with Meganeura or training HIP graph capture.
+
+Initial reported controls on that GPU varied attention policy and compilation:
+
+| Encoder / SDPA execution | SDPA backend | Training output repeatability |
+|---|---|---|
+| Compiled / compiled | auto | Failed, about 0.002 max error |
+| Compiled / eager | math | Failed, about 0.002 max error |
+| Compiled / eager | efficient only | Initially passed bit-exact; a later run failed |
+| Compiled / eager | auto | Isolated pass, campaign failure |
+| Entirely eager | math | Passed, bit-exact |
+
+Campaign `rubik-20260923T163520494362Z-757f6a80` confirms the later failure at
+`757f6a80`, with `SDPA: efficient, eager`, not a stale checkout. Strict Whisper
+fails at `uncaptured repeat 1 output 0`: maximum error 0.00235241 versus
+9.10142e-6, RMS error 9.13354e-5 versus 3.07931e-6, with 157,226 of 576,000
+pointwise mismatches. Compilation completed in 7.91 seconds; inference capture
+passed. The first four strict pairs passed, with bit-exact ordinary output
+repeats in all three phases; no accelerated pair was reached.
+This invalidates the policy as an established workaround; the earlier pass does
+not isolate the defect to math SDPA. An enabled-backend list also does not prove
+which kernel an automatic call selected.
+
+V13 combined `torch.compiler.disable` for ROCm Whisper SDPA with
+`sdpa_kernel(EFFICIENT_ATTENTION)`. That configuration did not restore
+repeatability and is no longer the default. V14 records the ordinary compiled
+failure, if it occurs, and attempts the separate whole-model eager/math
+diagnostic described above. This is not a claim that the ROCm defect is fixed.
+
+For further diagnosis, distinguish training forward output **before backward**
+from the same tensor **after backward**, while checking that parameters and
+inputs did not change. Preserve the failing process's generated code and first
+divergent intermediate. These are diagnostic controls, not benchmark results:
+extra copies or synchronization can themselves hide a lifetime/race bug. A pass
+under instrumentation is not a fix either.
+
+The campaign records `reference_sdpa_policy` and `reference_sdpa_compile` as
+per-model maps. Each runner records `execution.sdpa_policy`,
+`sdpa_enabled_backends` and `sdpa_compile`; the collector checks all three.
+No manual `--sdpa` override is needed to reproduce the current policy. The
+following checks the current policy and preserves both outcomes, without
+retrying the compiled condition:
+
+```sh
+.venv-p3hpc/bin/python scripts/p3hpc.py --backend rocm --models Whisper-tiny --qualify-only
+```
+
+Every numerical gate and the compilation deadline remain enabled. `--sdpa`
+still selects the attention backend, independently of whether SDPA is compiled.
+This is a declared backend modification, not an unmodified Inductor result or
+a demonstrated fix. A fix must address the observed failure and pass unchanged
+gates in both precision classes across independently started processes; all
+attempts count. Keep the failed campaigns without treating them as paired
+timings. Do not change the common-cohort protocol on the strength of an isolated
+passing control.
+
 The runner selects Triton's backend explicitly from the requested Torch
 device, avoiding ambiguous auto-detection when NVIDIA and Intel drivers are
 both installed. It records the selection and rejects a conflicting override.
 
 On B570 with Mesa 26.0.3, the advertised f16-input/f32-accumulate matrix shape
-is 8x16x16. The pinned Blade probe and WGSL kernel path accept only square
-8x8x8 or 16x16x16 tiles, so Meganeura reports no usable cooperative tiles and
+is 8x16x16. Blade now reports full shapes, but Meganeura's WGSL kernels still
+accept only square 8x8x8 or 16x16x16 tiles, so it reports no usable tiles and
 uses scalar kernels even under the accelerated policy. This is a stack shape
 limitation, not missing matrix hardware or a setup failure. Rectangular-tile
 support would benefit the accelerated path; it would not make f16 operands

@@ -5,10 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Protocol every audited runner must report, matching the name declared in
-/// Meganeura's `docs/paper-benchmark-protocol.md`. A result carrying any
-/// other name is rejected rather than published.
-pub const PAPER_PROTOCOL: &str = "inferena-paper-v1";
+/// Workload and validation contract used by the paired runners.
+pub const BENCHMARK_PROTOCOL: &str = "inferena-v2";
 
 /// Result produced by each framework benchmark runner.
 /// Every runner must print exactly one JSON object matching this schema to stdout.
@@ -37,9 +35,10 @@ pub struct Timings {
     pub inference_ms: f64,
     /// Single-token / minimal-input latency (milliseconds).
     #[serde(default)]
-    pub latency_ms: f64,
-    /// Training backward pass time (milliseconds).
-    pub training_ms: f64,
+    pub latency_ms: Option<f64>,
+    /// Forward/loss/backward time, absent when unrequested or unqualified.
+    #[serde(default)]
+    pub training_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +127,9 @@ pub struct PhaseMemory {
 pub enum FrameworkOutcome {
     #[serde(rename = "ok")]
     Ok(BenchResult),
+    /// Earlier phases passed; a later qualification failed.
+    #[serde(rename = "partial")]
+    Partial(BenchResult),
     #[serde(rename = "error")]
     Error {
         framework: String,
@@ -179,6 +181,10 @@ struct Cli {
     #[arg(long)]
     strict: bool,
 
+    /// Run only forward workloads (currently the paired SmolLM2 family).
+    #[arg(long)]
+    inference_only: bool,
+
     /// Untimed executions before each measurement series.
     #[arg(long, default_value_t = 5)]
     warmup_runs: usize,
@@ -187,7 +193,7 @@ struct Cli {
     #[arg(long, default_value_t = 20)]
     measurement_runs: usize,
 
-    /// Collect Meganeura's structured per-dispatch GPU profile after each
+    /// Collect each supported runner's diagnostic profile after each
     /// normal benchmark series.
     #[arg(long)]
     profile: bool,
@@ -482,6 +488,7 @@ fn run_framework(
     prefer_discrete_gpu: bool,
     discrete_gpu_pci_id: Option<&str>,
     strict: bool,
+    inference_only: bool,
     warmup_runs: usize,
     measurement_runs: usize,
     profile_dir: Option<&Path>,
@@ -511,17 +518,26 @@ fn run_framework(
 
     // Always use bash (Git Bash on Windows).
     // Inherits environment so WGPU_BACKEND, HSA_OVERRIDE_GFX_VERSION, etc. propagate.
-    let mut cmd = Command::new("bash");
-    cmd.arg(&run_script).arg(model).current_dir(&fw_dir);
+    let mut cmd = Command::new(std::env::var_os("INFERENA_BASH").unwrap_or_else(|| "bash".into()));
+    let script = if cfg!(windows) {
+        run_script.to_string_lossy().replace('\\', "/")
+    } else {
+        run_script.to_string_lossy().into_owned()
+    };
+    cmd.arg(script).arg(model).current_dir(&fw_dir);
     cmd.env("INFERENA_STRICT", if strict { "1" } else { "0" })
+        .env(
+            "INFERENA_INFERENCE_ONLY",
+            if inference_only { "1" } else { "0" },
+        )
         .env("INFERENA_WARMUP_RUNS", warmup_runs.to_string())
         .env("INFERENA_MEASUREMENT_RUNS", measurement_runs.to_string());
-    if framework == "meganeura"
-        && let Some(profile_dir) = profile_dir
-    {
+    if let Some(profile_dir) = profile_dir {
         cmd.env("INFERENA_PROFILE_DIR", profile_dir)
-            .env("INFERENA_PROFILE_SAMPLES", profile_samples.to_string())
-            .env("MEGANEURA_GPU_TIMING", "1");
+            .env("INFERENA_PROFILE_SAMPLES", profile_samples.to_string());
+        if framework == "meganeura" {
+            cmd.env("MEGANEURA_GPU_TIMING", "1");
+        }
     }
     if dry_run {
         cmd.env("INFERENA_DRY_RUN", "1");
@@ -558,12 +574,12 @@ fn run_framework(
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
         let combined = format!("{stderr}\n{stdout}");
-        // Truncate long error output for readability.
-        let stderr_short: String = stderr.lines().take(20).collect::<Vec<_>>().join("\n");
-
-        // "Unknown model" / "unsupported" → skip, not error.
+        // Audited runners fail explicitly: a capture error can itself contain
+        // "unsupported". Keep the full traceback, including its final cause.
         let lower = combined.to_lowercase();
-        if lower.contains("unknown model") || lower.contains("unsupported") {
+        if !matches!(framework, "pytorch" | "meganeura")
+            && (lower.contains("unknown model") || lower.contains("unsupported"))
+        {
             return FrameworkOutcome::Skipped {
                 framework: framework.to_string(),
                 model: model.to_string(),
@@ -574,7 +590,7 @@ fn run_framework(
         return FrameworkOutcome::Error {
             framework: framework.to_string(),
             model: model.to_string(),
-            error: format!("{}: {}", output.status, stderr_short),
+            error: format!("{}: {}", output.status, combined.trim()),
         };
     }
 
@@ -603,8 +619,11 @@ fn run_framework(
     };
 
     match serde_json::from_str::<BenchResult>(json_str) {
-        Ok(r) => {
+        Ok(mut r) => {
+            let partial =
+                r.extra.remove("status").as_ref().and_then(|v| v.as_str()) == Some("partial");
             if matches!(framework, "pytorch" | "meganeura") {
+                let expected_protocol = BENCHMARK_PROTOCOL;
                 let reported_protocol = r
                     .extra
                     .get("protocol")
@@ -620,12 +639,7 @@ fn run_framework(
                     .get("precision")
                     .and_then(|value| value.get("comparison_class"))
                     .and_then(|value| value.as_str());
-                if reported_protocol
-                    != Some(if framework == "meganeura" {
-                        "inferena-v2"
-                    } else {
-                        PAPER_PROTOCOL
-                    })
+                if reported_protocol != Some(expected_protocol)
                     || reported_class != Some(expected_class)
                 {
                     return FrameworkOutcome::Error {
@@ -634,7 +648,7 @@ fn run_framework(
                         error: format!(
                             "runner reported protocol={reported_protocol:?}, \
                              precision class={reported_class:?}; expected \
-                             {PAPER_PROTOCOL}/{expected_class}"
+                             {expected_protocol}/{expected_class}"
                         ),
                     };
                 }
@@ -645,10 +659,37 @@ fn run_framework(
                         error: format!("precision contract failed: {error}"),
                     };
                 }
-                if r.outputs.output_shape.is_empty()
+                if r.framework != framework
+                    || r.model != model
+                    || r.outputs.output_shape.is_empty()
                     || r.outputs.logits_sample.len() != 256
-                    || r.outputs.grad_norm.is_none()
-                    || r.outputs.gradient_norms.is_empty()
+                    || !r.timings.compile_s.is_finite()
+                    || r.timings.compile_s < 0.0
+                    || !r.timings.inference_ms.is_finite()
+                    || r.timings.inference_ms < 0.0
+                    || [r.timings.latency_ms, r.timings.training_ms]
+                        .into_iter()
+                        .flatten()
+                        .any(|ms| !ms.is_finite() || ms < 0.0)
+                    || !r.outputs.loss.is_finite()
+                    || r.outputs
+                        .logits_sample
+                        .iter()
+                        .any(|value| !value.is_finite())
+                    || r.extra["protocol"]["training_requested"].as_bool() != Some(!inference_only)
+                    || (!partial && r.timings.training_ms.is_some() == inference_only)
+                    || (r.timings.training_ms.is_some()
+                        && (r
+                            .outputs
+                            .grad_norm
+                            .is_none_or(|norm| !norm.is_finite() || norm < 0.0)
+                            || r.outputs.gradient_norms.is_empty()
+                            || r.outputs
+                                .gradient_norms
+                                .values()
+                                .any(|norm| !norm.is_finite() || *norm < 0.0)))
+                    || (inference_only
+                        && (r.outputs.grad_norm.is_some() || !r.outputs.gradient_norms.is_empty()))
                 {
                     return FrameworkOutcome::Error {
                         framework: framework.to_string(),
@@ -664,7 +705,11 @@ fn run_framework(
                     };
                 }
             }
-            FrameworkOutcome::Ok(r)
+            if partial {
+                FrameworkOutcome::Partial(r)
+            } else {
+                FrameworkOutcome::Ok(r)
+            }
         }
         Err(e) => FrameworkOutcome::Error {
             framework: framework.to_string(),
@@ -680,7 +725,7 @@ fn save_results(results_dir: &Path, model: &str, outcomes: &[FrameworkOutcome]) 
 
     for outcome in outcomes {
         let (fw, content) = match outcome {
-            FrameworkOutcome::Ok(r) => {
+            FrameworkOutcome::Ok(r) | FrameworkOutcome::Partial(r) => {
                 (&r.framework, serde_json::to_string_pretty(outcome).unwrap())
             }
             FrameworkOutcome::Error { framework, .. } => {
@@ -832,6 +877,19 @@ fn compare_result(reference: &BenchResult, other: &BenchResult) -> ComparisonMet
         "EXACT MATCH"
     } else if training_valid {
         "PASS (<1% forward, <5% gradient)"
+    } else if forward_valid
+        && reference
+            .extra
+            .get("protocol")
+            .and_then(|p| p.get("training_requested"))
+            == Some(&serde_json::Value::Bool(false))
+        && other
+            .extra
+            .get("protocol")
+            .and_then(|p| p.get("training_requested"))
+            == Some(&serde_json::Value::Bool(false))
+    {
+        "INFERENCE PASS; TRAINING NOT REQUESTED"
     } else if forward_valid {
         "INFERENCE PASS; TRAINING FAIL"
     } else if forward_close && gradients_close {
@@ -863,16 +921,10 @@ fn compare_outputs(results: &[&BenchResult]) {
     if results.len() < 2 {
         return;
     }
-    let reference = results[0];
-    // Skip detailed comparison if PyTorch (ground truth) isn't the reference.
-    if reference.framework != "pytorch" {
-        eprintln!();
-        eprintln!(
-            "=== Output comparison skipped (no PyTorch ground truth, reference: {}) ===",
-            reference.framework
-        );
+    let Some(reference) = results.iter().copied().find(|r| r.framework == "pytorch") else {
+        eprintln!("\n=== Output comparison skipped (no PyTorch reference) ===");
         return;
-    }
+    };
     eprintln!();
     eprintln!(
         "=== Output comparison (reference: {}) ===",
@@ -1046,18 +1098,24 @@ fn git_revision(path: &Path) -> String {
 
 fn annotate_validation(outcomes: &mut [FrameworkOutcome], benchmark_revision: &str) {
     let reference = outcomes.iter().find_map(|outcome| match outcome {
-        FrameworkOutcome::Ok(result) if result.framework == "pytorch" => Some(result.clone()),
+        FrameworkOutcome::Ok(result) | FrameworkOutcome::Partial(result)
+            if result.framework == "pytorch" =>
+        {
+            Some(result.clone())
+        }
         _ => None,
     });
 
     for outcome in outcomes {
-        let FrameworkOutcome::Ok(result) = outcome else {
+        let (FrameworkOutcome::Ok(result) | FrameworkOutcome::Partial(result)) = outcome else {
             continue;
         };
-        result.extra.insert(
-            "benchmark_rev".to_string(),
-            serde_json::json!(benchmark_revision),
-        );
+        if !benchmark_revision.is_empty() {
+            result.extra.insert(
+                "benchmark_rev".to_string(),
+                serde_json::json!(benchmark_revision),
+            );
+        }
         let validation = match &reference {
             None => serde_json::json!({
                 "comparison_performed": false,
@@ -1070,7 +1128,7 @@ fn annotate_validation(outcomes: &mut [FrameworkOutcome], benchmark_revision: &s
                 "comparison_performed": true,
                 "reference_framework": reference.framework,
                 "forward_valid": true,
-                "training_valid": true,
+                "training_valid": result.timings.training_ms.map(|_| true),
                 "status": "REFERENCE",
             }),
             Some(reference) => {
@@ -1079,7 +1137,7 @@ fn annotate_validation(outcomes: &mut [FrameworkOutcome], benchmark_revision: &s
                     "comparison_performed": true,
                     "reference_framework": reference.framework,
                     "forward_valid": comparison.forward_valid,
-                    "training_valid": comparison.training_valid,
+                    "training_valid": result.timings.training_ms.map(|_| comparison.training_valid),
                     "status": comparison.status,
                     "full_output_hash_match": comparison.hash_match,
                     "output_shape_match": comparison.output_shape_match,
@@ -1158,7 +1216,7 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
     let mut best_latency = f64::MAX;
     let mut best_training = f64::MAX;
     for o in outcomes {
-        if let FrameworkOutcome::Ok(r) = o {
+        if let FrameworkOutcome::Ok(r) | FrameworkOutcome::Partial(r) = o {
             let forward_valid = matching_forward.contains(&r.framework);
             let training_valid = matching_training.contains(&r.framework);
             if forward_valid && r.timings.compile_s < best_compile {
@@ -1167,14 +1225,19 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
             if forward_valid && r.timings.inference_ms < best_inference {
                 best_inference = r.timings.inference_ms;
             }
-            if forward_valid && r.timings.latency_ms > 0.0 && r.timings.latency_ms < best_latency {
-                best_latency = r.timings.latency_ms;
+            if forward_valid
+                && let Some(ms) = r.timings.latency_ms
+                && ms > 0.0
+                && ms < best_latency
+            {
+                best_latency = ms;
             }
             if training_valid
-                && r.timings.training_ms > 0.0
-                && r.timings.training_ms < best_training
+                && r.timings
+                    .training_ms
+                    .is_some_and(|ms| ms > 0.0 && ms < best_training)
             {
-                best_training = r.timings.training_ms;
+                best_training = r.timings.training_ms.unwrap();
             }
         }
     }
@@ -1198,7 +1261,7 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
     for outcome in outcomes {
         // Skip CPU-only rows when PyTorch is on GPU.
         if pytorch_on_gpu
-            && let FrameworkOutcome::Ok(r) = outcome
+            && let FrameworkOutcome::Ok(r) | FrameworkOutcome::Partial(r) = outcome
             && is_cpu_backend(result_backend(r))
         {
             continue;
@@ -1206,7 +1269,7 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
 
         // Show platform (device name) only on the first row.
         let platform = if !platform_shown {
-            if let FrameworkOutcome::Ok(r) = outcome {
+            if let FrameworkOutcome::Ok(r) | FrameworkOutcome::Partial(r) = outcome {
                 platform_shown = true;
                 if cfg!(target_os = "windows") {
                     format!("{} (Windows)", r.gpu_name)
@@ -1221,7 +1284,7 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
         };
 
         match outcome {
-            FrameworkOutcome::Ok(r) => {
+            FrameworkOutcome::Ok(r) | FrameworkOutcome::Partial(r) => {
                 let link = framework_md_link(&r.framework, &r.extra);
                 let forward_valid = matching_forward.contains(&r.framework);
                 let training_valid = matching_training.contains(&r.framework);
@@ -1251,8 +1314,24 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
                 let compile = fmt_val(r.timings.compile_s, best_compile, false, forward_valid);
                 let inference =
                     fmt_val(r.timings.inference_ms, best_inference, true, forward_valid);
-                let latency = fmt_val(r.timings.latency_ms, best_latency, true, forward_valid);
-                let training = fmt_val(r.timings.training_ms, best_training, true, training_valid);
+                let latency = r.timings.latency_ms.map_or_else(
+                    || "unavailable".to_string(),
+                    |ms| fmt_val(ms, best_latency, true, forward_valid),
+                );
+                let training = r.timings.training_ms.map_or_else(
+                    || {
+                        if r.extra
+                            .get("protocol")
+                            .and_then(|p| p.get("training_requested"))
+                            == Some(&serde_json::Value::Bool(true))
+                        {
+                            "failed / unavailable".to_string()
+                        } else {
+                            "not requested".to_string()
+                        }
+                    },
+                    |ms| fmt_val(ms, best_training, true, training_valid),
+                );
                 let loss = if forward_valid {
                     format!("{:.2}", r.outputs.loss)
                 } else {
@@ -1315,6 +1394,15 @@ fn main() {
         Some(list) => list.iter().map(String::as_str).collect(),
         None => all_frameworks(),
     };
+    if cli.inference_only
+        && (!cli.model.starts_with("SmolLM2-")
+            || frameworks
+                .iter()
+                .any(|fw| !matches!(*fw, "pytorch" | "meganeura")))
+    {
+        eprintln!("--inference-only requires SmolLM2 and -f pytorch,meganeura (or either engine)");
+        std::process::exit(2);
+    }
 
     let prefer_discrete_gpu = !cli.allow_integrated_gpu;
     let discrete_gpu_pci_id = if prefer_discrete_gpu && cfg!(target_os = "linux") {
@@ -1335,6 +1423,7 @@ fn main() {
             prefer_discrete_gpu,
             discrete_gpu_pci_id.as_deref(),
             cli.strict,
+            cli.inference_only,
             cli.warmup_runs,
             cli.measurement_runs,
             profile_dir.as_deref(),
@@ -1348,7 +1437,7 @@ fn main() {
     let successes: Vec<&BenchResult> = outcomes
         .iter()
         .filter_map(|o| match o {
-            FrameworkOutcome::Ok(r) => Some(r),
+            FrameworkOutcome::Ok(r) | FrameworkOutcome::Partial(r) => Some(r),
             _ => None,
         })
         .collect();
@@ -1360,7 +1449,7 @@ fn main() {
         eprintln!("=== Dry-run: {model} ===");
         for outcome in &outcomes {
             match outcome {
-                FrameworkOutcome::Ok(r) => {
+                FrameworkOutcome::Ok(r) | FrameworkOutcome::Partial(r) => {
                     eprintln!("  ✓ {}", r.framework);
                 }
                 FrameworkOutcome::Error {
@@ -1423,8 +1512,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        BenchResult, MemoryReport, Outputs, Timings, compare_gradient_norms, compare_result,
-        precision_contract_error, relative_scalar_error,
+        BenchResult, FrameworkOutcome, MemoryReport, Outputs, Timings, annotate_validation,
+        compare_gradient_norms, compare_result, precision_contract_error, relative_scalar_error,
     };
     use std::collections::BTreeMap;
 
@@ -1451,6 +1540,16 @@ mod tests {
         // An absent report must not be serialized back as a null field.
         let reserialized = serde_json::to_value(&parsed).unwrap();
         assert!(!reserialized.as_object().unwrap().contains_key("memory"));
+        let mut with_execution = reserialized;
+        with_execution["execution"] = serde_json::json!({
+            "compiled": true,
+            "cuda_graphs": {"phases": {"training": {"status": "captured-and-validated"}}}
+        });
+        let parsed: BenchResult = serde_json::from_value(with_execution.clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(parsed).unwrap()["execution"],
+            with_execution["execution"]
+        );
     }
 
     #[test]
@@ -1501,8 +1600,8 @@ mod tests {
             timings: Timings {
                 compile_s: 0.0,
                 inference_ms: 0.0,
-                latency_ms: 0.0,
-                training_ms: 0.0,
+                latency_ms: Some(0.0),
+                training_ms: Some(0.0),
             },
             outputs: Outputs {
                 logits_hash: "hash".to_string(),
@@ -1550,6 +1649,46 @@ mod tests {
         let comparison = compare_result(&reference, &other);
         assert!(comparison.forward_valid);
         assert!(!comparison.training_valid);
+        let mut reference = result(vec![1, 256], false);
+        reference.framework = "pytorch".to_string();
+        reference.timings.training_ms = None;
+        let mut other = reference.clone();
+        other.framework = "meganeura".to_string();
+        let mut outcomes = [FrameworkOutcome::Ok(other), FrameworkOutcome::Ok(reference)];
+        annotate_validation(&mut outcomes, "test-revision");
+        for outcome in outcomes {
+            let FrameworkOutcome::Ok(result) = outcome else {
+                unreachable!()
+            };
+            assert_eq!(result.extra["validation"]["forward_valid"], true);
+            assert_eq!(result.extra["validation"]["reference_framework"], "pytorch");
+            assert!(result.extra["validation"]["training_valid"].is_null());
+            assert!(serde_json::to_value(result).unwrap()["timings"]["training_ms"].is_null());
+        }
+        let mut reference = result(vec![1, 256], false);
+        reference.framework = "pytorch".to_string();
+        reference.timings.training_ms = None;
+        reference.timings.latency_ms = None;
+        reference
+            .extra
+            .insert("benchmark_rev".into(), "original".into());
+        let mut native = result(vec![1, 256], true);
+        native.framework = "meganeura".into();
+        let mut outcomes = [
+            FrameworkOutcome::Ok(native),
+            FrameworkOutcome::Partial(reference),
+        ];
+        annotate_validation(&mut outcomes, "");
+        let serialized = serde_json::to_value(&outcomes).unwrap();
+        assert_eq!(serialized[0]["validation"]["forward_valid"], true);
+        assert_eq!(serialized[0]["validation"]["training_valid"], false);
+        assert_eq!(serialized[1]["status"], "partial");
+        assert_eq!(serialized[1]["benchmark_rev"], "original");
+        assert!(serialized[1]["timings"]["latency_ms"].is_null());
+        assert!(matches!(
+            serde_json::from_value::<FrameworkOutcome>(serialized[1].clone()).unwrap(),
+            FrameworkOutcome::Partial(_)
+        ));
     }
 
     #[test]

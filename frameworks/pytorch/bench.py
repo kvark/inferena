@@ -11,18 +11,23 @@ Features inspired by meganeura's bench/compare.sh (PR #30):
 - torch version in output
 """
 
+from contextlib import nullcontext
 import hashlib
 import json
+import math
 import os
 import platform
 import shutil
-import struct
 import sys
+import tempfile
 import time
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
+
+from execution import QualificationError, capture_phase, graph_backend, profile_phase, synchronize, nsys_range
 
 
 # --- Conditioned latent-diffusion U-Net (matches meganeura::models::sd_unet) ---
@@ -318,6 +323,9 @@ class ExpertLayer(nn.Module):
         self.mlp = SwiGLU(dim, intermediate)
 
     def forward(self, x, vlm_kv):
+        # Self-attention reads keys and values from the normalized residual,
+        # matching meganeura's action expert. Cross-attention keeps the
+        # external VLM states, which are not normalized by this layer.
         kv_input = vlm_kv if self.is_cross_attention else None
         x = x + self.self_attn(
             self.input_layernorm(x),
@@ -389,29 +397,36 @@ def _replace_resnet_batch_norm(module):
             _replace_resnet_batch_norm(child)
 
 
-def sync():
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-    elif hasattr(torch, "xpu") and torch.xpu.is_available():
-        torch.xpu.synchronize()
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        torch.mps.synchronize()
-
-
 def _xpu_actually_works() -> bool:
     """XPU may report available but fail at kernel-launch time on older Intel
     iGPUs (Gen12 Raptor/Alder Lake UHD) — JIT compilation aborts with
     "program was built for 1 devices". Probe with a trivial matmul."""
     try:
-        x = torch.ones(4, 4, device="xpu")
-        _ = (x @ x.t()).cpu()
+        x = torch.ones(4, 4, device="xpu", requires_grad=True)
+        output = x @ x.t()
+        output.sum().backward()
+        torch.testing.assert_close(output.cpu(), torch.full((4, 4), 4.0))
+        torch.testing.assert_close(x.grad.cpu(), torch.full((4, 4), 8.0))
         return True
     except Exception as e:
-        print(f"[pytorch] XPU present but compute probe failed ({e}); falling back", file=sys.stderr)
+        print(f"[pytorch] XPU compute probe failed: {e}", file=sys.stderr)
         return False
 
 
 def detect_device() -> str:
+    requested = os.environ.get("INFERENA_TORCH_BACKEND")
+    if requested:
+        if requested == "cpu":
+            return "cpu"
+        if requested in ("cuda", "rocm") and torch.cuda.is_available():
+            actual = "rocm" if torch.version.hip else "cuda"
+            if actual == requested:
+                return "cuda:0"
+        if requested == "xpu" and torch.xpu.is_available() and _xpu_actually_works():
+            return "xpu:0"
+        if requested == "mps" and torch.backends.mps.is_available():
+            return "mps"
+        raise RuntimeError(f"requested {requested} backend is unavailable or failed its probe; no fallback")
     if torch.cuda.is_available():
         return "cuda:0"
     if hasattr(torch, "xpu") and torch.xpu.is_available() and _xpu_actually_works():
@@ -456,81 +471,18 @@ def torch_release_url(version: str) -> str:
 
 def sha256_f32_tensor(t: torch.Tensor) -> str:
     flat = t.detach().float().cpu().contiguous().flatten()
-    raw = struct.pack(f"<{flat.numel()}f", *flat.tolist())
+    raw = flat.numpy().astype("<f4", copy=False).tobytes()
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
 def clear_compile_cache():
-    """Clear torch inductor cache so we measure real compilation time."""
+    """Own an empty cache for this run; never delete the developer's cache."""
     torch._dynamo.reset()
-    for d in [
-        os.environ.get("TORCHINDUCTOR_CACHE_DIR"),
-        os.path.join(
-            os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")),
-            "torch", "inductor",
-        ),
-    ]:
-        if d and os.path.isdir(d):
-            print(f"  clearing compile cache: {d}", file=sys.stderr)
-            shutil.rmtree(d, ignore_errors=True)
-
-
-def capture_cuda_graph(fn, warmup: int = 3):
-    """Warm up fn on a side stream, then capture a no_grad replay graph.
-
-    Used when torch.compile is unavailable (Windows/Triton missing) to reclaim
-    the kernel-launch overhead that dominates small-model CUDA timings.
-    """
-    s = torch.cuda.Stream()
-    s.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(s), torch.no_grad():
-        for _ in range(warmup):
-            fn()
-    torch.cuda.current_stream().wait_stream(s)
-    torch.cuda.synchronize()
-
-    g = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(g), torch.no_grad():
-        fn()
-    return g
-
-
-def capture_cuda_graph_train(fwd_bwd_fn, model, warmup: int = 3):
-    """Capture forward+backward as a CUDA graph for training.
-
-    Prerequisites for capture:
-    - All prior AccumulateGrad nodes must be destroyed before side-stream
-      warmup, so new ones are created on the capture stream (otherwise
-      stream mismatch invalidates the capture).
-    - Parameters and inputs must live at stable addresses across replays.
-    - No dynamic shapes, no Python control flow inside the captured region.
-
-    fwd_bwd_fn should run one forward+backward pass using pre-set inputs.
-    """
-    # Fully detach gradients — `grad = None` destroys AccumulateGrad so the
-    # next backward rebuilds it on whatever stream is active.
-    for p in model.parameters():
-        p.grad = None
-
-    s = torch.cuda.Stream()
-    s.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(s):
-        for _ in range(warmup):
-            for p in model.parameters():
-                p.grad = None
-            fwd_bwd_fn()
-    torch.cuda.current_stream().wait_stream(s)
-    torch.cuda.synchronize()
-
-    # Now gradients exist and live at stable addresses. Zero them (preserving
-    # the tensors) and capture: the captured graph zeros grads then adds to them.
-    g = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(g):
-        for p in model.parameters():
-            if p.grad is not None:
-                p.grad.zero_()
-        fwd_bwd_fn()
-    return g
+    # Windows may keep a loaded JIT DLL locked until process exit.
+    cache = tempfile.TemporaryDirectory(prefix="inferena-inductor-", ignore_cleanup_errors=os.name == "nt")
+    os.environ["TORCHINDUCTOR_CACHE_DIR"] = cache.name
+    os.environ["TRITON_CACHE_DIR"] = os.path.join(cache.name, "triton")
+    return cache
 
 
 # --- Model registry ---
@@ -541,7 +493,7 @@ MODEL_REGISTRY = {
         "type": "causal_lm",
     },
     "SmolLM2-360M": {
-        "hf_id": "HuggingFaceTB/SmolLM2-360M-Instruct",
+        "hf_id": "HuggingFaceTB/SmolLM2-360M",
         "type": "causal_lm",
     },
     "SmolLM2-1.7B": {
@@ -568,8 +520,7 @@ MODEL_REGISTRY = {
 
 
 def load_model(model_name: str, spec: dict, dev: str):
-    """Load model, trying: local dir -> HF download -> random-init fallback."""
-    hf_id = spec["hf_id"]
+    """Use shared local checkpoints or the model-specific synthetic fixture."""
     model_type = spec["type"]
 
     # Custom architectures (SmolVLA, SD U-Net) are always random-init.
@@ -600,25 +551,12 @@ def load_model(model_name: str, spec: dict, dev: str):
     root_dir = os.path.dirname(os.path.dirname(script_dir))
     local_dir = os.path.join(root_dir, "models", model_name)
 
-    model = None
-
-    # Try local dir first.
-    if os.path.isfile(os.path.join(local_dir, "config.json")):
-        print(f"[pytorch] found local model at {local_dir}", file=sys.stderr)
-        try:
-            model = _load_pretrained(model_type, local_dir)
-        except Exception as e:
-            print(f"[pytorch] local load failed ({e})", file=sys.stderr)
-
-    # Try HF download.
-    if model is None:
-        try:
-            model = _load_pretrained(model_type, hf_id)
-        except Exception as e:
-            print(f"[pytorch] HF load failed ({e}), using random-init", file=sys.stderr)
-            model = _random_init(model_type, model_name)
-
-    return model
+    if not os.path.isfile(os.path.join(local_dir, "config.json")):
+        raise FileNotFoundError(
+            f"prepare local weights first: python scripts/prepare_models.py {model_name}"
+        )
+    print(f"[pytorch] loading {local_dir}", file=sys.stderr)
+    return _load_pretrained(model_type, local_dir)
 
 
 def _load_pretrained(model_type: str, path_or_id: str):
@@ -630,21 +568,15 @@ def _load_pretrained(model_type: str, path_or_id: str):
         return AutoModelForCausalLM.from_pretrained(path_or_id, torch_dtype=torch.float32)
 
 
+SYNTHETIC_PARAMETER_INIT = "name-seeded-sine-v1"
+
+
 def _name_seed(name: str) -> float:
     """Deterministic seed from parameter name — framework-independent init."""
     h = 0
     for c in name.encode('ascii'):
         h = ((h * 31) + c) & 0xFFFFFFFF
     return float(h % 10000)
-
-
-def _deterministic_init(model):
-    """Match meganeura's deterministic init: sin(j * 0.01 + i) * 0.1."""
-    with torch.no_grad():
-        for i, p in enumerate(model.parameters()):
-            n = p.numel()
-            p.copy_(torch.sin(torch.arange(n, dtype=torch.float32) * 0.01 + i).view_as(p) * 0.1)
-    return model
 
 
 # Linear weight suffixes that meganeura stores as [in, out] (transposed vs PyTorch [out, in]).
@@ -795,9 +727,9 @@ def _whisper_encoder_init(encoder):
     with torch.no_grad():
         for name, p in encoder.named_parameters():
             if any(name.endswith(s) for s in _TRANSPOSED_SUFFIXES):
-                _transposed_init(p, name, scale=0.02)
+                _transposed_init(p, name)
             else:
-                _name_seeded_init(p, name, scale=0.02)
+                _name_seeded_init(p, name)
     return encoder
 
 
@@ -820,41 +752,14 @@ def _random_init(model_type: str, model_name: str):
                 elif ".norm" in canonical and canonical.endswith(".bias"):
                     p.zero_()
                 elif p.ndim == 2 and name.endswith(".weight"):
-                    _transposed_init(p, canonical, scale=0.02)
+                    _transposed_init(p, canonical)
                 else:
-                    _name_seeded_init(p, canonical, scale=0.02)
+                    _name_seeded_init(p, canonical)
         return model
     if model_type == "smolvla":
         model = ActionExpert().to(torch.float32)
         return _smolvla_init(model)
-    else:
-        from transformers import LlamaConfig, LlamaForCausalLM
-        configs = {
-            "SmolLM2-135M": LlamaConfig(
-                vocab_size=49152, hidden_size=576, num_hidden_layers=30,
-                num_attention_heads=9, num_key_value_heads=3,
-                intermediate_size=1536, max_position_embeddings=2048,
-            ),
-            "SmolLM2-360M": LlamaConfig(
-                vocab_size=49152, hidden_size=960, num_hidden_layers=32,
-                num_attention_heads=15, num_key_value_heads=5,
-                intermediate_size=2560, max_position_embeddings=2048,
-            ),
-            "SmolLM2-1.7B": LlamaConfig(
-                vocab_size=49152, hidden_size=2048, num_hidden_layers=24,
-                num_attention_heads=32, num_key_value_heads=32,
-                intermediate_size=8192, max_position_embeddings=2048,
-            ),
-        }
-        config = configs.get(model_name)
-        if config is None:
-            print(f"[pytorch] no fallback config for {model_name}", file=sys.stderr)
-            sys.exit(1)
-        model = LlamaForCausalLM(config).to(torch.float32)
-        with torch.no_grad():
-            for name, p in model.named_parameters():
-                _name_seeded_init(p, name)
-        return model
+    raise ValueError(f"no synthetic fixture for {model_type}")
 
 
 def prepare_inputs(model_type: str, model, dev: str, seq_len: int = 128):
@@ -951,11 +856,13 @@ def _benchmark_forward(model_type: str, model, inputs: dict):
         return model(inputs["input_features"])
     if model_type == "causal_lm":
         kwargs = {k: v for k, v in inputs.items() if k != "labels"}
-        return model(**kwargs)
+        return model(**kwargs, use_cache=False)
     return model(**inputs)
 
 
 def _benchmark_logits(model_type: str, outputs):
+    if isinstance(outputs, torch.Tensor):
+        return outputs
     if model_type == "whisper":
         return outputs.last_hidden_state
     if model_type == "causal_lm":
@@ -983,7 +890,7 @@ def _benchmark_latency_call(model_type: str, model, inputs: dict, dev: str):
     if model_type == "causal_lm":
         token = torch.tensor([[0]], device=dev, dtype=torch.long)
         mask = torch.ones(1, 1, dtype=torch.long, device=dev)
-        return lambda: model(input_ids=token, attention_mask=mask)
+        return lambda: model(input_ids=token, attention_mask=mask, use_cache=False)
     if model_type == "resnet":
         image = torch.zeros(1, 3, 224, 224, device=dev, dtype=torch.float32)
         return lambda: model(image)
@@ -1024,24 +931,34 @@ def _timing_summary(samples):
     }
 
 
-def _measure_call(fn, warmup_runs: int, measurement_runs: int, before=None):
-    last = None
-    for _ in range(warmup_runs):
-        if before is not None:
-            before()
-        last = fn()
-        sync()
+WARMUP_SECONDS = float(os.environ.get("INFERENA_WARMUP_SECONDS", "0"))
+if not math.isfinite(WARMUP_SECONDS) or WARMUP_SECONDS < 0:
+    raise ValueError("INFERENA_WARMUP_SECONDS must be finite and non-negative")
 
+
+def _measure_call(fn, warmup_runs: int, measurement_runs: int, device, phase, before=None):
+    last = None
     samples = []
-    for _ in range(measurement_runs):
-        if before is not None:
-            before()
-        sync()
-        start = time.perf_counter()
-        last = fn()
-        sync()
-        samples.append((time.perf_counter() - start) * 1000.0)
-    return last, samples
+    warmup = None
+    for stage, count in (("warmup", warmup_runs), ("measure", measurement_runs)):
+        with nsys_range(f"pytorch/{phase}/{stage}"):
+            stage_start = time.perf_counter()
+            runs = 0
+            while runs < count or stage == "warmup" and time.perf_counter() - stage_start < WARMUP_SECONDS:
+                if before is not None:
+                    before()
+                synchronize(device)
+                with nsys_range("pytorch/sample"):
+                    start = time.perf_counter()
+                    last = fn()
+                    synchronize(device)
+                    elapsed = (time.perf_counter() - start) * 1000.0
+                if stage == "measure":
+                    samples.append(elapsed)
+                runs += 1
+            if stage == "warmup":
+                warmup = {"runs": runs, "seconds": time.perf_counter() - stage_start}
+    return last, samples, warmup
 
 
 ALLOCATOR_MEMORY_BASIS = "caching-allocator peak allocated bytes for the phase"
@@ -1354,12 +1271,54 @@ def _configure_benchmark_precision(dev: str, strict: bool):
     }
 
 
-def bench_v2(model_name: str, spec: dict):
+def select_compiler_backend(device):
+    backend = torch.device(device).type
+    selected = {"cuda": "amd" if torch.version.hip else "nvidia", "xpu": "intel"}.get(backend)
+    if selected:
+        previous = os.environ.get("TRITON_DEFAULT_BACKEND")
+        if previous and previous != selected:
+            raise ValueError(f"TRITON_DEFAULT_BACKEND={previous} conflicts with requested {device}")
+        os.environ["TRITON_DEFAULT_BACKEND"] = selected
+
+
+def attention_policy(device, model_type=None):
+    policy = os.environ.get("INFERENA_SDPA", "auto")
+    if policy not in ("auto", "math", "efficient"):
+        raise ValueError("INFERENA_SDPA must be auto, math or efficient")
+    return policy
+
+
+def attention_context(device, model_type=None):
+    backend = {"math": SDPBackend.MATH, "efficient": SDPBackend.EFFICIENT_ATTENTION}.get(
+        attention_policy(device, model_type))
+    return sdpa_kernel(backend) if backend is not None else nullcontext()
+
+
+def bench(model_name: str, spec: dict):
     """Matched benchmark: symmetric samples and full forward/loss/backward."""
     dev = detect_device()
+    select_compiler_backend(dev)
+    attention = attention_context(dev, spec.get("type"))
+    api = graph_backend(dev) if torch.device(dev).type in ("cuda", "xpu") else None
+    stream = api.Stream(device=dev) if api is not None else None
+    if stream is not None:
+        stream.wait_stream(api.current_stream(dev))
+    # Compilation can retain AccumulateGrad nodes. Their stream must remain
+    # valid for capture, so all replay-capable backends use one stream.
+    cache = clear_compile_cache() if os.environ.get("INFERENA_TORCH_MODE", "default") != "eager" else nullcontext()
+    with cache, attention, api.stream(stream) if stream is not None else nullcontext():
+        _bench(model_name, spec, dev, stream)
+    if stream is not None:
+        api.current_stream(dev).wait_stream(stream)
+
+
+def _bench(model_name, spec, dev, stream):
     dev_name = device_name(dev)
     backend = backend_name(dev)
     model_type = spec["type"]
+    training_requested = os.environ.get("INFERENA_INFERENCE_ONLY", "0") != "1"
+    if not training_requested and model_type != "causal_lm":
+        raise ValueError("inference-only currently supports SmolLM2 workloads")
     strict = os.environ.get("INFERENA_STRICT", "0") == "1"
     precision_mode = "strict-f32" if strict else "accelerated-f32"
     warmup_runs = int(os.environ.get("INFERENA_WARMUP_RUNS", "5"))
@@ -1367,9 +1326,35 @@ def bench_v2(model_name: str, spec: dict):
     if warmup_runs < 0 or measurement_runs < 1:
         raise ValueError("warmups must be >= 0 and measurement runs must be >= 1")
     precision = _configure_benchmark_precision(dev, strict)
+    mode = os.environ.get("INFERENA_TORCH_MODE", "default")
+    modes = torch._inductor.list_mode_options() if mode != "eager" else {}
+    if mode != "eager" and mode not in modes:
+        raise ValueError(f"unknown INFERENA_TORCH_MODE: {mode}")
+    graph_capable = torch.device(dev).type in ("cuda", "xpu")
+    graph_setting = os.environ.get("INFERENA_GRAPH_REPLAY", os.environ.get(
+        "INFERENA_CUDA_GRAPHS", "1" if graph_capable else "0"))
+    if graph_setting not in ("0", "1"):
+        raise ValueError("INFERENA_GRAPH_REPLAY must be 0 or 1")
+    use_graphs = graph_setting == "1"
+    if use_graphs and not graph_capable:
+        raise ValueError(f"no explicit whole-phase replay API for {dev}; no fallback")
+    execution = {
+        "requested_mode": mode,
+        "compiled": False,
+        "sdpa_policy": attention_policy(dev, model_type),
+        "sdpa_compile": "eager" if mode == "eager" else "compiled",
+        "stream_policy": "single dedicated preparation/run stream" if stream is not None else "backend default",
+        "determinism": {
+            "algorithms": torch.are_deterministic_algorithms_enabled(),
+            "cudnn": bool(torch.backends.cudnn.deterministic),
+            "cudnn_benchmark": bool(torch.backends.cudnn.benchmark),
+            "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
+        },
+        "graph_replay": {"requested": use_graphs, "backend": backend, "phases": {}},
+    }
 
     print(
-        f"[pytorch] inferena-paper-v1: {precision_mode}, {warmup_runs} warmups, "
+        f"[pytorch] inferena-v2: {precision_mode}, at least {warmup_runs} warmups / {WARMUP_SECONDS}s, "
         f"{measurement_runs} samples",
         file=sys.stderr,
     )
@@ -1378,6 +1363,8 @@ def bench_v2(model_name: str, spec: dict):
         f"torch {torch.__version__}",
         file=sys.stderr,
     )
+    print(f"[pytorch] determinism: {json.dumps(execution['determinism'])}", file=sys.stderr)
+    print(f"[pytorch] SDPA: {execution['sdpa_policy']}, {execution['sdpa_compile']}", file=sys.stderr)
 
     load_start = time.perf_counter()
     eager_model = load_model(model_name, spec, dev)
@@ -1386,98 +1373,131 @@ def bench_v2(model_name: str, spec: dict):
         eager_model.eval()
     else:
         eager_model.train()
-    sync()
+    synchronize(dev)
     load_s = time.perf_counter() - load_start
 
     model = eager_model
     compile_s = 0.0
-    if dev != "mps" and sys.platform != "win32":
-        clear_compile_cache()
+    if mode != "eager":
         compile_start = time.perf_counter()
         try:
-            candidate = torch.compile(eager_model)
+            options = dict(modes[mode])
+            # One explicit replay owner, including the uncaptured ablation.
+            options["triton.cudagraphs"] = False
+            execution["compiler_options"] = options
+            candidate = torch.compile(eager_model, options=options)
             compile_inputs = prepare_inputs(model_type, candidate, dev)
 
-            candidate.zero_grad(set_to_none=True)
-            train_outputs = _benchmark_forward(model_type, candidate, compile_inputs)
-            _benchmark_loss(model_type, train_outputs, compile_inputs).backward()
-            sync()
-            candidate.zero_grad(set_to_none=True)
+            if training_requested:
+                candidate.zero_grad(set_to_none=True)
+                train_outputs = _benchmark_forward(model_type, candidate, compile_inputs)
+                _benchmark_loss(model_type, train_outputs, compile_inputs).backward()
+                synchronize(dev)
+                candidate.zero_grad(set_to_none=True)
+                del train_outputs
 
             with torch.no_grad():
                 _benchmark_forward(model_type, candidate, compile_inputs)
                 _benchmark_latency_call(
                     model_type, candidate, compile_inputs, dev
                 )()
-            sync()
+            synchronize(dev)
             compile_s = time.perf_counter() - compile_start
             model = candidate
+            execution["compiled"] = True
+            del compile_inputs
         except Exception as exc:
-            message = str(exc).split("\n")[0][:200]
-            print(
-                f"[pytorch] torch.compile failed ({message}); using eager mode",
-                file=sys.stderr,
-            )
-            torch._dynamo.reset()
-            model = eager_model
-            compile_s = 0.0
+            raise RuntimeError(
+                f"requested PyTorch mode {mode!r} failed; no eager timing substituted"
+            ) from exc
+    else:
+        execution["compile_skipped"] = "explicit eager mode"
 
     inputs = prepare_inputs(model_type, model, dev)
 
     def inference_call():
         with torch.no_grad():
-            return _benchmark_forward(model_type, model, inputs)
+            return _benchmark_logits(model_type, _benchmark_forward(model_type, model, inputs))
+
+    def prepare_phase(name, fn, training_model=None):
+        if "failure" in execution:
+            execution["graph_replay"]["phases"][name] = {"status": "not-attempted"}
+            return None
+        try:
+            fn, report = capture_phase(fn, training_model, stream=stream,
+                                       reduced_precision=precision["reduced_precision_allowed"],
+                                       device=dev, capture=use_graphs)
+        except QualificationError as error:
+            failure = {**error.details, "phase": name}
+            execution["failure"] = failure
+            report = {"status": "failed", "failure": failure}
+            print(f"[pytorch] {name} qualification failed: {failure}", file=sys.stderr)
+            if name == "inference":
+                raise
+            fn = None
+        execution["graph_replay"]["phases"][name] = report
+        return fn
 
     phase_memory = {}
+    phase_warmup = {}
+    inference_call = prepare_phase("inference", inference_call)
     _reset_peak_memory(dev)
-    inference_outputs, inference_samples = _measure_call(
-        inference_call, warmup_runs, measurement_runs
+    inference_outputs, inference_samples, phase_warmup["inference"] = _measure_call(
+        inference_call, warmup_runs, measurement_runs, dev, "inference"
     )
     phase_memory["inference"] = _phase_memory(dev)
     logits = _benchmark_logits(model_type, inference_outputs)
     loss = _benchmark_loss(model_type, inference_outputs, inputs)
+    # Preserve the qualified phase before later work can reuse its storage.
+    logits = logits.detach().cpu().clone()
+    loss = float(loss.item())
 
     def train_call():
         outputs = _benchmark_forward(model_type, model, inputs)
         step_loss = _benchmark_loss(model_type, outputs, inputs)
         step_loss.backward()
-        return outputs, step_loss
+        return _benchmark_logits(model_type, outputs), step_loss
 
-    _reset_peak_memory(dev)
-    _, training_samples = _measure_call(
-        train_call,
-        warmup_runs,
-        measurement_runs,
-        before=lambda: model.zero_grad(set_to_none=True),
-    )
-    phase_memory["training"] = _phase_memory(dev)
+    training_samples = None
+    if training_requested:
+        train_call = prepare_phase("training", train_call, model)
+        if train_call is not None:
+            _reset_peak_memory(dev)
+            _, training_samples, phase_warmup["training"] = _measure_call(
+                train_call, warmup_runs, measurement_runs, dev, "training",
+                before=None if use_graphs else lambda: model.zero_grad(set_to_none=True),
+            )
+            phase_memory["training"] = _phase_memory(dev)
     grad_norm_sq = 0.0
     gradient_norms = {}
     for name, parameter in model.named_parameters():
-        if parameter.grad is not None:
+        if training_samples is not None and parameter.grad is not None:
             grad = parameter.grad.detach().float()
             parameter_norm_sq = float(torch.sum(grad * grad).item())
             grad_norm_sq += parameter_norm_sq
             gradient_norms[
                 _gradient_parameter_name(model_type, name)
             ] = parameter_norm_sq ** 0.5
-    grad_norm = grad_norm_sq ** 0.5
+    grad_norm = grad_norm_sq ** 0.5 if training_samples is not None else None
 
     latency_call = _benchmark_latency_call(model_type, model, inputs, dev)
 
     def no_grad_latency():
         with torch.no_grad():
-            return latency_call()
+            return _benchmark_logits(model_type, latency_call())
 
-    _reset_peak_memory(dev)
-    _, latency_samples = _measure_call(
-        no_grad_latency, warmup_runs, measurement_runs
-    )
-    phase_memory["latency"] = _phase_memory(dev)
+    no_grad_latency = prepare_phase("latency", no_grad_latency)
+    latency_samples = None
+    if no_grad_latency is not None:
+        _reset_peak_memory(dev)
+        _, latency_samples, phase_warmup["latency"] = _measure_call(
+            no_grad_latency, warmup_runs, measurement_runs, dev, "latency"
+        )
+        phase_memory["latency"] = _phase_memory(dev)
 
     inference_summary = _timing_summary(inference_samples)
-    training_summary = _timing_summary(training_samples)
-    latency_summary = _timing_summary(latency_samples)
+    training_summary = _timing_summary(training_samples) if training_samples is not None else None
+    latency_summary = _timing_summary(latency_samples) if latency_samples is not None else None
     precision["torch_float32_matmul_precision"] = (
         torch.get_float32_matmul_precision()
     )
@@ -1497,6 +1517,8 @@ def bench_v2(model_name: str, spec: dict):
     device_total_bytes = None
     if dev.startswith("cuda"):
         device_total_bytes = int(torch.cuda.get_device_properties(0).total_memory)
+    elif dev.startswith("xpu"):
+        device_total_bytes = int(torch.xpu.get_device_properties(dev).total_memory)
     memory_report = {
         "device": {
             "total_bytes": device_total_bytes,
@@ -1536,8 +1558,13 @@ def bench_v2(model_name: str, spec: dict):
         "python_version": platform.python_version(),
         "platform": platform.platform(),
         "torch_version": torch.__version__,
+        "torch_git_version": torch.version.git_version,
+        "torch_build_config": torch.__config__.show(),
+        "inductor_compile_threads": os.environ.get("TORCHINDUCTOR_COMPILE_THREADS"),
+        "triton_backend": os.environ.get("TRITON_DEFAULT_BACKEND"),
         "cuda_version": torch.version.cuda,
         "hip_version": torch.version.hip,
+        "xpu_version": getattr(torch.version, "xpu", None),
         "cudnn_version": torch.backends.cudnn.version(),
     }
     if dev.startswith("cuda"):
@@ -1548,7 +1575,31 @@ def bench_v2(model_name: str, spec: dict):
             "device_multiprocessor_count": properties.multi_processor_count,
             "device_uuid": str(properties.uuid),
         })
+    elif dev.startswith("xpu"):
+        properties = torch.xpu.get_device_properties(dev)
+        environment.update({
+            "device_total_memory_bytes": properties.total_memory,
+            "device_properties": str(properties),
+        })
+    profiles = {}
+    if profile_dir := os.environ.get("INFERENA_PROFILE_DIR"):
+        samples = int(os.environ.get("INFERENA_PROFILE_SAMPLES", "3"))
+        if samples < 1:
+            raise ValueError("profile samples must be positive")
+        for name, fn in (
+            ("inference", inference_call), ("training", train_call),
+            ("latency", no_grad_latency),
+        ):
+            if fn is None or name == "training" and not training_requested:
+                continue
+            before = (
+                lambda: model.zero_grad(set_to_none=True)
+            ) if name == "training" and not use_graphs else None
+            path = os.path.join(profile_dir, f"{model_name}_pytorch_{name}.json")
+            profiles[name] = profile_phase(fn, path, samples, before, device=dev)
+
     result = {
+        "status": "partial" if "failure" in execution else "ok",
         "framework": "pytorch",
         "framework_rev": torch.__version__,
         "model": model_name,
@@ -1557,23 +1608,35 @@ def bench_v2(model_name: str, spec: dict):
         "torch_version": torch.__version__,
         "backend": backend,
         "environment": environment,
+        "execution": execution,
+        "profile_artifacts": profiles,
         "protocol": {
-            "name": "inferena-paper-v1",
+            "name": "inferena-v2",
+            "synthetic_parameter_init": SYNTHETIC_PARAMETER_INIT,
             "warmup_runs": warmup_runs,
+            "warmup_seconds": WARMUP_SECONDS,
+            "warmup": phase_warmup,
             "measurement_runs": measurement_runs,
             "statistic": "median",
-            "training_scope": "forward + loss + backward; no optimizer update",
+            "training_requested": training_requested,
+            "training_scope": "forward + loss + backward; no optimizer update" if training_requested else None,
+            "diagnostic": "INFERENA_NSYS" in os.environ or os.environ.get("INFERENA_REFERENCE_DIAGNOSTIC") == "1",
+            "timing_scope": "synchronized host wall time; resident inputs; no readback",
+            "gradient_reset": (
+                "captured backward overwrites stable gradient buffers"
+                if use_graphs else "set_to_none outside timed region"
+            ),
+            "capture_scope": "per-phase preparation and qualification, outside timing",
             "compile_scope": (
-                "torch.compile plus first training, inference, and latency "
-                "specializations"
+                "torch.compile plus first specializations of requested phases"
             ),
         },
         "precision": precision,
         "timings": {
             "compile_s": round(compile_s, 3),
             "inference_ms": round(inference_summary["median"], 3),
-            "latency_ms": round(latency_summary["median"], 3),
-            "training_ms": round(training_summary["median"], 3),
+            "latency_ms": round(latency_summary["median"], 3) if latency_summary else None,
+            "training_ms": round(training_summary["median"], 3) if training_summary else None,
         },
         "timing_samples_ms": {
             "inference": inference_samples,
@@ -1590,8 +1653,8 @@ def bench_v2(model_name: str, spec: dict):
             "logits_hash": logits_hash,
             "output_shape": list(logits.shape),
             "logits_sample": [round(v, 6) for v in logits_sample],
-            "loss": round(float(loss.item()), 6),
-            "grad_norm": round(grad_norm, 6),
+            "loss": round(loss, 6),
+            "grad_norm": round(grad_norm, 6) if grad_norm is not None else None,
             "gradient_norms": {
                 name: round(value, 9)
                 for name, value in sorted(gradient_norms.items())
@@ -1603,317 +1666,10 @@ def bench_v2(model_name: str, spec: dict):
         result["workload_metrics"] = {
             "prefill_ms": round(inference_summary["median"], 3),
             "prefill_tokens": int(inputs["input_ids"].shape[1]),
-            "stateless_one_token_ms": round(latency_summary["median"], 3),
+            "stateless_one_token_ms": round(latency_summary["median"], 3) if latency_summary else None,
             "has_kv_cache": False,
             "decode_ms": None,
         }
-    print(json.dumps(result))
-
-
-def bench(model_name: str, spec: dict):
-    dev = detect_device()
-    dev_name = device_name(dev)
-    backend = backend_name(dev)
-    model_type = spec["type"]
-    torch.set_float32_matmul_precision("high")
-
-    print(f"[pytorch] device: {dev_name} ({dev}), backend: {backend}, torch {torch.__version__}", file=sys.stderr)
-
-    # --- Load model ---
-    print(f"[pytorch] loading {spec['hf_id']}...", file=sys.stderr)
-    t0 = time.perf_counter()
-    model = load_model(model_name, spec, dev)
-    model.to(dev)
-    if model_type == "resnet":
-        model.eval()  # keep eval for fused-BN matching with meganeura
-    else:
-        model.train()
-    sync()
-    load_ms = (time.perf_counter() - t0) * 1000.0
-    print(f"[pytorch] loaded in {load_ms:.0f}ms", file=sys.stderr)
-
-    # --- torch.compile ---
-    # Skip on MPS (poorly supported, adds overhead) and on Windows
-    # (CPU path needs MSVC cl.exe; CUDA path needs Triton, which has no
-    # official Windows wheels). Eager mode still runs so correctness
-    # comparisons against other frameworks remain valid.
-    if dev == "mps":
-        compile_s = 0.0
-        print("[pytorch] skipping torch.compile on MPS (not well supported)", file=sys.stderr)
-    elif sys.platform == "win32":
-        compile_s = 0.0
-        print("[pytorch] skipping torch.compile on Windows (Triton unsupported)", file=sys.stderr)
-    else:
-        print("[pytorch] compiling with torch.compile()...", file=sys.stderr)
-        clear_compile_cache()
-        compile_t0 = time.perf_counter()
-        try:
-            compiled = torch.compile(model)
-
-            # Force compilation with a dummy forward+backward pass.
-            # Must run WITH gradients — compiling under no_grad() produces different
-            # code, causing a costly recompilation on the first grad-enabled forward.
-            dummy_kwargs = prepare_inputs(model_type, compiled, dev)
-            if model_type == "sd_unet":
-                dummy_out = _sd_forward(compiled, dummy_kwargs)
-                F.mse_loss(dummy_out, dummy_kwargs["noise_target"]).backward()
-            elif model_type == "smolvla":
-                dummy_out = compiled(**dummy_kwargs)
-                F.mse_loss(dummy_out, torch.zeros_like(dummy_out)).backward()
-            elif model_type == "resnet":
-                dummy_out = compiled(dummy_kwargs["images"])
-                F.cross_entropy(dummy_out, dummy_kwargs["labels"]).backward()
-            elif model_type == "whisper":
-                dummy_out = compiled(dummy_kwargs["input_features"])
-                dummy_out.last_hidden_state.sum().backward()
-            else:
-                # Drop labels — HF's built-in `loss` shifts logits/labels by
-                # one position internally, assuming labels are input_ids-
-                # aligned. Ours are pre-shifted (labels[i] = next token after
-                # position i), so relying on outputs.loss double-shifts.
-                dummy_kw = {k: v for k, v in dummy_kwargs.items() if k != "labels"}
-                dummy_out = compiled(**dummy_kw)
-                vocab_size = dummy_out.logits.shape[-1]
-                F.cross_entropy(
-                    dummy_out.logits.reshape(-1, vocab_size), dummy_kwargs["labels"].reshape(-1)
-                ).backward()
-            compiled.zero_grad()
-            sync()
-            model = compiled
-            compile_s = time.perf_counter() - compile_t0
-            print(f"[pytorch] compiled in {compile_s:.2f}s", file=sys.stderr)
-        except Exception as e:
-            # Inductor CPU backend needs a C++ toolchain + Python headers
-            # (Python.h). On minimal Linux setups without python3-dev this
-            # fails; XPU/CUDA kernel compilation can also fail on unsupported
-            # hardware. Eager mode still runs — keep going with zero compile
-            # time so the rest of the bench still produces valid results.
-            msg = str(e).split("\n")[0][:200]
-            print(f"[pytorch] torch.compile failed ({msg}); falling back to eager", file=sys.stderr)
-            torch._dynamo.reset()
-            compile_s = 0.0
-
-    # --- Prepare deterministic input ---
-    fwd_kwargs = prepare_inputs(model_type, model, dev)
-
-    # --- Forward ---
-    sync()
-    t0 = time.perf_counter()
-    if model_type == "sd_unet":
-        target = fwd_kwargs["noise_target"]
-        outputs = _sd_forward(model, fwd_kwargs)
-    elif model_type == "resnet":
-        outputs = model(fwd_kwargs["images"])
-    elif model_type == "whisper":
-        outputs = model(fwd_kwargs["input_features"])
-    else:
-        # Drop labels — see the loss-computation comment below for why we
-        # never let HF compute `outputs.loss` for causal_lm internally.
-        fwd_only_kwargs = {k: v for k, v in fwd_kwargs.items() if k != "labels"}
-        outputs = model(**fwd_only_kwargs)
-    sync()
-    inference_ms = (time.perf_counter() - t0) * 1000.0
-
-    # --- Loss ---
-    if model_type == "sd_unet":
-        loss = F.mse_loss(outputs, target)
-        logits = outputs
-    elif model_type == "smolvla":
-        target = torch.zeros_like(outputs)
-        loss = F.mse_loss(outputs, target)
-        logits = outputs
-    elif model_type == "resnet":
-        logits = outputs
-        loss = F.cross_entropy(outputs, fwd_kwargs["labels"])
-    elif model_type == "whisper":
-        logits = outputs.last_hidden_state  # encoder hidden states
-        loss = logits.pow(2).mean()  # MSE vs zero (matches meganeura)
-    else:
-        # Compute cross-entropy manually instead of using outputs.loss.
-        # `prepare_inputs` already pre-shifts labels (labels[i] = the token
-        # at position i+1), but HF's built-in `loss` shifts AGAIN internally
-        # (comparing logits[i] against labels[i+1], assuming labels come in
-        # input_ids-aligned) — that double shift silently inflates the loss
-        # and was making PyTorch's own "ground truth" wrong in correctness
-        # checks against other frameworks (which compute it manually, like
-        # this, without relying on the model's internal loss).
-        logits = outputs.logits
-        vocab_size = logits.shape[-1]
-        loss = F.cross_entropy(logits.reshape(-1, vocab_size), fwd_kwargs["labels"].reshape(-1))
-
-    # --- Backward ---
-    sync()
-    t0 = time.perf_counter()
-    loss.backward()
-    sync()
-    training_ms = (time.perf_counter() - t0) * 1000.0
-
-    # --- Latency (minimal-input forward) ---
-    # Measure single-sample / single-token / minimal-batch forward pass.
-    # Warm-up pass first so torch.compile doesn't recompile during timing.
-    model.zero_grad()
-    if model_type == "causal_lm":
-        lat_input = torch.tensor([[0]], device=dev, dtype=torch.long)
-        lat_mask = torch.ones(1, 1, dtype=torch.long, device=dev)
-        lat_fn = lambda: model(input_ids=lat_input, attention_mask=lat_mask)
-    elif model_type == "resnet":
-        lat_img = torch.zeros(1, 3, 224, 224, device=dev, dtype=torch.float32)
-        lat_fn = lambda: model(lat_img)
-    elif model_type == "sd_unet":
-        # The conditioned workload is already batch 1.
-        lat_fn = lambda: _sd_forward(model, fwd_kwargs)
-    elif model_type == "smolvla":
-        # Single action chunk (batch=1, chunk_size=1).
-        lat_kw = {k: v[:, :1] if v.dim() >= 2 else v for k, v in fwd_kwargs.items()}
-        lat_fn = lambda: model(**lat_kw)
-    elif model_type == "whisper":
-        lat_fn = lambda: model(fwd_kwargs["input_features"])
-    else:
-        lat_fn = None
-
-    if lat_fn is not None:
-        with torch.no_grad():
-            lat_fn()
-        sync()
-        t0 = time.perf_counter()
-        with torch.no_grad():
-            lat_fn()
-        sync()
-        latency_ms = (time.perf_counter() - t0) * 1000.0
-    else:
-        latency_ms = 0.0
-
-    # --- CUDA graph replay (fallback when torch.compile is unavailable) ---
-    # On Windows Triton is missing, so we lose the graph-capture pass
-    # Inductor would do. Capturing a manual CUDA graph here closes most of
-    # that gap on inference + latency (no_grad) AND training (forward+backward).
-    if dev.startswith("cuda") and compile_s == 0.0:
-        if model_type == "sd_unet":
-            inf_fn = lambda: _sd_forward(model, fwd_kwargs)
-        elif model_type == "resnet":
-            inf_fn = lambda: model(fwd_kwargs["images"])
-        elif model_type == "whisper":
-            inf_fn = lambda: model(fwd_kwargs["input_features"])
-        elif model_type == "causal_lm":
-            # Drop labels so the model returns logits only (no internal loss).
-            inf_kw = {k: v for k, v in fwd_kwargs.items() if k != "labels"}
-            inf_fn = lambda: model(**inf_kw)
-        else:  # smolvla
-            inf_fn = lambda: model(**fwd_kwargs)
-
-        try:
-            print("[pytorch] capturing CUDA graph for inference...", file=sys.stderr)
-            inf_graph = capture_cuda_graph(inf_fn)
-            sync()
-            t0 = time.perf_counter()
-            inf_graph.replay()
-            sync()
-            inference_ms = (time.perf_counter() - t0) * 1000.0
-
-            if lat_fn is not None:
-                print("[pytorch] capturing CUDA graph for latency...", file=sys.stderr)
-                lat_graph = capture_cuda_graph(lat_fn)
-                sync()
-                t0 = time.perf_counter()
-                lat_graph.replay()
-                sync()
-                latency_ms = (time.perf_counter() - t0) * 1000.0
-        except Exception as e:
-            print(f"[pytorch] CUDA graph capture failed ({e}); keeping eager timings", file=sys.stderr)
-
-        # --- Training CUDA graph (forward + backward) ---
-        # Free prior autograd graph refs — the earlier loss.backward() and
-        # lingering logits/loss tensors keep AccumulateGrad nodes alive on
-        # the default stream, which breaks capture on a side stream.
-        # Save scalar values before dropping the tensors.
-        loss_val = float(loss.item())
-        logits_saved = logits.detach()
-        del outputs, loss, logits
-        try:
-            del target, noisy
-        except (NameError, UnboundLocalError):
-            pass
-        import gc
-        gc.collect()
-        torch.cuda.synchronize()
-
-        # Suppress the stream-mismatch warning — we've done our best to clear
-        # prior refs. If capture still fails we fall back to eager timing.
-        try:
-            torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
-        except AttributeError:
-            pass
-
-        # Define the forward+backward closure per model type.
-        captured_logits = [None]
-        def _train_step():
-            if model_type == "sd_unet":
-                out = _sd_forward(model, fwd_kwargs)
-                captured_logits[0] = out
-                F.mse_loss(out, fwd_kwargs["noise_target"]).backward()
-            elif model_type == "smolvla":
-                out = model(**fwd_kwargs)
-                captured_logits[0] = out
-                F.mse_loss(out, torch.zeros_like(out)).backward()
-            elif model_type == "resnet":
-                out = model(fwd_kwargs["images"])
-                captured_logits[0] = out
-                F.cross_entropy(out, fwd_kwargs["labels"]).backward()
-            elif model_type == "whisper":
-                out = model(fwd_kwargs["input_features"])
-                captured_logits[0] = out.last_hidden_state
-                out.last_hidden_state.pow(2).mean().backward()
-            else:  # causal_lm
-                # Drop labels so the model returns logits only (no internal
-                # loss) — see the manual cross_entropy comment above.
-                inf_kw = {k: v for k, v in fwd_kwargs.items() if k != "labels"}
-                out = model(**inf_kw)
-                captured_logits[0] = out.logits
-                vocab_size = out.logits.shape[-1]
-                F.cross_entropy(
-                    out.logits.reshape(-1, vocab_size), fwd_kwargs["labels"].reshape(-1)
-                ).backward()
-
-        try:
-            print("[pytorch] capturing CUDA graph for training...", file=sys.stderr)
-            train_graph = capture_cuda_graph_train(_train_step, model)
-            sync()
-            t0 = time.perf_counter()
-            train_graph.replay()
-            sync()
-            training_ms = (time.perf_counter() - t0) * 1000.0
-            print(f"[pytorch] training (graph): {training_ms:.2f}ms", file=sys.stderr)
-        except Exception as e:
-            print(f"[pytorch] training CUDA graph capture failed ({e}); keeping eager training timing", file=sys.stderr)
-
-    # --- Collect outputs ---
-    # Use saved tensor if training CUDA graph deleted the originals.
-    logits_src = logits if 'logits' in dir() and isinstance(locals().get('logits', None), torch.Tensor) else logits_saved
-    loss_out = loss.item() if 'loss' in dir() and hasattr(locals().get('loss', None), 'item') else loss_val
-    logits_hash = sha256_f32_tensor(logits_src)
-    logits_flat = logits_src.detach().float().cpu().flatten()
-    logits_sample = logits_flat[:16].tolist()
-
-    result = {
-        "framework": "pytorch",
-        "framework_rev": torch.__version__,
-        "model": model_name,
-        "device": dev_name,
-        "gpu_name": dev_name,
-        "torch_version": torch.__version__,
-        "backend": backend,
-        "timings": {
-            "compile_s": round(compile_s, 2),
-            "inference_ms": round(inference_ms, 3),
-            "latency_ms": round(latency_ms, 3),
-            "training_ms": round(training_ms, 3),
-        },
-        "outputs": {
-            "logits_hash": logits_hash,
-            "logits_sample": [round(v, 6) for v in logits_sample],
-            "loss": round(loss_out, 6),
-        },
-    }
     print(json.dumps(result))
 
 
@@ -1927,6 +1683,5 @@ if __name__ == "__main__":
         print(f"[pytorch] dry-run OK: {model_name} ({spec['type']})", file=sys.stderr)
         sys.exit(0)
     if os.environ.get("INFERENA_LEGACY", "0") == "1":
-        bench(model_name, spec)
-    else:
-        bench_v2(model_name, spec)
+        raise ValueError("INFERENA_LEGACY is no longer supported; request INFERENA_TORCH_MODE=eager explicitly")
+    bench(model_name, spec)

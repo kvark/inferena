@@ -14,17 +14,18 @@ $IS_WINDOWS && EXE_SUFFIX=".exe"
 # `/c/Code/...` which Python cannot interpret as a filesystem path.
 if $IS_WINDOWS; then
     ROOT_DIR="$(cd "$(dirname "$0")" && pwd -W)"
+    export INFERENA_BASH="$(cygpath -m "$BASH")"
 else
     ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 fi
 
 # --- Pick a Python interpreter ---
-# 1. Honor $VIRTUAL_ENV if set (user activated a venv).
-# 2. Prefer this repository's .venv when present.
+# 1. Honor explicit $PYTHON, then an activated $VIRTUAL_ENV.
+# 2. Prefer this repository's .venv.
 # 3. On Windows, prefer `python` — venvs don't ship a `python3` shim, so
 #    `python3` falls through to the Store shim, which has none of our packages.
 # 4. On Linux/macOS, prefer `python3`.
-if [ -n "${VIRTUAL_ENV:-}" ]; then
+if [ -z "${PYTHON:-}" ] && [ -n "${VIRTUAL_ENV:-}" ]; then
     if [ -x "$VIRTUAL_ENV/bin/python" ]; then
         PYTHON="$VIRTUAL_ENV/bin/python"
     elif [ -x "$VIRTUAL_ENV/Scripts/python.exe" ]; then
@@ -77,15 +78,8 @@ for d in site.getsitepackages():
     fi
 fi
 
-# --- Prefer discrete NVIDIA GPU over integrated GPU for Vulkan ---
-if [ -z "${VK_ICD_FILENAMES:-}" ]; then
-    NVIDIA_ICD=$(find /usr/share/vulkan/icd.d /etc/vulkan/icd.d -name '*nvidia*' 2>/dev/null | head -1 || true)
-    if [ -n "$NVIDIA_ICD" ]; then
-        export VK_ICD_FILENAMES="$NVIDIA_ICD"
-    fi
-fi
-
 ALL_MODELS="SmolLM2-135M SmolVLA StableDiffusion ResNet-50 Whisper-tiny"
+SUPPORTED_MODELS="$ALL_MODELS SmolLM2-360M SmolLM2-1.7B"
 
 # --- Parse arguments ---
 MODELS=""
@@ -97,6 +91,8 @@ DRY_RUN=false
 UPDATE=false
 PLATFORM_OVERRIDE=""
 STRICT=false
+INFERENCE_ONLY=false
+ALLOW_INTEGRATED_GPU=false
 WARMUP_RUNS=5
 MEASUREMENT_RUNS=20
 PROFILE=false
@@ -149,6 +145,16 @@ while [[ $# -gt 0 ]]; do
             HAS_ARGS=true
             shift
             ;;
+        --inference-only)
+            INFERENCE_ONLY=true
+            HAS_ARGS=true
+            shift
+            ;;
+        --allow-integrated-gpu)
+            ALLOW_INTEGRATED_GPU=true
+            HAS_ARGS=true
+            shift
+            ;;
         --warmup-runs)
             WARMUP_RUNS="$2"
             HAS_ARGS=true
@@ -189,14 +195,16 @@ while [[ $# -gt 0 ]]; do
             echo "  --update                  Update models/*.md with results after benchmarking"
             echo "  --platform <name>         Override auto-detected platform name (with --update)"
             echo "  --strict                  Disable reduced-input fast paths for an f32 control run"
+            echo "  --inference-only          Forward-only paired SmolLM2 workloads; no training allocation"
+            echo "  --allow-integrated-gpu    Do not prefer a discrete GPU on hybrid systems"
             echo "  --warmup-runs <n>         Untimed runs per measurement (default: 5)"
             echo "  --measurement-runs <n>    Timed samples per measurement (default: 20)"
-            echo "  --profile                 Collect Meganeura per-dispatch GPU profile sidecars"
+            echo "  --profile                 Collect separate Meganeura/PyTorch diagnostic profiles"
             echo "  --profile-samples <n>     Timestamp samples per profile (default: 3)"
             echo "  --results-dir <path>      JSON/chart artifact directory (default: results/)"
             echo "  -h, --help                Show this help"
             echo ""
-            echo "Models: $ALL_MODELS"
+            echo "Models: $SUPPORTED_MODELS (larger SmolLM2 sizes are opt-in)"
             echo "Frameworks: pytorch, candle, burn, inferi, luminal, meganeura, ggml, onnxruntime, max, jax, mlx"
             exit 0
             ;;
@@ -332,7 +340,7 @@ run_check() {
     elif command -v nvidia-smi &>/dev/null; then
         GPU_TYPE="nvidia"
     elif command -v rocm-smi &>/dev/null || [ -d /opt/rocm ] || \
-         python3 -c "import torch; assert torch.version.hip" 2>/dev/null; then
+         "$PYTHON" -c "import torch; assert torch.version.hip" 2>/dev/null; then
         GPU_TYPE="amd"
     elif command -v vulkaninfo &>/dev/null; then
         vk_dev=$(vulkaninfo --summary 2>/dev/null | grep "deviceName" | head -1 | sed 's/.*= //' | xargs)
@@ -446,7 +454,7 @@ print('GPU offload' if llama_supports_gpu_offload() else 'CPU only')
     RUST_FW="inferena-candle inferena-burn inferena-inferi inferena-luminal inferena-meganeura"
     for pkg in $RUST_FW; do
         name="${pkg#inferena-}"
-        bin="$ROOT_DIR/target/release/$pkg"
+        bin="$ROOT_DIR/target/release/$pkg${EXE_SUFFIX}"
         if [ -f "$bin" ]; then
             echo "  ✓ $name (binary at $bin)"
         elif [ "$name" = "inferi" ] && ! cargo gpu --version &>/dev/null; then
@@ -510,6 +518,11 @@ if [ "$CHECK_ONLY" = true ] || [ "$HAS_ARGS" = false ]; then
     if [ "$CHECK_ONLY" = true ]; then
         exit 0
     fi
+fi
+
+if [ "$UPDATE" = true ] && { [ -n "${INFERENA_NSYS:-}" ] || [ "${INFERENA_REFERENCE_DIAGNOSTIC:-0}" = 1 ]; }; then
+    echo "Diagnostic runs cannot update published benchmark tables." >&2
+    exit 2
 fi
 
 # --- Resolve platform name for --update ---
@@ -584,6 +597,8 @@ if [ -n "${INFERENA_MEGANEURA_PATH:-}" ]; then
         --config
         "patch.\"https://github.com/kvark/meganeura\".meganeura.path=\"$INFERENA_MEGANEURA_PATH\""
     )
+else
+    WORKSPACE_CARGO_ARGS+=(--locked)
 fi
 # An empty --frameworks means "all".
 want_framework() {
@@ -641,7 +656,7 @@ for MODEL in $MODELS; do
     # Download if requested.
     if [ "$DOWNLOAD" = true ]; then
         echo "Downloading $MODEL ..." >&2
-        bash "$ROOT_DIR/models/download.sh" "$MODEL" || true
+        bash "$ROOT_DIR/models/download.sh" "$MODEL"
     fi
 
     ARGS=(
@@ -654,6 +669,12 @@ for MODEL in $MODELS; do
 
     if [ "$STRICT" = true ]; then
         ARGS+=("--strict")
+    fi
+    if [ "$INFERENCE_ONLY" = true ]; then
+        ARGS+=("--inference-only")
+    fi
+    if [ "$ALLOW_INTEGRATED_GPU" = true ]; then
+        ARGS+=("--allow-integrated-gpu")
     fi
 
     if [ "$PROFILE" = true ]; then
@@ -676,7 +697,7 @@ for MODEL in $MODELS; do
         # Capture table output for markdown update.
         TABLE_FILE=$(mktemp)
         "$HARNESS" "${ARGS[@]}" | tee "$TABLE_FILE" || true
-        python3 "$ROOT_DIR/scripts/update_results.py" \
+        "$PYTHON" "$ROOT_DIR/scripts/update_results.py" \
             --model "$MODEL" --platform "$PLATFORM" --table "$TABLE_FILE" --root "$ROOT_DIR"
         rm -f "$TABLE_FILE"
     else
@@ -688,12 +709,9 @@ done
 # Always emitted (not gated on --update) so every run leaves a visual summary
 # of what the machine just produced. Uses the override if one was supplied,
 # otherwise defers to the script's own gpu_name extraction.
-CHART_PLATFORM="${PLATFORM:-}"
-if [ -z "$CHART_PLATFORM" ] && [ "$DRY_RUN" != true ]; then
-    CHART_PLATFORM=$(detect_platform)
-fi
+CHART_PLATFORM="${PLATFORM_OVERRIDE:-${PLATFORM:-}}"
 if [ "$DRY_RUN" != true ]; then
-    python3 "$ROOT_DIR/scripts/generate_chart.py" \
+    "$PYTHON" "$ROOT_DIR/scripts/generate_chart.py" \
         --results-dir "$RESULTS_DIR" \
         ${CHART_PLATFORM:+--platform "$CHART_PLATFORM"} || true
 fi

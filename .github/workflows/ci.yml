@@ -47,7 +47,7 @@ jobs:
             [ -z "$f" ] && continue
             case "$f" in
               FORCE_RUN) code=true; break ;;
-              *.md|_layouts/*|_config.yml|scripts/*.py|.github/workflows/check-md.yml|.github/workflows/pages.yml) ;;
+              *.md|_layouts/*|_config.yml|.github/workflows/check-md.yml|.github/workflows/pages.yml) ;;
               *) code=true; break ;;
             esac
           done <<< "$changed"
@@ -98,6 +98,41 @@ jobs:
             cargo check -p "$pkg" || true
             echo "::endgroup::"
           done
+
+  regression:
+    name: Runner regressions (CPU)
+    needs: filter
+    if: needs.filter.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    env:
+      OMP_NUM_THREADS: "2"
+      TORCHINDUCTOR_COMPILE_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: runner-regressions
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+      - run: pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install numpy coverage
+      - run: cargo test --locked -p inferena-harness
+      - run: cargo check --locked -p inferena-meganeura
+      - run: python -m coverage run --source=frameworks/pytorch -m unittest discover -s frameworks/pytorch -p 'test_*.py'
+      - run: python scripts/check_environment.py --backend cpu
+      - name: Report Python coverage
+        if: always()
+        run: |
+          python -m coverage report --omit='*/test_*.py'
+          python -m coverage xml --omit='*/test_*.py'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: runner-coverage
+          path: coverage.xml
+          if-no-files-found: ignore
 
   # Smoke test on Linux: Lavapipe (Vulkan SW renderer) + CPU frameworks.
   smoke-test-linux:
@@ -182,7 +217,7 @@ jobs:
   # succeeded or was cleanly skipped because no code changed.
   ci:
     name: CI
-    needs: [filter, check, smoke-test-linux, smoke-test-macos]
+    needs: [filter, check, regression, smoke-test-linux, smoke-test-macos]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -193,6 +228,7 @@ jobs:
           for r in \
               "filter=${{ needs.filter.result }}" \
               "check=${{ needs.check.result }}" \
+              "regression=${{ needs.regression.result }}" \
               "smoke-test-linux=${{ needs.smoke-test-linux.result }}" \
               "smoke-test-macos=${{ needs.smoke-test-macos.result }}"; do
             name="${r%%=*}"

@@ -916,6 +916,16 @@ fn emit_result(
     environment: &serde_json::Value,
 ) {
     assert_eq!(output_shape.iter().product::<usize>(), output.len());
+    assert!(
+        loss.is_finite() && output.iter().all(|value| value.is_finite()),
+        "non-finite forward result"
+    );
+    if training.is_some() {
+        assert!(
+            grad_norm.is_finite() && gradient_norms.values().all(|norm| norm.is_finite()),
+            "non-finite gradient result"
+        );
+    }
     let hash = sha256_f32(output);
     let sample = validation_sample(output, 256);
     let backend = detect_backend();
@@ -1040,8 +1050,8 @@ fn emit_result(
             "logits_hash": hash,
             "output_shape": output_shape,
             "logits_sample": sample,
-            "loss": if loss.is_nan() { -1.0 } else { (loss * 1_000_000.0).round() / 1_000_000.0 },
-            "grad_norm": training.map(|_| if grad_norm.is_nan() { -1.0 } else { (grad_norm * 1_000_000.0).round() / 1_000_000.0 }),
+            "loss": (loss * 1_000_000.0).round() / 1_000_000.0,
+            "grad_norm": training.map(|_| (grad_norm * 1_000_000.0).round() / 1_000_000.0),
             "gradient_norms": gradient_norms,
         },
     });

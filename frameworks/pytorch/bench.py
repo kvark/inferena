@@ -1281,6 +1281,19 @@ def select_compiler_backend(device):
         os.environ["TRITON_DEFAULT_BACKEND"] = selected
 
 
+def compiler_options(mode):
+    if mode == "eager":
+        return None
+    modes = torch._inductor.list_mode_options()
+    if mode not in modes:
+        raise ValueError(f"unknown INFERENA_TORCH_MODE: {mode}")
+    torch._dynamo.config.suppress_errors = False
+    options = dict(modes[mode])
+    # One explicit replay owner, including the uncaptured comparison.
+    options["triton.cudagraphs"] = False
+    return options
+
+
 def attention_policy(device, model_type=None):
     policy = os.environ.get("INFERENA_SDPA", "auto")
     if policy not in ("auto", "math", "efficient"):
@@ -1327,9 +1340,7 @@ def _bench(model_name, spec, dev, stream):
         raise ValueError("warmups must be >= 0 and measurement runs must be >= 1")
     precision = _configure_benchmark_precision(dev, strict)
     mode = os.environ.get("INFERENA_TORCH_MODE", "default")
-    modes = torch._inductor.list_mode_options() if mode != "eager" else {}
-    if mode != "eager" and mode not in modes:
-        raise ValueError(f"unknown INFERENA_TORCH_MODE: {mode}")
+    options = compiler_options(mode)
     graph_capable = torch.device(dev).type in ("cuda", "xpu")
     graph_setting = os.environ.get("INFERENA_GRAPH_REPLAY", os.environ.get(
         "INFERENA_CUDA_GRAPHS", "1" if graph_capable else "0"))
@@ -1381,9 +1392,6 @@ def _bench(model_name, spec, dev, stream):
     if mode != "eager":
         compile_start = time.perf_counter()
         try:
-            options = dict(modes[mode])
-            # One explicit replay owner, including the uncaptured ablation.
-            options["triton.cudagraphs"] = False
             execution["compiler_options"] = options
             candidate = torch.compile(eager_model, options=options)
             compile_inputs = prepare_inputs(model_type, candidate, dev)

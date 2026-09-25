@@ -11,6 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 meganeura = { workspace = true }
+# Use the same adapter enumeration and timing API as the pinned Meganeura.
+blade-graphics = { version = "0.9", git = "https://github.com/kvark/blade", rev = "fbb4f28c4869e81ae15de58925945b423b9c1ac5" }
 hf-hub = { version = "0.4", default-features = false, features = ["ureq", "native-tls"] }
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 serde = { workspace = true }
@@ -18,3 +20,5 @@ serde_json = { workspace = true }
 sha2 = "0.10"
 hex = "0.4"
 env_logger = "0.11"
+# Host phase markers only; no CUDA SDK or tracing-subscriber dependency.
+nvtx = "1.3"

@@ -318,7 +318,7 @@ class ExpertLayer(nn.Module):
         self.mlp = SwiGLU(dim, intermediate)
 
     def forward(self, x, vlm_kv):
-        kv_input = vlm_kv if self.is_cross_attention else x
+        kv_input = vlm_kv if self.is_cross_attention else None
         x = x + self.self_attn(
             self.input_layernorm(x),
             kv_input,
@@ -1461,22 +1461,6 @@ def bench_v2(model_name: str, spec: dict):
             gradient_norms[
                 _gradient_parameter_name(model_type, name)
             ] = parameter_norm_sq ** 0.5
-    # Meganeura's default optimizer concatenates each SwiGLU gate/up weight
-    # pair into one physical parameter buffer. Compare the invariant norm of
-    # that concatenation rather than treating storage layout as model wiring.
-    for gate_name in [
-        name
-        for name in gradient_norms
-        if name.endswith(".mlp.gate_proj.weight")
-    ]:
-        up_name = gate_name.removesuffix("gate_proj.weight") + "up_proj.weight"
-        if up_name not in gradient_norms:
-            continue
-        fused_name = f"{gate_name}+{up_name}"
-        gradient_norms[fused_name] = (
-            gradient_norms.pop(gate_name) ** 2
-            + gradient_norms.pop(up_name) ** 2
-        ) ** 0.5
     grad_norm = grad_norm_sq ** 0.5
 
     latency_call = _benchmark_latency_call(model_type, model, inputs, dev)

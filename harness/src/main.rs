@@ -620,7 +620,12 @@ fn run_framework(
                     .get("precision")
                     .and_then(|value| value.get("comparison_class"))
                     .and_then(|value| value.as_str());
-                if reported_protocol != Some(PAPER_PROTOCOL)
+                if reported_protocol
+                    != Some(if framework == "meganeura" {
+                        "inferena-v2"
+                    } else {
+                        PAPER_PROTOCOL
+                    })
                     || reported_class != Some(expected_class)
                 {
                     return FrameworkOutcome::Error {

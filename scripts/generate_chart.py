@@ -32,7 +32,7 @@ DEFAULT_COLOR = "#888888"
 
 def load_summaries(results_dir):
     """Return [(model, [{framework, inference_ms, gpu_name}, ...]), ...]
-    sorted by model name. Only 'ok' outcomes with inference_ms>0 are kept.
+    sorted by model name. Keep successful inference, including partial runs.
     """
     data = []
     pattern = os.path.join(results_dir, "*_summary.json")
@@ -47,8 +47,12 @@ def load_summaries(results_dir):
             continue
         rows = []
         for o in outcomes:
-            if o.get("status") != "ok":
+            if o.get("status") not in ("ok", "partial") or o.get("protocol", {}).get("diagnostic"):
                 continue
+            if o["status"] == "partial":
+                phase = o.get("execution", {}).get("graph_replay", {}).get("phases", {}).get("inference", {})
+                if phase.get("status") not in ("captured-and-validated", "validated-uncaptured"):
+                    continue
             validation = o.get("validation", {})
             if (
                 validation.get("comparison_performed")
@@ -56,7 +60,7 @@ def load_summaries(results_dir):
             ):
                 continue
             ms = o.get("timings", {}).get("inference_ms", 0.0)
-            if ms <= 0:
+            if ms is None or not math.isfinite(ms) or ms <= 0:
                 continue
             rows.append({
                 "framework": o["framework"],

@@ -1497,7 +1497,7 @@ fn main() {
     }
 
     // Save results even when everything fails — the per-framework JSON captures
-    // the stderr excerpt, which is often the only record of what went wrong.
+    // the full traceback, which is often the only record of what went wrong.
     save_results(&results_dir, &cli.model, &outcomes);
 
     if successes.is_empty() {

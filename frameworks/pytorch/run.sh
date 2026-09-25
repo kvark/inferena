@@ -23,9 +23,17 @@ fi
 # Check torch is importable.
 if ! "$PYTHON" -c "import torch" 2>/dev/null; then
     ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-    echo "[pytorch] torch not installed. Run: pip install -r $ROOT_DIR/requirements-cpu.txt" >&2
-    echo "[pytorch] Or create a venv: python3 -m venv .venv && .venv/bin/pip install -r $ROOT_DIR/requirements-cpu.txt" >&2
+    echo "[pytorch] torch not importable with $PYTHON. Run: bash $ROOT_DIR/scripts/setup.sh <wheel-backend>" >&2
     exit 1
 fi
 
-exec "$PYTHON" "$SCRIPT_DIR/bench.py" "$MODEL"
+PREFIX=()
+if [ -n "${INFERENA_NSYS:-}" ]; then
+    # Diagnostic compilation stays in-process; do not trace forked compiler workers.
+    export TORCHINDUCTOR_COMPILE_THREADS=1
+    PREFIX=("$INFERENA_NSYS" profile --trace=cuda-sw,nvtx --cuda-graph-trace=node
+        --sample=none --cpuctxsw=none --wait=primary "--output=${INFERENA_NSYS_DIR:?}/pytorch")
+    printf '%q ' "${PREFIX[@]+"${PREFIX[@]}"}" "$PYTHON" "$SCRIPT_DIR/bench.py" "$MODEL" >&2
+    echo >&2
+fi
+exec "${PREFIX[@]+"${PREFIX[@]}"}" "$PYTHON" "$SCRIPT_DIR/bench.py" "$MODEL"

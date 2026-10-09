@@ -86,6 +86,23 @@ class CampaignTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "device execution fault"):
                     _bench("test", {"type": "whisper"}, "cpu", None)
 
+    def test_diffusion_feed_forward_uses_exact_gelu(self):
+        from bench import SpatialTransformerBlock
+
+        torch.manual_seed(7)
+        block = SpatialTransformerBlock(8, 4, 4, 1e-5)
+        x = torch.randn(3, 8, requires_grad=True)
+        context = torch.randn(2, 4)
+        h = x + block.self_attn(block.norm1(x), block.norm1(x))
+        h = h + block.cross_attn(block.norm2(h), context)
+        z = block.ff.fc1(block.norm3(h))
+        expected = h + block.ff.fc2(0.5 * z * (1 + torch.erf(z / (2 ** 0.5))))
+        actual = block(x, context)
+        torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-7)
+        actual_grad = torch.autograd.grad(actual.square().sum(), x)[0]
+        expected_grad = torch.autograd.grad(expected.square().sum(), x)[0]
+        torch.testing.assert_close(actual_grad, expected_grad, rtol=1e-6, atol=1e-7)
+
     def test_smolvla_attention_uses_normalized_self_keys_and_external_cross_keys(self):
         from bench import ExpertLayer
 

@@ -571,7 +571,7 @@ def main():
                INFERENA_REQUIRE_LOCAL_WEIGHTS="1", INFERENA_TORCH_BACKEND=args.backend)
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v14", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v15", "source": revision,
         "synthetic_parameter_init": SYNTHETIC_PARAMETER_INIT,
         "model_revisions": {name: SMOLLM2_REVISIONS[name] for name in args.models if name in SMOLLM2_REVISIONS},
         "meganeura": dependency, "python": sys.version, "packages": packages,
@@ -579,6 +579,7 @@ def main():
                   "build_config": torch.__config__.show()},
         "args": {**vars(args), "results_dir": str(destination)}, "sha256": hashes,
         "native_policy": {"measured_construction": True, "optimizer": "egglog-outlined",
+                          "submissions_per_step": 1,
                           "scope": "All", "class_limit": None,
                           "max_scratch_bytes": TUNE_SCRATCH_BYTES,
                           "kernel_seconds_per_program": args.tune_seconds,

@@ -650,27 +650,26 @@ fn bench_smollm2(model_name: &str) {
     // --- Training step (forward + backward) ---
     eprintln!("[meganeura] building training graph...");
     let train_compile_start = Instant::now();
-    let training_g = smollm2::build_training_graph(&config, seq_len);
+    let mut training_g = Graph::new();
+    let training_logits = smollm2::build_graph(&mut training_g, &config, seq_len);
+    let targets = training_g.input_u32("labels", &[seq_len]);
+    let loss_node = training_g.cross_entropy_loss_indices(training_logits, targets);
+    training_g.set_outputs(vec![loss_node]);
     eprintln!("[meganeura] compiling training session...");
 
     // `labels[pos]` is already the target for position `pos` (see the
     // inference loss above) — every position has a target, so no scale
     // compensation for an excluded last position is needed anymore.
-    let mut one_hot_labels = vec![0.0f32; seq_len * vocab];
-    for pos in 0..seq_len {
-        let target = labels[pos] as usize;
-        one_hot_labels[pos * vocab + target] = 1.0;
-    }
     let mut train_session = build_session(&training_g, Mode::Training, |session| {
         load_weights(session, &model, &transposed_set);
         session.set_input_u32("token_ids", &input_ids);
-        session.set_input("labels", &one_hot_labels);
+        session.set_input_u32("labels", &labels);
     });
     compile_s += train_compile_start.elapsed().as_secs_f64();
 
     let training = bench_session("training", &mut train_session, &|s| {
         s.set_input_u32("token_ids", &input_ids);
-        s.set_input("labels", &one_hot_labels);
+        s.set_input_u32("labels", &labels);
     });
     if let Some(path) = capture_gap_profile(
         model_name,
@@ -679,7 +678,7 @@ fn bench_smollm2(model_name: &str) {
         &training,
         &|s| {
             s.set_input_u32("token_ids", &input_ids);
-            s.set_input("labels", &one_hot_labels);
+            s.set_input_u32("labels", &labels);
         },
     ) {
         profile_artifacts.insert("training", path);
@@ -1052,7 +1051,7 @@ fn emit_result(
             "statistic": "median",
             "training_requested": training.is_some(),
             "training_scope": training.map(|_| "forward + loss + backward; no optimizer update"),
-            "compile_scope": "graph construction, calibrated graph/kernel/submission search, GPU pipelines, weight/input initialization and full-tensor qualification for requested sessions",
+            "compile_scope": "graph construction, calibrated graph/kernel search with one submission, GPU pipelines, weight/input initialization and full-tensor qualification for requested sessions",
             "diagnostic": std::env::var_os("INFERENA_NSYS").is_some(),
             "context_lifetime": "owned per session; destroyed after use",
         },
@@ -1340,11 +1339,7 @@ fn bench_resnet() {
     // --- Inputs ---
     let in_size = (batch * 3 * 224 * 224) as usize;
     let images: Vec<f32> = (0..in_size).map(|i| (i as f32 * 0.001).sin()).collect();
-    let labels_idx: Vec<usize> = (0..batch as usize).map(|i| i % 1000).collect();
-    let mut one_hot_labels = vec![0.0f32; (batch * 1000) as usize];
-    for (b, &l) in labels_idx.iter().enumerate() {
-        one_hot_labels[b * 1000 + l] = 1.0;
-    }
+    let labels_idx: Vec<u32> = (0..batch).map(|i| i % 1000).collect();
     let mut infer_session = build_session(&infer_g, Mode::Inference, |session| {
         init_params(session);
         session.set_input("image", &images);
@@ -1357,12 +1352,12 @@ fn bench_resnet() {
     });
 
     let logits = infer_session.read_output((batch * 1000) as usize);
-    // Cross-entropy on CPU with the same one-hot labels (matches PyTorch's
+    // Cross-entropy on CPU with the same class indices (matches PyTorch's
     // F.cross_entropy(logits, labels), which defaults to mean reduction).
     let mut total_loss = 0.0f64;
     for b in 0..batch as usize {
         let row = &logits[b * 1000..(b + 1) * 1000];
-        let target = labels_idx[b];
+        let target = labels_idx[b] as usize;
         let max_l = row.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let sum_exp: f64 = row.iter().map(|&l| ((l - max_l) as f64).exp()).sum();
         total_loss -= (row[target] - max_l) as f64 - sum_exp.ln();
@@ -1415,17 +1410,21 @@ fn bench_resnet() {
     // --- Training step (forward + loss + backward) ---
     eprintln!("[meganeura] building ResNet training graph...");
     let train_compile_start = Instant::now();
-    let training_g = resnet::build_resnet50_training(batch);
+    let mut training_g = Graph::new();
+    let training_logits = resnet::build_resnet50(&mut training_g, batch);
+    let targets = training_g.input_u32("labels", &[batch as usize]);
+    let loss_node = training_g.cross_entropy_loss_indices(training_logits, targets);
+    training_g.set_outputs(vec![loss_node]);
     let mut train_session = build_session(&training_g, Mode::Training, |session| {
         init_params(session);
         session.set_input("image", &images);
-        session.set_input("labels", &one_hot_labels);
+        session.set_input_u32("labels", &labels_idx);
     });
     compile_s += train_compile_start.elapsed().as_secs_f64();
 
     let training = bench_session("training", &mut train_session, &|s| {
         s.set_input("image", &images);
-        s.set_input("labels", &one_hot_labels);
+        s.set_input_u32("labels", &labels_idx);
     });
     if let Some(path) = capture_gap_profile(
         "ResNet-50",
@@ -1434,7 +1433,7 @@ fn bench_resnet() {
         &training,
         &|s| {
             s.set_input("image", &images);
-            s.set_input("labels", &one_hot_labels);
+            s.set_input_u32("labels", &labels_idx);
         },
     ) {
         profile_artifacts.insert("training", path);

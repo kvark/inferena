@@ -92,7 +92,7 @@ class SpatialTransformerBlock(nn.Module):
         norm = self.norm1(x)
         x = x + self.self_attn(norm, norm)
         x = x + self.cross_attn(self.norm2(x), context)
-        x = x + self.ff.fc2(F.gelu(self.ff.fc1(self.norm3(x)), approximate="tanh"))
+        x = x + self.ff.fc2(F.gelu(self.ff.fc1(self.norm3(x)), approximate="none"))
         return x
 
 

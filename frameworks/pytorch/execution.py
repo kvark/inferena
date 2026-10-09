@@ -205,7 +205,7 @@ def capture_phase(fn, model=None, stream=None, reduced_precision=False, device="
                 error.details.update(stage=stage, tensor="full gradient")
                 raise
             totals["replays" if stage == "graph replay" else "uncaptured"].append(total)
-        return rows
+        return {label: row for label, row in rows.items() if label.startswith("output ")}
 
     ordinary = []
     ordinary_validation_s = 0.0
@@ -232,6 +232,7 @@ def capture_phase(fn, model=None, stream=None, reduced_precision=False, device="
     capture_s = 0.0
     replay_validation_s = 0.0
     if capture:
+        capture_start = time.perf_counter()
         if model is not None:
             # Capture allocates stable gradients that replay overwrites.
             model.zero_grad(set_to_none=True)
@@ -251,7 +252,7 @@ def capture_phase(fn, model=None, stream=None, reduced_precision=False, device="
             synchronize(device)
             raise QualificationError(str(error), kind="capture", stage="graph capture") from error
         replay = CapturedPhase(fn, model, graph, outputs)
-        capture_s = time.perf_counter() - start - ordinary_validation_s
+        capture_s = time.perf_counter() - capture_start
         validation_start = time.perf_counter()
         for _ in range(2):
             actual = replay()

@@ -1,30 +1,34 @@
 # P3HPC paired collection
 
 Use branch `experiment/p3hpc-cuda-graphs`. Meganeura is pinned to merged
-`0dbfcc0029bf98b33a03fc792e1f4e90ead17f23`, with Blade
-`fbb4f28c4869e81ae15de58925945b423b9c1ac5`. Protocol
-`p3hpc-paired-campaign-v14` retains the merged joint graph/schedule search:
+`66ff722de165401dc21cccce66fd2b518304c7f1`, with Blade
+`56f05651cca73659130e924e497dda633f839d40`. Protocol
+`p3hpc-paired-campaign-v15` retains the merged joint graph/schedule search:
 up to 16 graph/implementation forms, interleaved physical-plan choices, and
 at least two warmup pairs and 250 ms before comparing whole programs, within
 the shared 60-second session deadline. Private kernel probes have no separate
 two-second cap. Held-out timing still warms both engines for at least two
 seconds and five calls per phase.
 
-V12's matched deterministic pseudorandom parameters are retained. Model shapes,
-inputs, pinned SmolLM2 checkpoints, arithmetic classes, and numerical thresholds
-are unchanged. The new pin includes #211's reference-interpreter checks and
-correctness fixes, including normalization, GELU and loss reductions, and #212's
-reference-check guards. #213 removes duplicate elementwise lowerings, changes
-implicit-convolution tile loading, enables Winograd for training forward/input
-gradients, and extends attention kernels. Collection settings and numerical
-gates are unchanged. Cached-attention improvements do not affect this stateless
-workload. #214 keeps shared search expressions compact in receipts and fixes
-reference error propagation through rotary embeddings. It changes neither
-GPU kernels nor the collection's numerical gates.
-The collector now retains phase-level failures and runs a separate eager
-diagnostic. The unsuccessful ROCm Whisper workaround is removed: the primary
-path uses ordinary compiled automatic SDPA again. Graph replay is still required. Do not
-combine this revision with previous cohorts or relabel their records.
+V15 retains matched deterministic pseudorandom parameters, model shapes, inputs,
+pinned SmolLM2 checkpoints, arithmetic classes, search budgets and numerical
+thresholds. It updates Meganeura and Blade, including descriptor-set reuse,
+adaptive kernel timing, grouped GEMV and egglog backward-layout exploration.
+Measured construction now uses one submission for every program.
+
+SmolLM2 and ResNet training pass class indices directly to Meganeura's indexed
+cross-entropy, matching PyTorch's target representation and mean loss. The
+previous dense one-hot label allocation and upload are removed. The diffusion
+reference now uses exact GELU to match the updated native model; native Whisper
+also uses exact GELU, matching the reference. These corrections change the
+executed workload relative to v14. Graph-capture accounting now excludes the
+preceding uncaptured preparation; complete gradient checks remain in place,
+with compact aggregate receipts.
+
+The collector retains phase-level failures and runs a separate eager diagnostic.
+The primary ROCm path uses ordinary compiled automatic SDPA with graph replay
+required. Do not combine this revision with previous cohorts or relabel their
+records. Existing pinned Python environments remain unchanged.
 
 **Collection candidate: qualify every backend before launching the common
 cohort or renting H100 again.** Previous acceptance results do not qualify
@@ -152,6 +156,17 @@ The recent cached-attention and KV-cache optimizations are not exercised by
 this stateless workload. Measuring those gains needs a separate decode study;
 they must not be inferred from the minimal-forward timings here.
 
+## Separate search-budget study
+
+Keep the primary cohort at 60 seconds per native session. For the budget study,
+collect separate campaigns with `--tune-seconds 10`, `20`, `30` and `60` on the
+same pinned source and environment, using three fresh processes per condition.
+Retain search receipts, rejected candidates, elapsed preparation time and
+held-out execution times; a soft deadline may be exceeded by in-flight work.
+Plot held-out latency and preparation time against the allowed budget for each
+model, phase and arithmetic class. Do not pool these runs with the primary
+cohort. The reference compilation deadline remains 120 seconds at every point.
+
 ## The executed contract
 
 | Component | Primary policy |
@@ -197,8 +212,9 @@ operators form its boundaries. If that region exceeds the bound or crosses
 precision domains, search falls back to one verified repeated region. It does
 not cross mutations. Missing regions, truncation and rejections are recorded.
 Graph and physical-plan ranks are interleaved so additional matrix schedules
-do not postpone every fusion, attention-layout/split, convolution weight-split,
-or submission-chunk choice. Logical tensor bytes order extraction; this is not
+do not postpone every fusion, attention-layout/split or convolution weight-split
+choice. Independent scalar dQ and dK/dV layouts are explored through egglog;
+every measured program uses one submission. Logical tensor bytes order extraction; this is not
 an HBM or latency model. Qualified paired whole-step wall time selects winners.
 
 Private kernel search uses the **remaining shared session budget**, with no
@@ -209,7 +225,7 @@ programs. Search can still end before every class or graph is explored, but
 short candidate slices no longer repeatedly interrupt costly qualification
 before later kernel classes are reached. The kernel domain
 includes scalar matmul/convolution shapes, legal native-f32 cooperative tiles,
-GEMV widths/reductions and reduction kernels. Reduced-input cooperative paths
+GEMV widths/column groups/reductions and reduction kernels. Reduced-input cooperative paths
 remain available under the accelerated arithmetic contract, but are not an
 exhaustive measured search. “All” means the library's current legal kernel
 domain, not every implementation or a guarantee to finish it within the budget.

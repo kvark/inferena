@@ -1,7 +1,7 @@
 # P3HPC paired collection
 
 Use branch `experiment/p3hpc-cuda-graphs`. Meganeura is pinned to merged
-`66ff722de165401dc21cccce66fd2b518304c7f1`, with Blade
+`3102683311f3376026928364928a4aa966102311`, with Blade
 `56f05651cca73659130e924e497dda633f839d40`. Protocol
 `p3hpc-paired-campaign-v15` retains the merged joint graph/schedule search:
 up to 16 graph/implementation forms, interleaved physical-plan choices, and

@@ -29,7 +29,7 @@ TORCH_VERSION = "2.13.0"
 TORCH_REVISION = "cf30153c4c131c8164ee7798e5022d810682e2cb"
 GRADIENT_LIMIT = 0.05
 ACCELERATED_SAMPLE_LIMIT = 0.10
-TUNE_SECONDS = 60.0
+TUNE_SECONDS = 30.0
 TUNE_SCRATCH_BYTES = 1024**3
 COMPILE_SECONDS = 120.0
 WARMUP_SECONDS = 2.0
@@ -478,7 +478,7 @@ def create_parser():
     parser.add_argument("--sdpa", choices=("auto", "math", "efficient"),
                         help="override PyTorch attention for all models; default: math on XPU, auto otherwise")
     parser.add_argument("--tune-seconds", type=positive_seconds, default=TUNE_SECONDS,
-                        help="Meganeura soft construction deadline per session (default: 60 s), including initialization/qualification")
+                        help="Meganeura soft construction deadline per session (default: %(default)g s), including initialization/qualification")
     parser.add_argument("--compile-seconds", type=positive_seconds, default=COMPILE_SECONDS,
                         help="PyTorch compilation/first-specialization deadline (default: 120 s)")
     stage = parser.add_mutually_exclusive_group()

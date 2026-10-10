@@ -6,12 +6,12 @@ Use branch `experiment/p3hpc-cuda-graphs`. Meganeura is pinned to merged
 `p3hpc-paired-campaign-v15` retains the merged joint graph/schedule search:
 up to 16 graph/implementation forms, interleaved physical-plan choices, and
 at least two warmup pairs and 250 ms before comparing whole programs, within
-the shared 60-second session deadline. Private kernel probes have no separate
+the shared 30-second session deadline. Private kernel probes have no separate
 two-second cap. Held-out timing still warms both engines for at least two
 seconds and five calls per phase.
 
 V15 retains matched deterministic pseudorandom parameters, model shapes, inputs,
-pinned SmolLM2 checkpoints, arithmetic classes, search budgets and numerical
+pinned SmolLM2 checkpoints, arithmetic classes and numerical
 thresholds. It updates Meganeura and Blade, including descriptor-set reuse,
 adaptive kernel timing, grouped GEMV and egglog backward-layout exploration.
 Measured construction now uses one submission for every program.
@@ -158,7 +158,11 @@ they must not be inferred from the minimal-forward timings here.
 
 ## Separate search-budget study
 
-Keep the primary cohort at 60 seconds per native session. For the budget study,
+The primary default is now 30 seconds per native session. Revision
+0ad1a5198 and the October 9–10 archives still used 60 seconds: the earlier
+30-second experiments passed an explicit override, and the default had not
+been changed. Preserve that distinction when comparing archived results.
+For a separate budget study,
 collect separate campaigns with `--tune-seconds 10`, `20`, `30` and `60` on the
 same pinned source and environment, using three fresh processes per condition.
 Retain search receipts, rejected candidates, elapsed preparation time and
@@ -196,7 +200,7 @@ Do not call this a measurement of PyTorch's best achievable steady state.
 ### Preparation budgets and evidence
 
 Meganeura uses `train::build_measured`: representative weights and inputs are
-initialized before candidate execution. A **60-second soft total deadline per
+initialized before candidate execution. A **30-second soft total deadline per
 session** includes graph search, lowering, GPU pipelines, initialization and
 qualification. Up to **16 graph/implementation forms and 64 programs** explore
 fused/unfused expressions and scalar matrix tiles, K stages, counted/unrolled

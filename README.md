@@ -219,7 +219,7 @@ The primary matrix has 30 paired processes per device. Meganeura always uses
 qualified calibrated graph/kernel search.
 The v15 native policy retains up to 16 graph/schedule forms and compares
 qualified programs after two warmup pairs and at least 250 ms, within the
-shared 60-second per-session budget. Qualify the new pin before collection;
+shared 30-second per-session budget. Qualify the new pin before collection;
 do not mix v15 records with earlier campaigns.
 PyTorch uses default compilation
 with a 120-second compilation deadline, not max-autotune. CUDA, ROCm and XPU

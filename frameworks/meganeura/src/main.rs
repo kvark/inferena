@@ -45,6 +45,11 @@ fn build_session(graph: &Graph, mode: Mode, initialize: impl Fn(&mut Session)) -
             .parse::<f64>()
             .expect("INFERENA_TUNE_SECONDS must be a positive number");
         assert!(seconds.is_finite() && seconds > 0.0);
+        let max_submission_chunks = std::env::var("INFERENA_MAX_SUBMISSION_CHUNKS")
+            .unwrap_or_else(|_| "64".to_owned())
+            .parse::<usize>()
+            .expect("INFERENA_MAX_SUBMISSION_CHUNKS must be a positive integer");
+        assert!((1..=64).contains(&max_submission_chunks));
         let memory = config.gpu.as_ref().unwrap().memory_stats();
         assert!(
             memory.budget > memory.usage,
@@ -54,6 +59,7 @@ fn build_session(graph: &Graph, mode: Mode, initialize: impl Fn(&mut Session)) -
         let options = train::BuildSearchOptions {
             max_graphs: 16,
             max_programs: 64,
+            max_submission_chunks,
             warmup_runs: 2,
             warmup_time: Duration::from_millis(250),
             max_time: Duration::from_secs_f64(seconds),
@@ -1051,7 +1057,7 @@ fn emit_result(
             "statistic": "median",
             "training_requested": training.is_some(),
             "training_scope": training.map(|_| "forward + loss + backward; no optimizer update"),
-            "compile_scope": "graph construction, calibrated graph/kernel search with one submission, GPU pipelines, weight/input initialization and full-tensor qualification for requested sessions",
+            "compile_scope": "graph construction, calibrated graph/kernel/submission search, GPU pipelines, weight/input initialization and full-tensor qualification for requested sessions",
             "diagnostic": std::env::var_os("INFERENA_NSYS").is_some(),
             "context_lifetime": "owned per session; destroyed after use",
         },

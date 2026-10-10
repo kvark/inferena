@@ -16,6 +16,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +31,7 @@ TORCH_REVISION = "cf30153c4c131c8164ee7798e5022d810682e2cb"
 GRADIENT_LIMIT = 0.05
 ACCELERATED_SAMPLE_LIMIT = 0.10
 TUNE_SECONDS = 30.0
+MAX_SUBMISSION_CHUNKS = 64
 TUNE_SCRATCH_BYTES = 1024**3
 COMPILE_SECONDS = 120.0
 WARMUP_SECONDS = 2.0
@@ -133,7 +135,7 @@ def duration_seconds(duration):
     return duration["secs"] + duration["nanos"] / 1e9
 
 
-def check_native_search(session, seconds):
+def check_native_search(session, seconds, max_submission_chunks):
     search = session.get("search")
     if not search:
         raise ValueError("native session did not use calibrated construction")
@@ -142,6 +144,7 @@ def check_native_search(session, seconds):
     memory = session["memory_budget"]
     if (duration_seconds(options["max_time"]) != seconds
             or options["max_graphs"] != 16 or options["max_programs"] != 64
+            or options["max_submission_chunks"] != max_submission_chunks
             or options["warmup_runs"] != 2
             or duration_seconds(options["warmup_time"]) != 0.25
             or memory["plan_fraction_of_available"] != 0.75
@@ -258,7 +261,8 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
     for session in sessions:
         if session["cooperative_matrix_policy"] != ("NativeF32" if strict else "Auto"):
             raise ValueError("native session used the wrong cooperative policy")
-        check_native_search(session, getattr(args, "tune_seconds", TUNE_SECONDS))
+        check_native_search(session, getattr(args, "tune_seconds", TUNE_SECONDS),
+                            getattr(args, "max_submission_chunks", MAX_SUBMISSION_CHUNKS))
     execution = pt["execution"]
     sdpa = "math" if oracle else reference_sdpa_policy(args, pt["model"])
     if execution["sdpa_policy"] != sdpa:
@@ -479,6 +483,9 @@ def create_parser():
                         help="override PyTorch attention for all models; default: math on XPU, auto otherwise")
     parser.add_argument("--tune-seconds", type=positive_seconds, default=TUNE_SECONDS,
                         help="Meganeura soft construction deadline per session (default: %(default)g s), including initialization/qualification")
+    parser.add_argument("--max-submission-chunks", type=int, choices=(1, 2, 4, 8, 16, 32, 64),
+                        default=MAX_SUBMISSION_CHUNKS,
+                        help="search powers of two up to this bound on every GPU (default: %(default)s); 1 disables chunking")
     parser.add_argument("--compile-seconds", type=positive_seconds, default=COMPILE_SECONDS,
                         help="PyTorch compilation/first-specialization deadline (default: 120 s)")
     stage = parser.add_mutually_exclusive_group()
@@ -489,6 +496,8 @@ def create_parser():
 
 
 def main():
+    started_at = datetime.now(timezone.utc).isoformat()
+    started = time.monotonic()
     parser = create_parser()
     args = parser.parse_args()
     if args.eager and args.max_autotune:
@@ -508,6 +517,7 @@ def main():
         "TORCH_LOGS", "TORCH_TRACE", "CARGO_TARGET_DIR",
         "INFERENA_TORCH_MODE", "INFERENA_GRAPH_REPLAY", "INFERENA_CUDA_GRAPHS",
         "INFERENA_TUNE_SECONDS", "INFERENA_COMPILE_SECONDS", "INFERENA_PREPARATION_REPORT", "INFERENA_BUDGET_ENFORCED",
+        "INFERENA_MAX_SUBMISSION_CHUNKS",
         "INFERENA_SDPA", "INFERENA_REFERENCE_DIAGNOSTIC",
     )]
     if overrides:
@@ -571,7 +581,8 @@ def main():
                INFERENA_REQUIRE_LOCAL_WEIGHTS="1", INFERENA_TORCH_BACKEND=args.backend)
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v15", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v16", "source": revision,
+        "started_at": started_at,
         "synthetic_parameter_init": SYNTHETIC_PARAMETER_INIT,
         "model_revisions": {name: SMOLLM2_REVISIONS[name] for name in args.models if name in SMOLLM2_REVISIONS},
         "meganeura": dependency, "python": sys.version, "packages": packages,
@@ -579,7 +590,7 @@ def main():
                   "build_config": torch.__config__.show()},
         "args": {**vars(args), "results_dir": str(destination)}, "sha256": hashes,
         "native_policy": {"measured_construction": True, "optimizer": "egglog-outlined",
-                          "submissions_per_step": 1,
+                          "max_submission_chunks": args.max_submission_chunks,
                           "scope": "All", "class_limit": None,
                           "max_scratch_bytes": TUNE_SCRATCH_BYTES,
                           "kernel_seconds_per_program": args.tune_seconds,
@@ -620,6 +631,7 @@ def main():
     }
 
     def save():
+        manifest["elapsed_seconds"] = time.monotonic() - started
         (destination / "campaign.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
     save()
@@ -627,8 +639,10 @@ def main():
     try:
         # Finish compilation before the first paired process; later wrapper
         # builds are locked no-ops, outside the timed engine calls.
+        build_started = time.monotonic()
         subprocess.run(["cargo", "build", "--release", "--locked", "-p", "inferena-harness", "-p", "inferena-meganeura"],
                        cwd=ROOT, env=dict(os.environ, CARGO_BUILD_JOBS=os.environ.get("CARGO_BUILD_JOBS", "1")), check=True)
+        manifest["runner_build_seconds"] = time.monotonic() - build_started
         executable = ROOT / "target/release" / ("inferena-meganeura.exe" if sys.platform == "win32" else "inferena-meganeura")
         devices = json.loads(subprocess.check_output([str(executable), "--list-devices"], cwd=ROOT, env=env, text=True, encoding="utf-8"))
         native = select_native_device(devices, args.gpu)
@@ -679,11 +693,17 @@ def main():
                             run_env = dict(env, INFERENA_TORCH_MODE=mode,
                                            INFERENA_SDPA=sdpa[model], INFERENA_GRAPH_REPLAY=str(int(graphs)),
                                            MEGANEURA_TUNE="1", INFERENA_TUNE_SECONDS=str(args.tune_seconds),
+                                           INFERENA_MAX_SUBMISSION_CHUNKS=str(args.max_submission_chunks),
                                            INFERENA_COMPILE_SECONDS=str(args.compile_seconds),
                                            INFERENA_PREPARATION_REPORT=str(folder / "torch-preparation.json"))
                             with (folder / "runner.log").open("w", encoding="utf-8") as log:
-                                result = subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
-                                                        env=run_env)
+                                run["started_at"] = datetime.now(timezone.utc).isoformat()
+                                run_started = time.monotonic()
+                                try:
+                                    result = subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
+                                                            env=run_env)
+                                finally:
+                                    run["elapsed_seconds"] = time.monotonic() - run_started
                             run["returncode"] = result.returncode
                             if result.returncode:
                                 raise RuntimeError(f"runner failed; inspect {folder / 'runner.log'}")
@@ -736,6 +756,7 @@ def main():
                 diagnostic.update(status="incomplete", error=str(error))
         raise
     finally:
+        manifest["finished_at"] = datetime.now(timezone.utc).isoformat()
         save()
         try:
             print(f"Archive: {archive_results(destination)}", flush=True)

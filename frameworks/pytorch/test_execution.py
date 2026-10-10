@@ -195,6 +195,7 @@ class CampaignTest(unittest.TestCase):
         self.assertFalse(defaults.graph_ablation)
         self.assertEqual(defaults.compile_seconds, 120)
         self.assertEqual(defaults.tune_seconds, 30)
+        self.assertEqual(defaults.max_submission_chunks, 64)
         self.assertIsNone(defaults.backend)
         self.assertIsNone(defaults.gpu)
         self.assertIsNone(defaults.results_dir)
@@ -403,7 +404,7 @@ class CampaignTest(unittest.TestCase):
             "measured_construction": True, "mode": "egglog-outlined", "sessions": [{
                 "mode": mode, "cooperative_matrix_policy": "NativeF32", "search": {
                     "options": {"max_time": {"secs": 30, "nanos": 0}, "max_graphs": 16,
-                                "max_programs": 64, "warmup_runs": 2,
+                                "max_programs": 64, "max_submission_chunks": 64, "warmup_runs": 2,
                                 "warmup_time": {"secs": 0, "nanos": 250000000},
                                 "max_plan_bytes": 3 * 1024**3, "tuning": tuning},
                     "selected": 0, "trials": [{"outcome": {"qualified": True}, "kernel_tuning": {
@@ -529,6 +530,8 @@ class CampaignTest(unittest.TestCase):
             (0, ("precision", "f16_cooperative_matrix_permitted"), True),
             (0, ("optimizer", "sessions"), []),
             (0, ("optimizer", "sessions", 0, "search", "options", "max_graphs"), 4),
+            (0, ("optimizer", "sessions", 0, "search", "options", "max_time"), {"secs": 60, "nanos": 0}),
+            (0, ("optimizer", "sessions", 0, "search", "options", "max_submission_chunks"), 1),
             (0, ("optimizer", "sessions", 0, "search", "options", "warmup_time"), {"secs": 0, "nanos": 0}),
             (0, ("optimizer", "sessions", 0, "search", "options", "tuning", "max_classes"), 8),
             (0, ("optimizer", "sessions", 0, "search", "options", "tuning", "max_time"), {"secs": 2, "nanos": 0}),

@@ -1,9 +1,10 @@
 # P3HPC paired collection
 
-Use branch `experiment/p3hpc-cuda-graphs`. Meganeura is pinned to merged
-`3102683311f3376026928364928a4aa966102311`, with Blade
+Use branch `experiment/p3hpc-cuda-graphs`. Meganeura is pinned to
+`503e25ef07a26ee6df0cc9c72cf58387c4647d37` (submission-search correction,
+not yet merged), with Blade
 `56f05651cca73659130e924e497dda633f839d40`. Protocol
-`p3hpc-paired-campaign-v15` retains the merged joint graph/schedule search:
+`p3hpc-paired-campaign-v16` retains the merged joint graph/schedule search:
 up to 16 graph/implementation forms, interleaved physical-plan choices, and
 at least two warmup pairs and 250 ms before comparing whole programs, within
 the shared 30-second session deadline. Private kernel probes have no separate
@@ -14,7 +15,11 @@ V15 retains matched deterministic pseudorandom parameters, model shapes, inputs,
 pinned SmolLM2 checkpoints, arithmetic classes and numerical
 thresholds. It updates Meganeura and Blade, including descriptor-set reuse,
 adaptive kernel timing, grouped GEMV and egglog backward-layout exploration.
-Measured construction now uses one submission for every program.
+V16 restores measured submission choices 1, 2, 4, 8, 16, 32 and 64 on every
+GPU, including Intel. The same search budget covers these choices. Set
+`--max-submission-chunks 1` for a separately labelled single-submission control.
+The v15 cohort used one submission globally; it cannot establish the quality
+of the restored search at 30 seconds.
 
 SmolLM2 and ResNet training pass class indices directly to Meganeura's indexed
 cross-entropy, matching PyTorch's target representation and mean loss. The
@@ -218,7 +223,8 @@ not cross mutations. Missing regions, truncation and rejections are recorded.
 Graph and physical-plan ranks are interleaved so additional matrix schedules
 do not postpone every fusion, attention-layout/split or convolution weight-split
 choice. Independent scalar dQ and dK/dV layouts are explored through egglog;
-every measured program uses one submission. Logical tensor bytes order extraction; this is not
+submission chunk counts share the same search on all GPUs. Logical tensor
+bytes order extraction; this is not
 an HBM or latency model. Qualified paired whole-step wall time selects winners.
 
 Private kernel search uses the **remaining shared session budget**, with no

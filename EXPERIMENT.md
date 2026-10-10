@@ -1,7 +1,7 @@
 # P3HPC paired collection
 
 Use branch `experiment/p3hpc-cuda-graphs`. Meganeura is pinned to
-`9db5415556b83dbf965b6350ba77cc00dd8f7a75` (submission-search correction,
+`830abd793ee8b1fa3df2ac5109d50794bb16b886` (submission-search correction,
 not yet merged), with Blade
 `56f05651cca73659130e924e497dda633f839d40`. Protocol
 `p3hpc-paired-campaign-v16` retains the merged joint graph/schedule search:
@@ -22,6 +22,9 @@ check. The first three layouts are tried before those probes, including both
 backward-only and joint choices in training. Joint layout/submission alternatives remain in the
 search. The same budget covers all choices. Set
 `--max-submission-chunks 1` for a separately labelled single-submission control.
+Whole-program selection requires a 1% improvement plus the existing timing-noise
+margin; private kernel tuning retains its 5% threshold. A useful layout need not
+clear a 5% floor before its submission choices can be measured.
 Search candidates reuse immutable parameters only when all names, shapes,
 scalar types and packed representations match. Inputs and gradients remain
 private. The complete numerical gates are unchanged; native comparisons use

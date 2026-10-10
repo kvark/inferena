@@ -406,12 +406,14 @@ class CampaignTest(unittest.TestCase):
                           "f16_cooperative_matrix_permitted": False},
         }
         tuning = {"scope": "All", "max_classes": 2 * sys.maxsize + 1,
+                  "min_improvement": 0.05,
                   "max_time": {"secs": 30, "nanos": 0}, "max_scratch_bytes": TUNE_SCRATCH_BYTES}
         mg = {**copy.deepcopy(base), "framework": "meganeura", "optimizer": {
             "measured_construction": True, "mode": "egglog-outlined", "sessions": [{
                 "mode": mode, "cooperative_matrix_policy": "NativeF32", "search": {
                     "options": {"max_time": {"secs": 30, "nanos": 0}, "max_graphs": 16,
                                 "max_programs": 64, "max_submission_chunks": 64, "warmup_runs": 2,
+                                "min_improvement": 0.01,
                                 "warmup_time": {"secs": 0, "nanos": 250000000},
                                 "max_plan_bytes": 3 * 1024**3, "tuning": tuning},
                     "selected": 0, "trials": [{"outcome": {"qualified": True}, "kernel_tuning": {
@@ -539,8 +541,10 @@ class CampaignTest(unittest.TestCase):
             (0, ("optimizer", "sessions", 0, "search", "options", "max_graphs"), 4),
             (0, ("optimizer", "sessions", 0, "search", "options", "max_time"), {"secs": 60, "nanos": 0}),
             (0, ("optimizer", "sessions", 0, "search", "options", "max_submission_chunks"), 1),
+            (0, ("optimizer", "sessions", 0, "search", "options", "min_improvement"), 0.05),
             (0, ("optimizer", "sessions", 0, "search", "options", "warmup_time"), {"secs": 0, "nanos": 0}),
             (0, ("optimizer", "sessions", 0, "search", "options", "tuning", "max_classes"), 8),
+            (0, ("optimizer", "sessions", 0, "search", "options", "tuning", "min_improvement"), 0.01),
             (0, ("optimizer", "sessions", 0, "search", "options", "tuning", "max_time"), {"secs": 2, "nanos": 0}),
             (0, ("optimizer", "sessions", 0, "search", "trials", 0, "kernel_tuning", "visited_classes"), 0),
             (0, ("optimizer", "sessions", 0, "search", "trials", 0, "outcome", "qualified"), False),

@@ -145,12 +145,14 @@ def check_native_search(session, seconds, max_submission_chunks):
     if (duration_seconds(options["max_time"]) != seconds
             or options["max_graphs"] != 16 or options["max_programs"] != 64
             or options["max_submission_chunks"] != max_submission_chunks
+            or options["min_improvement"] != 0.01
             or options["warmup_runs"] != 2
             or duration_seconds(options["warmup_time"]) != 0.25
             or memory["plan_fraction_of_available"] != 0.75
             or options["max_plan_bytes"] != (memory["device_budget_bytes"] - memory["device_usage_bytes"]) // 4 * 3
             or options["max_plan_bytes"] <= 0
             or tuning["scope"] != "All" or tuning["max_classes"] != 2 * sys.maxsize + 1
+            or tuning["min_improvement"] != 0.05
             or duration_seconds(tuning["max_time"]) != seconds
             or tuning["max_scratch_bytes"] != TUNE_SCRATCH_BYTES):
         raise ValueError("native construction limits differ from the declared policy")
@@ -166,6 +168,7 @@ def check_native_search(session, seconds, max_submission_chunks):
             continue
         if (kernel["options"]["scope"] != "All"
                 or kernel["options"]["max_classes"] != tuning["max_classes"]
+                or kernel["options"]["min_improvement"] != tuning["min_improvement"]
                 or kernel["options"]["max_scratch_bytes"] != TUNE_SCRATCH_BYTES
                 or not 0 <= duration_seconds(kernel["options"]["max_time"]) <= seconds
                 or kernel["class_limit_reached"]
@@ -591,6 +594,7 @@ def main():
         "args": {**vars(args), "results_dir": str(destination)}, "sha256": hashes,
         "native_policy": {"measured_construction": True, "optimizer": "egglog-outlined",
                           "max_submission_chunks": args.max_submission_chunks,
+                          "program_min_improvement": 0.01, "kernel_min_improvement": 0.05,
                           "scope": "All", "class_limit": None,
                           "max_scratch_bytes": TUNE_SCRATCH_BYTES,
                           "kernel_seconds_per_program": args.tune_seconds,

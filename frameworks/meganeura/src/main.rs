@@ -65,6 +65,7 @@ fn build_session(
             max_graphs: 16,
             max_programs: 64,
             max_submission_chunks,
+            min_improvement: 0.01,
             warmup_runs: 2,
             warmup_time: Duration::from_millis(250),
             max_time: Duration::from_secs_f64(seconds),

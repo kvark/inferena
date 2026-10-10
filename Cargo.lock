@@ -5249,7 +5249,7 @@ checksum = "7ebb8d8732c6a6df3d8f032a82911cfc747e00efb95cc46e8d0acd5b5b88570c"
 [[package]]
 name = "meganeura"
 version = "0.3.0"
-source = "git+https://github.com/kvark/meganeura?rev=0872514511116ac028177d1308a8f768878bac3f#0872514511116ac028177d1308a8f768878bac3f"
+source = "git+https://github.com/kvark/meganeura?rev=53a54ad77fc0c9b5c17d2b9a79e2c0f4dc5fadf6#53a54ad77fc0c9b5c17d2b9a79e2c0f4dc5fadf6"
 dependencies = [
  "blade-graphics",
  "blade-macros",

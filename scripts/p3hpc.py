@@ -698,6 +698,7 @@ def main():
                                            INFERENA_PREPARATION_REPORT=str(folder / "torch-preparation.json"))
                             with (folder / "runner.log").open("w", encoding="utf-8") as log:
                                 run["started_at"] = datetime.now(timezone.utc).isoformat()
+                                save()
                                 run_started = time.monotonic()
                                 try:
                                     result = subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,

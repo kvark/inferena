@@ -48,8 +48,8 @@ The primary ROCm path uses ordinary compiled automatic SDPA with graph replay
 required. Do not combine this revision with previous cohorts or relabel their
 records. Existing pinned Python environments remain unchanged.
 
-**Collection candidate: qualify every backend before launching the common
-cohort or renting H100 again.** Previous acceptance results do not qualify
+**Collection candidate: qualify each target backend before a full campaign.**
+Previous acceptance results do not qualify
 the updated optimizer. Linux success does not certify macOS/ROCm/Windows.
 
 **ROCm Whisper repeatability remains unresolved (September 23):** a later RX 7900 XT

@@ -194,7 +194,7 @@ class CampaignTest(unittest.TestCase):
         self.assertFalse(defaults.max_autotune)
         self.assertFalse(defaults.graph_ablation)
         self.assertEqual(defaults.compile_seconds, 120)
-        self.assertEqual(defaults.tune_seconds, 60)
+        self.assertEqual(defaults.tune_seconds, 30)
         self.assertIsNone(defaults.backend)
         self.assertIsNone(defaults.gpu)
         self.assertIsNone(defaults.results_dir)
@@ -398,11 +398,11 @@ class CampaignTest(unittest.TestCase):
                           "f16_cooperative_matrix_permitted": False},
         }
         tuning = {"scope": "All", "max_classes": 2 * sys.maxsize + 1,
-                  "max_time": {"secs": 60, "nanos": 0}, "max_scratch_bytes": TUNE_SCRATCH_BYTES}
+                  "max_time": {"secs": 30, "nanos": 0}, "max_scratch_bytes": TUNE_SCRATCH_BYTES}
         mg = {**copy.deepcopy(base), "framework": "meganeura", "optimizer": {
             "measured_construction": True, "mode": "egglog-outlined", "sessions": [{
                 "mode": mode, "cooperative_matrix_policy": "NativeF32", "search": {
-                    "options": {"max_time": {"secs": 60, "nanos": 0}, "max_graphs": 16,
+                    "options": {"max_time": {"secs": 30, "nanos": 0}, "max_graphs": 16,
                                 "max_programs": 64, "warmup_runs": 2,
                                 "warmup_time": {"secs": 0, "nanos": 250000000},
                                 "max_plan_bytes": 3 * 1024**3, "tuning": tuning},

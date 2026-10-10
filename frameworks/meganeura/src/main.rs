@@ -20,7 +20,12 @@ mod qualification;
 
 const WARMUP_TIME: Duration = Duration::from_secs(2);
 
-fn build_session(graph: &Graph, mode: Mode, initialize: impl Fn(&mut Session)) -> Session {
+fn build_session(
+    graph: &Graph,
+    mode: Mode,
+    initialize_parameters: impl Fn(&mut Session),
+    initialize_inputs: impl Fn(&mut Session),
+) -> Session {
     let mut config = session_config();
     config.mode = mode;
     // This runner owns search options and retains its evidence, rather than
@@ -77,8 +82,15 @@ fn build_session(graph: &Graph, mode: Mode, initialize: impl Fn(&mut Session)) -
             graph,
             config,
             options,
-            |session, _| {
-                initialize(session);
+            |session, incumbent| {
+                let reused = match incumbent {
+                    Some(source) => initialization::reuse_parameters(session, source)?,
+                    None => false,
+                };
+                if !reused {
+                    initialize_parameters(session);
+                }
+                initialize_inputs(session);
                 Ok(())
             },
             |session| qualification.check(session),
@@ -102,7 +114,8 @@ fn build_session(graph: &Graph, mode: Mode, initialize: impl Fn(&mut Session)) -
         session
     } else {
         let mut session = meganeura::build(graph, config).0;
-        initialize(&mut session);
+        initialize_parameters(&mut session);
+        initialize_inputs(&mut session);
         session
     };
     preparation["cooperative_dispatches"] = serde_json::json!(
@@ -562,10 +575,14 @@ fn bench_smollm2(model_name: &str) {
     let labels: Vec<u32> = (0..seq_len as u32)
         .map(|i| (i + 1) % vocab as u32)
         .collect();
-    let mut session = build_session(&g, Mode::Inference, |session| {
-        load_weights(session, &model, &transposed_set);
-        session.set_input_u32("token_ids", &input_ids);
-    });
+    let mut session = build_session(
+        &g,
+        Mode::Inference,
+        |session| load_weights(session, &model, &transposed_set),
+        |session| {
+            session.set_input_u32("token_ids", &input_ids);
+        },
+    );
     let mut compile_s = compile_start.elapsed().as_secs_f64();
     eprintln!("[meganeura] ready (compile: {compile_s:.2}s)");
 
@@ -611,10 +628,14 @@ fn bench_smollm2(model_name: &str) {
     let mut lat_g = Graph::new();
     let lat_logits = smollm2::build_graph(&mut lat_g, &config, 1);
     lat_g.set_outputs(vec![lat_logits]);
-    let mut lat_session = build_session(&lat_g, Mode::Inference, |session| {
-        load_weights(session, &model, &transposed_set);
-        session.set_input_u32("token_ids", &[0u32]);
-    });
+    let mut lat_session = build_session(
+        &lat_g,
+        Mode::Inference,
+        |session| load_weights(session, &model, &transposed_set),
+        |session| {
+            session.set_input_u32("token_ids", &[0u32]);
+        },
+    );
     compile_s += lat_compile_start.elapsed().as_secs_f64();
     let latency = bench_session("latency", &mut lat_session, &|s| {
         s.set_input_u32("token_ids", &[0u32]);
@@ -666,11 +687,15 @@ fn bench_smollm2(model_name: &str) {
     // `labels[pos]` is already the target for position `pos` (see the
     // inference loss above) — every position has a target, so no scale
     // compensation for an excluded last position is needed anymore.
-    let mut train_session = build_session(&training_g, Mode::Training, |session| {
-        load_weights(session, &model, &transposed_set);
-        session.set_input_u32("token_ids", &input_ids);
-        session.set_input_u32("labels", &labels);
-    });
+    let mut train_session = build_session(
+        &training_g,
+        Mode::Training,
+        |session| load_weights(session, &model, &transposed_set),
+        |session| {
+            session.set_input_u32("token_ids", &input_ids);
+            session.set_input_u32("labels", &labels);
+        },
+    );
     compile_s += train_compile_start.elapsed().as_secs_f64();
 
     let training = bench_session("training", &mut train_session, &|s| {
@@ -761,8 +786,7 @@ fn bench_smolvla() {
             }
         }
     };
-    let mut infer_session = build_session(&infer_g, Mode::Inference, |session| {
-        init_params(session);
+    let mut infer_session = build_session(&infer_g, Mode::Inference, init_params, |session| {
         set_inputs(session);
     });
     let mut compile_s = compile_start.elapsed().as_secs_f64();
@@ -817,8 +841,7 @@ fn bench_smolvla() {
     let training_g = smolvla::build_action_expert_training(&config, action_seq_len, vlm_seq_len);
     eprintln!("[meganeura] compiling training session...");
     let target_actions = vec![0.0f32; action_seq_len * action_dim];
-    let mut train_session = build_session(&training_g, Mode::Training, |session| {
-        init_params(session);
+    let mut train_session = build_session(&training_g, Mode::Training, init_params, |session| {
         set_inputs(session);
         session.set_input("target_actions", &target_actions);
     });
@@ -864,8 +887,7 @@ fn bench_smolvla() {
             }
         }
     };
-    let mut lat_session = build_session(&lat_g, Mode::Inference, |session| {
-        init_params(session);
+    let mut lat_session = build_session(&lat_g, Mode::Inference, init_params, |session| {
         set_latency_inputs(session);
     });
     compile_s += lat_compile_start.elapsed().as_secs_f64();
@@ -1168,8 +1190,7 @@ fn bench_stable_diffusion() {
         session.set_input("timestep_embedding", &timestep_embedding);
         session.set_input("text_context", &text_context);
     };
-    let mut infer_session = build_session(&infer_g, Mode::Inference, |session| {
-        init_params(session);
+    let mut infer_session = build_session(&infer_g, Mode::Inference, init_params, |session| {
         set_inputs(session);
     });
     let mut compile_s = compile_start.elapsed().as_secs_f64();
@@ -1226,8 +1247,7 @@ fn bench_stable_diffusion() {
         );
         s.set_input("text_context", &text_context);
     };
-    let mut latency_session = build_session(&latency_g, Mode::Inference, |session| {
-        init_params(session);
+    let mut latency_session = build_session(&latency_g, Mode::Inference, init_params, |session| {
         set_latency_inputs(session);
     });
     compile_s += latency_compile_start.elapsed().as_secs_f64();
@@ -1260,8 +1280,7 @@ fn bench_stable_diffusion() {
     let mut train_g = Graph::new();
     let loss = sd_unet::build_training_graph(&mut train_g, &config);
     train_g.set_outputs(vec![loss]);
-    let mut train_session = build_session(&train_g, Mode::Training, |session| {
-        init_params(session);
+    let mut train_session = build_session(&train_g, Mode::Training, init_params, |session| {
         set_inputs(session);
         session.set_input("noise_target", &noise_target);
     });
@@ -1346,8 +1365,7 @@ fn bench_resnet() {
     let in_size = (batch * 3 * 224 * 224) as usize;
     let images: Vec<f32> = (0..in_size).map(|i| (i as f32 * 0.001).sin()).collect();
     let labels_idx: Vec<u32> = (0..batch).map(|i| i % 1000).collect();
-    let mut infer_session = build_session(&infer_g, Mode::Inference, |session| {
-        init_params(session);
+    let mut infer_session = build_session(&infer_g, Mode::Inference, init_params, |session| {
         session.set_input("image", &images);
     });
     let mut compile_s = compile_start.elapsed().as_secs_f64();
@@ -1392,8 +1410,7 @@ fn bench_resnet() {
     let mut lat_g = Graph::new();
     let lat_logits = resnet::build_resnet50(&mut lat_g, 1);
     lat_g.set_outputs(vec![lat_logits]);
-    let mut lat_session = build_session(&lat_g, Mode::Inference, |session| {
-        init_params(session);
+    let mut lat_session = build_session(&lat_g, Mode::Inference, init_params, |session| {
         session.set_input("image", &lat_images);
     });
     compile_s += lat_compile_start.elapsed().as_secs_f64();
@@ -1421,8 +1438,7 @@ fn bench_resnet() {
     let targets = training_g.input_u32("labels", &[batch as usize]);
     let loss_node = training_g.cross_entropy_loss_indices(training_logits, targets);
     training_g.set_outputs(vec![loss_node]);
-    let mut train_session = build_session(&training_g, Mode::Training, |session| {
-        init_params(session);
+    let mut train_session = build_session(&training_g, Mode::Training, init_params, |session| {
         session.set_input("image", &images);
         session.set_input_u32("labels", &labels_idx);
     });
@@ -1505,8 +1521,7 @@ fn bench_whisper() {
     // --- Forward ---
     let mel_size = (batch * config.n_mels as u32 * mel_len) as usize;
     let mel: Vec<f32> = (0..mel_size).map(|i| (i as f32 * 0.001).sin()).collect();
-    let mut session = build_session(&infer_g, Mode::Inference, |session| {
-        init_params(session);
+    let mut session = build_session(&infer_g, Mode::Inference, init_params, |session| {
         session.set_input("mel", &mel);
     });
     let mut compile_s = compile_start.elapsed().as_secs_f64();
@@ -1549,8 +1564,7 @@ fn bench_whisper() {
     eprintln!("[meganeura] building + compiling Whisper training graph...");
     let train_compile_start = Instant::now();
     let train_g = whisper::build_training_graph(&config, batch, mel_len);
-    let mut train_session = build_session(&train_g, Mode::Training, |session| {
-        init_params(session);
+    let mut train_session = build_session(&train_g, Mode::Training, init_params, |session| {
         session.set_input("mel", &mel);
     });
     compile_s += train_compile_start.elapsed().as_secs_f64();

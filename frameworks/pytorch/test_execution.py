@@ -153,6 +153,13 @@ class CampaignTest(unittest.TestCase):
             self.assertAlmostEqual(float(native.square().mean()), 0.02**2 / 2, delta=2e-5)
 
     def test_common_source_with_platform_specific_builds(self):
+        # Preserve f64 accumulation and logical element order for strided tensors.
+        reference = torch.arange(20000, dtype=torch.float32).reshape(100, 200).T / 100
+        actual = reference * (1 + 1e-6)
+        metrics = compare_tensors(actual, reference)
+        for key, values in (("rms_error", actual - reference), ("rms_reference", reference)):
+            expected = float(torch.linalg.vector_norm(values, dtype=torch.float64)) / values.numel()**0.5
+            self.assertAlmostEqual(metrics[key], expected, places=10)
         # Full-vector bounds admit cancellation noise, not corrupt/stale data.
         reference = torch.tensor([1.0, -1.0, 0.0])
         rounded = reference + torch.tensor([0.0, 0.0, 2e-6])

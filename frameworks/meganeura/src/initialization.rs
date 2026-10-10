@@ -1,4 +1,42 @@
-//! Synthetic parameters shared with the PyTorch runner, in native storage order.
+//! Immutable search parameters and the synthetic initializer shared with PyTorch.
+
+/// Reuse only a complete matching parameter representation. Packed parameters
+/// must match too: skipping source uploads would otherwise leave them unfilled.
+pub fn reuse_parameters(
+    session: &mut meganeura::Session,
+    source: &mut meganeura::Session,
+) -> Result<bool, String> {
+    let target = session.plan();
+    let origin = source.plan();
+    let compatible = target.param_buffers.len() == origin.param_buffers.len()
+        && target.param_buffers.iter().all(|(name, buffer)| {
+            let Some((_, original)) = origin.param_buffers.iter().find(|entry| entry.0 == *name)
+            else {
+                return false;
+            };
+            target.param_types.get(buffer).is_some_and(|ty| {
+                origin.param_types.get(original) == Some(ty)
+                    && target
+                        .derived_params
+                        .iter()
+                        .find(|entry| entry.0 == *buffer)
+                        .map(|entry| (&entry.1, &entry.2))
+                        == origin
+                            .derived_params
+                            .iter()
+                            .find(|entry| entry.0 == *original)
+                            .map(|entry| (&entry.1, &entry.2))
+            })
+        });
+    if compatible {
+        for (name, _) in target.param_buffers.clone() {
+            session
+                .share_parameter_from(source, &name)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(compatible)
+}
 
 pub const POLICY: &str = "name-index-uniform-v1";
 // Uniform variance is amplitude²/3; preserve the old 0.02 sinusoid's RMS.

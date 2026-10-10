@@ -120,7 +120,28 @@ impl Error {
         if actual.is_empty() || actual.len() != reference.len() {
             return Err("tensor shape changed or empty".into());
         }
-        for (&a, &b) in actual.iter().zip(reference) {
+        // Independent f64 accumulators let the CPU vectorize this full-tensor scan.
+        let mut lanes: [Self; 8] = std::array::from_fn(|_| Self::default());
+        let mut finite = [true; 8];
+        let (actual_chunks, actual_tail) = actual.as_chunks::<8>();
+        let (reference_chunks, reference_tail) = reference.as_chunks::<8>();
+        for (actual, reference) in actual_chunks.iter().zip(reference_chunks) {
+            for i in 0..8 {
+                let (a, b) = (f64::from(actual[i]), f64::from(reference[i]));
+                finite[i] &= a.is_finite() & b.is_finite();
+                lanes[i].max_error = lanes[i].max_error.max((a - b).abs());
+                lanes[i].max_reference = lanes[i].max_reference.max(b.abs());
+                lanes[i].square_error += (a - b).powi(2);
+                lanes[i].square_reference += b * b;
+            }
+        }
+        for (lane, finite) in lanes.iter().zip(finite) {
+            if !finite {
+                return Err("non-finite tensor".into());
+            }
+            self.merge(lane);
+        }
+        for (&a, &b) in actual_tail.iter().zip(reference_tail) {
             if !a.is_finite() || !b.is_finite() {
                 return Err("non-finite tensor".into());
             }
@@ -257,6 +278,28 @@ mod tests {
         assert!(Error::default().include(&[0.0], &[0.0, 1.0]).is_err());
         assert!(Error::default().include(&[f32::NAN], &[0.0]).is_err());
         assert!(Error::default().check(1e-4).is_err());
+        let reference: Vec<_> = (0..19).map(|i| i as f32 * 0.125).collect();
+        let mut error = Error::default();
+        error.include(&reference, &reference).unwrap();
+        assert_eq!(error.elements, reference.len());
+        assert_eq!(error.max_reference, 2.25);
+        assert_eq!(
+            error.square_reference,
+            reference.iter().map(|&v| f64::from(v).powi(2)).sum::<f64>()
+        );
+        for index in [0, 7, 8, 15, 18] {
+            let mut corrupted = reference.clone();
+            corrupted[index] += 1.0;
+            let mut error = Error::default();
+            error.include(&corrupted, &reference).unwrap();
+            assert_eq!(error.square_error, 1.0);
+            assert!(error.check(1e-4).is_err());
+            for nonfinite in [f32::NAN, f32::INFINITY] {
+                corrupted[index] = nonfinite;
+                assert!(Error::default().include(&corrupted, &reference).is_err());
+                assert!(Error::default().include(&reference, &corrupted).is_err());
+            }
+        }
         for actual in [vec![0.0, 1.0], vec![0.01, 1.0], vec![0.0, 1.00001]] {
             let mut error = Error::default();
             error.include(&actual, &[0.0, 1.0]).unwrap();

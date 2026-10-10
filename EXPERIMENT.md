@@ -1,7 +1,7 @@
 # P3HPC paired collection
 
 Use branch `experiment/p3hpc-cuda-graphs`. Meganeura is pinned to
-`53a54ad77fc0c9b5c17d2b9a79e2c0f4dc5fadf6` (submission-search correction,
+`211c53273ebb919ff26f34a52a303508290f50c0` (submission-search correction,
 not yet merged), with Blade
 `56f05651cca73659130e924e497dda633f839d40`. Protocol
 `p3hpc-paired-campaign-v16` retains the merged joint graph/schedule search:
@@ -16,10 +16,10 @@ pinned SmolLM2 checkpoints, arithmetic classes and numerical
 thresholds. It updates Meganeura and Blade, including descriptor-set reuse,
 adaptive kernel timing, grouped GEMV and egglog backward-layout exploration.
 V16 restores measured submission choices 1, 2, 4, 8, 16, 32 and 64 on every
-GPU, including Intel. New graph/layout candidates keep the incumbent's measured
-submission count; explicit alternatives remain in the search. A backward-only
-layout and small submission counts are tried early. The same budget covers all
-choices. Set
+GPU, including Intel. Submission counts are probed on the current winning plan.
+New layouts inherit its count and, if they win, trigger another submission
+check. One alternative layout is tried before those probes, with a backward-only
+layout early in training. The same budget covers all choices. Set
 `--max-submission-chunks 1` for a separately labelled single-submission control.
 Search candidates reuse immutable parameters only when all names, shapes,
 scalar types and packed representations match. Inputs and gradients remain
@@ -176,14 +176,25 @@ The primary default is now 30 seconds per native session. Revision
 0ad1a5198 and the October 9–10 archives still used 60 seconds: the earlier
 30-second experiments passed an explicit override, and the default had not
 been changed. Preserve that distinction when comparing archived results.
-For a separate budget study,
-collect separate campaigns with `--tune-seconds 10`, `20`, `30` and `60` on the
-same pinned source and environment, using three fresh processes per condition.
-Retain search receipts, rejected candidates, elapsed preparation time and
-held-out execution times; a soft deadline may be exceeded by in-flight work.
-Plot held-out latency and preparation time against the allowed budget for each
-model, phase and arithmetic class. Do not pool these runs with the primary
-cohort. The reference compilation deadline remains 120 seconds at every point.
+Before a full collection, compare 30 and 60 seconds with native-only diagnostics
+(`run.sh -f meganeura`) on the same pinned source and environment. Start with the
+cases that previously needed more search time. The diagnostic target is within
+5% of the best observed 60-second held-out time in each phase and arithmetic
+class; investigate and repeat outliers. This is an observed comparison, not a
+global-optimum guarantee. Reference compilation need not be repeated to compare
+two native budgets. All numerical checks and held-out warmups still apply.
+
+The archived H100 1.7B training runs spent 63–75 seconds on the first candidate
+alone at the old 60-second budget. Local 135M results do not qualify the shorter
+budget for that case. The deadline includes initialization and qualification
+but cannot interrupt in-flight work; inference, minimal forward and training
+each get their own deadline.
+
+A publication budget curve can add 10- and 20-second points, with three fresh
+processes per condition. Retain search receipts, rejected candidates, elapsed
+preparation time and held-out execution times. Plot latency and preparation
+time separately for each model, phase and arithmetic class, and keep this
+study separate from the primary paired cohort.
 
 ## The executed contract
 

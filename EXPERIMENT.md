@@ -1,7 +1,7 @@
 # P3HPC paired collection
 
 Use branch `experiment/p3hpc-cuda-graphs`. Meganeura is pinned to
-`211c53273ebb919ff26f34a52a303508290f50c0` (submission-search correction,
+`d7e84e4c848f82666bd2a46d0e8bf626334da0fd` (submission-search correction,
 not yet merged), with Blade
 `56f05651cca73659130e924e497dda633f839d40`. Protocol
 `p3hpc-paired-campaign-v16` retains the merged joint graph/schedule search:
@@ -16,10 +16,11 @@ pinned SmolLM2 checkpoints, arithmetic classes and numerical
 thresholds. It updates Meganeura and Blade, including descriptor-set reuse,
 adaptive kernel timing, grouped GEMV and egglog backward-layout exploration.
 V16 restores measured submission choices 1, 2, 4, 8, 16, 32 and 64 on every
-GPU, including Intel. Submission counts are probed on the current winning plan.
+GPU, including Intel. Small submission counts are probed on the current winning plan.
 New layouts inherit its count and, if they win, trigger another submission
 check. One alternative layout is tried before those probes, with a backward-only
-layout early in training. The same budget covers all choices. Set
+layout early in training. Joint layout/submission alternatives remain in the
+search. The same budget covers all choices. Set
 `--max-submission-chunks 1` for a separately labelled single-submission control.
 Search candidates reuse immutable parameters only when all names, shapes,
 scalar types and packed representations match. Inputs and gradients remain

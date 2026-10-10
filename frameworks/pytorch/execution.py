@@ -223,8 +223,8 @@ def capture_phase(fn, model=None, stream=None, reduced_precision=False, device="
             synchronize(device)
             validation_start = time.perf_counter()
             if index == 0:
-                expected = tuple(t.detach().cpu().clone() for t in tensors(outputs))
-                gradients = {name: grad.detach().cpu().clone() for name, grad in parameter_gradients().items()}
+                expected = tuple(t.detach().to("cpu", copy=True) for t in tensors(outputs))
+                gradients = {name: grad.detach().to("cpu", copy=True) for name, grad in parameter_gradients().items()}
             else:
                 ordinary.append(check(outputs, f"uncaptured repeat {index}"))
             ordinary_validation_s += time.perf_counter() - validation_start

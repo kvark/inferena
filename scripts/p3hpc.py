@@ -33,6 +33,7 @@ ACCELERATED_SAMPLE_LIMIT = 0.10
 TUNE_SECONDS = 30.0
 MAX_SUBMISSION_CHUNKS = 64
 TUNE_SCRATCH_BYTES = 1024**3
+KERNEL_MEMO_POLICY = "campaign-kernel-memo-v1"
 COMPILE_SECONDS = 120.0
 WARMUP_SECONDS = 2.0
 SYNTHETIC_PARAMETER_INIT = "name-index-uniform-v1"
@@ -135,7 +136,7 @@ def duration_seconds(duration):
     return duration["secs"] + duration["nanos"] / 1e9
 
 
-def check_native_search(session, seconds, max_submission_chunks):
+def check_native_search(session, seconds, max_submission_chunks, kernel_memo=False):
     search = session.get("search")
     if not search:
         raise ValueError("native session did not use calibrated construction")
@@ -145,6 +146,7 @@ def check_native_search(session, seconds, max_submission_chunks):
     if (duration_seconds(options["max_time"]) != seconds
             or options["max_graphs"] != 16 or options["max_programs"] != 64
             or options["max_submission_chunks"] != max_submission_chunks
+            or options["patience"] is not None
             or options["min_improvement"] != 0.01
             or options["warmup_runs"] != 2
             or duration_seconds(options["warmup_time"]) != 0.25
@@ -160,7 +162,8 @@ def check_native_search(session, seconds, max_submission_chunks):
     if not trials or not 0 <= search["selected"] < len(trials):
         raise ValueError("native construction has no selected program")
     selected = trials[search["selected"]]
-    if selected["outcome"]["qualified"] is not True or not selected["kernel_tuning"]:
+    if (selected["outcome"]["qualified"] is not True or not selected["kernel_tuning"]
+            or selected["qualifications"] < 1):
         raise ValueError("native selected program was not tuned and qualified")
     for trial in trials:
         kernel = trial["kernel_tuning"]
@@ -177,11 +180,27 @@ def check_native_search(session, seconds, max_submission_chunks):
             raise ValueError("native kernel search stopped outside the declared limits")
     qualification = session["qualification"]
     if (qualification["policy"] != "fixed-full-tensor-v4"
+            or qualification["reference"] != "first checked program"
             or qualification["rtol"] != 1e-4 or qualification["atol"] != 1e-6
             or qualification["accelerated_gradient_rtol"] != 0.01
-            or qualification["qualified_calls"] < 2 or qualification["output_elements"] <= 0
+            or qualification["qualified_calls"] < 1 or qualification["output_elements"] <= 0
             or session["mode"] == "Training" and qualification["gradient_elements"] <= 0):
         raise ValueError("native construction lacks full-output/gradient qualification")
+    memo = session["kernel_memo"]
+    reports = [trial["kernel_tuning"] for trial in trials if trial["kernel_tuning"] is not None]
+    if (memo["policy"] != KERNEL_MEMO_POLICY or memo["enabled"] is not kernel_memo
+            or memo["load"] not in (("miss", "hit", "invalid") if kernel_memo else ("disabled",))
+            or not isinstance(memo["loaded_classes"], int) or memo["loaded_classes"] < 0
+            or memo["load"] != "hit" and memo["loaded_classes"] != 0
+            or memo["reused_class_visits"] != sum(len(report["reused_classes"]) for report in reports)
+            or memo["new_comparisons"] != sum(len(report["outcomes"]) for report in reports)):
+        raise ValueError("native kernel-memo receipt differs from executed search")
+    if kernel_memo:
+        if (not isinstance(memo["key"], str) or not re.fullmatch(r"[0-9a-f]{64}", memo["key"])
+                or not isinstance(memo["saved_classes"], int) or memo["saved_classes"] < 0):
+            raise ValueError("native kernel memo was not saved")
+    elif memo["key"] is not None or memo["saved_classes"] is not None:
+        raise ValueError("disabled native kernel memo has persistent state")
 
 
 def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
@@ -265,7 +284,8 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
         if session["cooperative_matrix_policy"] != ("NativeF32" if strict else "Auto"):
             raise ValueError("native session used the wrong cooperative policy")
         check_native_search(session, getattr(args, "tune_seconds", TUNE_SECONDS),
-                            getattr(args, "max_submission_chunks", MAX_SUBMISSION_CHUNKS))
+                            getattr(args, "max_submission_chunks", MAX_SUBMISSION_CHUNKS),
+                            getattr(args, "kernel_memo", False))
     execution = pt["execution"]
     sdpa = "math" if oracle else reference_sdpa_policy(args, pt["model"])
     if execution["sdpa_policy"] != sdpa:
@@ -475,6 +495,8 @@ def create_parser():
     parser.add_argument("--allow-integrated-gpu", action="store_true", default=True, help=argparse.SUPPRESS)
     parser.add_argument("--precisions", nargs="+", choices=("strict", "accelerated"), default=["strict", "accelerated"])
     parser.add_argument("--replicates", type=int, default=3)
+    parser.add_argument("--no-kernel-memo", dest="kernel_memo", action="store_false", default=True,
+                        help="repeat private kernel tuning independently in every native process")
     search = parser.add_mutually_exclusive_group()
     search.add_argument("--max-autotune", action="store_true", default=False,
                         help="add optional PyTorch search under the same compilation deadline")
@@ -521,6 +543,7 @@ def main():
         "INFERENA_TORCH_MODE", "INFERENA_GRAPH_REPLAY", "INFERENA_CUDA_GRAPHS",
         "INFERENA_TUNE_SECONDS", "INFERENA_COMPILE_SECONDS", "INFERENA_PREPARATION_REPORT", "INFERENA_BUDGET_ENFORCED",
         "INFERENA_MAX_SUBMISSION_CHUNKS",
+        "INFERENA_KERNEL_MEMO_DIR",
         "INFERENA_SDPA", "INFERENA_REFERENCE_DIAGNOSTIC",
     )]
     if overrides:
@@ -584,7 +607,7 @@ def main():
                INFERENA_REQUIRE_LOCAL_WEIGHTS="1", INFERENA_TORCH_BACKEND=args.backend)
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v16", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v17", "source": revision,
         "started_at": started_at,
         "synthetic_parameter_init": SYNTHETIC_PARAMETER_INIT,
         "model_revisions": {name: SMOLLM2_REVISIONS[name] for name in args.models if name in SMOLLM2_REVISIONS},
@@ -599,6 +622,9 @@ def main():
                           "max_scratch_bytes": TUNE_SCRATCH_BYTES,
                           "kernel_seconds_per_program": args.tune_seconds,
                           "max_graphs": 16, "max_programs": 64, "plan_fraction_of_available": 0.75,
+                          "patience": None,
+                          "kernel_memo": {"enabled": args.kernel_memo, "policy": KERNEL_MEMO_POLICY,
+                                          "scope": "campaign/model/precision", "selected_program_reuse": False},
                           "warmup_pairs": 2, "warmup_seconds": 0.25,
                           "qualification": "fixed-full-tensor-v4",
                           "search_seconds_per_session": args.tune_seconds, "strict_coop": "NativeF32"},
@@ -700,6 +726,10 @@ def main():
                                            INFERENA_MAX_SUBMISSION_CHUNKS=str(args.max_submission_chunks),
                                            INFERENA_COMPILE_SECONDS=str(args.compile_seconds),
                                            INFERENA_PREPARATION_REPORT=str(folder / "torch-preparation.json"))
+                            if args.kernel_memo:
+                                memo_dir = destination / "native-kernel-memos" / precision / model
+                                run_env["INFERENA_KERNEL_MEMO_DIR"] = str(memo_dir)
+                                run["kernel_memo_directory"] = str(memo_dir.relative_to(destination))
                             with (folder / "runner.log").open("w", encoding="utf-8") as log:
                                 run["started_at"] = datetime.now(timezone.utc).isoformat()
                                 save()

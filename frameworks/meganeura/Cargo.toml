@@ -22,3 +22,6 @@ hex = "0.4"
 env_logger = "0.11"
 # Host phase markers only; no CUDA SDK or tracing-subscriber dependency.
 nvtx = "1.3"
+
+[dev-dependencies]
+tempfile = "3"

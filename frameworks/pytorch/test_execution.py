@@ -21,6 +21,7 @@ from execution import QualificationError, capture_phase, check_gradient_set, com
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from p3hpc import (MODELS, PYTHON_VERSION, TORCH_REVISION, TORCH_VERSION, TUNE_SCRATCH_BYTES, SDPA_BACKENDS,
+                  KERNEL_MEMO_POLICY,
                   check_pair, check_torch_identity,
                   conditions, create_parser, gpu_matches, validate_replicated_gradients,
                   runner_bash, select_native_device, archive_results, reference_sdpa_policy,
@@ -203,6 +204,8 @@ class CampaignTest(unittest.TestCase):
         self.assertEqual(defaults.compile_seconds, 120)
         self.assertEqual(defaults.tune_seconds, 30)
         self.assertEqual(defaults.max_submission_chunks, 64)
+        self.assertTrue(defaults.kernel_memo)
+        self.assertFalse(create_parser().parse_args(["--no-kernel-memo"]).kernel_memo)
         self.assertIsNone(defaults.backend)
         self.assertIsNone(defaults.gpu)
         self.assertIsNone(defaults.results_dir)
@@ -413,19 +416,24 @@ class CampaignTest(unittest.TestCase):
                 "mode": mode, "cooperative_matrix_policy": "NativeF32", "search": {
                     "options": {"max_time": {"secs": 30, "nanos": 0}, "max_graphs": 16,
                                 "max_programs": 64, "max_submission_chunks": 64, "warmup_runs": 2,
-                                "min_improvement": 0.01,
+                                "min_improvement": 0.01, "patience": None,
                                 "warmup_time": {"secs": 0, "nanos": 250000000},
                                 "max_plan_bytes": 3 * 1024**3, "tuning": tuning},
-                    "selected": 0, "trials": [{"outcome": {"qualified": True}, "kernel_tuning": {
+                    "selected": 0, "trials": [{"outcome": {"qualified": True}, "qualifications": 2, "kernel_tuning": {
                         "options": tuning, "class_limit_reached": False,
                         "visited_classes": 1, "eligible_classes": 1, "time_budget_exhausted": False,
+                        "reused_classes": [], "outcomes": [{}],
                     }}],
                 },
                 "memory_budget": {"device_budget_bytes": 4 * 1024**3, "device_usage_bytes": 0,
                                   "plan_fraction_of_available": 0.75},
                 "qualification": {"policy": "fixed-full-tensor-v4", "rtol": 1e-4, "atol": 1e-6,
+                                  "reference": "first checked program",
                                   "accelerated_gradient_rtol": 0.01, "qualified_calls": 2,
                                   "output_elements": 1, "gradient_elements": int(mode == "Training")},
+                "kernel_memo": {"policy": KERNEL_MEMO_POLICY, "enabled": True, "key": "a" * 64,
+                                "load": "miss", "loaded_classes": 0, "saved_classes": 1,
+                                "reused_class_visits": 0, "new_comparisons": 1},
             } for mode in ("Inference", "Training")],
         }}
         pt = {**copy.deepcopy(base), "framework": "pytorch", "backend": "CUDA",
@@ -453,6 +461,30 @@ class CampaignTest(unittest.TestCase):
               }}
         check = lambda records: check_pair(records, args, "default", True, 1, "source", precision="strict")
         check([mg, pt])
+        # Cache hits need a fresh full-tensor check, not a redundant pre-tune
+        # check when every kernel decision is already known.
+        resumed = copy.deepcopy(mg)
+        for session in resumed["optimizer"]["sessions"]:
+            trial = session["search"]["trials"][0]
+            trial["qualifications"] = 1
+            trial["kernel_tuning"].update(reused_classes=[{}], outcomes=[])
+            session["qualification"]["qualified_calls"] = 1
+            session["kernel_memo"].update(load="hit", loaded_classes=1,
+                                          reused_class_visits=1, new_comparisons=0)
+        check([resumed, pt])
+        disabled = copy.deepcopy(mg)
+        for session in disabled["optimizer"]["sessions"]:
+            session["kernel_memo"].update(enabled=False, key=None, load="disabled", saved_classes=None)
+        with self.assertRaisesRegex(ValueError, "kernel-memo"):
+            check([disabled, pt])
+        args.kernel_memo = False
+        check([disabled, pt])
+        with self.assertRaisesRegex(ValueError, "kernel-memo"):
+            check([resumed, pt])
+        # One-off diagnostics have no campaign memo flag or inherited cache.
+        del args.kernel_memo
+        check([disabled, pt])
+        args.kernel_memo = True
         failure = {"kind": "numerical", "phase": "training", "stage": "uncaptured repeat 1",
                    "tensor": "output 0", "metrics": {"max_abs_error": 0.002}}
         partial = copy.deepcopy(pt)
@@ -539,6 +571,7 @@ class CampaignTest(unittest.TestCase):
             (0, ("precision", "f16_cooperative_matrix_permitted"), True),
             (0, ("optimizer", "sessions"), []),
             (0, ("optimizer", "sessions", 0, "search", "options", "max_graphs"), 4),
+            (0, ("optimizer", "sessions", 0, "search", "options", "patience"), 5),
             (0, ("optimizer", "sessions", 0, "search", "options", "max_time"), {"secs": 60, "nanos": 0}),
             (0, ("optimizer", "sessions", 0, "search", "options", "max_submission_chunks"), 1),
             (0, ("optimizer", "sessions", 0, "search", "options", "min_improvement"), 0.05),
@@ -548,7 +581,16 @@ class CampaignTest(unittest.TestCase):
             (0, ("optimizer", "sessions", 0, "search", "options", "tuning", "max_time"), {"secs": 2, "nanos": 0}),
             (0, ("optimizer", "sessions", 0, "search", "trials", 0, "kernel_tuning", "visited_classes"), 0),
             (0, ("optimizer", "sessions", 0, "search", "trials", 0, "outcome", "qualified"), False),
+            (0, ("optimizer", "sessions", 0, "search", "trials", 0, "qualifications"), 0),
+            (0, ("optimizer", "sessions", 0, "qualification", "qualified_calls"), 0),
+            (0, ("optimizer", "sessions", 0, "qualification", "reference"), "ordinary untuned construction"),
             (0, ("optimizer", "sessions", 1, "qualification", "gradient_elements"), 0),
+            (0, ("optimizer", "sessions", 0, "kernel_memo", "policy"), "unknown"),
+            (0, ("optimizer", "sessions", 0, "kernel_memo", "loaded_classes"), 1),
+            (0, ("optimizer", "sessions", 0, "kernel_memo", "key"), "not a key"),
+            (0, ("optimizer", "sessions", 0, "kernel_memo", "saved_classes"), None),
+            (0, ("optimizer", "sessions", 0, "kernel_memo", "reused_class_visits"), 1),
+            (0, ("optimizer", "sessions", 0, "kernel_memo", "new_comparisons"), 0),
             (1, ("execution", "compiled"), False),
             (1, ("execution", "sdpa_policy"), "math"),
             (1, ("execution", "sdpa_compile"), "eager"),

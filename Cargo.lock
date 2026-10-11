@@ -4579,6 +4579,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "tokenizers 0.21.4",
 ]
 
@@ -5249,7 +5250,7 @@ checksum = "7ebb8d8732c6a6df3d8f032a82911cfc747e00efb95cc46e8d0acd5b5b88570c"
 [[package]]
 name = "meganeura"
 version = "0.3.0"
-source = "git+https://github.com/kvark/meganeura?rev=830abd793ee8b1fa3df2ac5109d50794bb16b886#830abd793ee8b1fa3df2ac5109d50794bb16b886"
+source = "git+https://github.com/kvark/meganeura?rev=2c42b4488310d83640c934c411202dde05b055e0#2c42b4488310d83640c934c411202dde05b055e0"
 dependencies = [
  "blade-graphics",
  "blade-macros",

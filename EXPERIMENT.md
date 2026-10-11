@@ -1,10 +1,10 @@
 # P3HPC paired collection
 
 Use branch `experiment/p3hpc-cuda-graphs`. Meganeura is pinned to
-`830abd793ee8b1fa3df2ac5109d50794bb16b886` (submission-search correction,
-not yet merged), with Blade
+`2c42b4488310d83640c934c411202dde05b055e0` (merged search/f16 support and
+derived-weight sharing/kernel-memo hardening), with Blade
 `56f05651cca73659130e924e497dda633f839d40`. Protocol
-`p3hpc-paired-campaign-v16` retains the merged joint graph/schedule search:
+`p3hpc-paired-campaign-v17` retains the merged joint graph/schedule search:
 up to 16 graph/implementation forms, interleaved physical-plan choices, and
 at least two warmup pairs and 250 ms before comparing whole programs, within
 the shared 30-second session deadline. Private kernel probes have no separate
@@ -31,6 +31,10 @@ private. The complete numerical gates are unchanged; native comparisons use
 independent f64 accumulators, and PyTorch's CPU checks accumulate in f64 without
 materializing a full f64 tensor copy. Campaign receipts now include collection
 wall time, runner-build time and each paired process's elapsed time.
+V17 reuses private kernel decisions within each campaign/model/precision while
+retaining whole-program search and fresh qualification in every process. It
+does not enable f16 weight storage. See the memo policy below before comparing
+preparation times with previous cohorts.
 The v15 cohort used one submission globally; it cannot establish the quality
 of the restored search at 30 seconds.
 
@@ -273,10 +277,14 @@ hold an incumbent and challenger. Most models construct three sessions; Whisper
 uses two. In-flight driver work and qualification can overrun the soft deadline.
 
 Every candidate's full outputs and canonical parameter gradients are compared
-with the ordinary untuned construction, before/after tuning and after paired
-measurement. Packed gradients are unpacked into the original checkpoint
-coordinates. Outputs use staged batch readback, avoiding repeated mapped-read
-calibration for short-lived candidates. The fixed maximum/RMS gates match the
+with the first checked program. Candidates with outstanding kernel probes are
+checked before and after tuning; memo-only candidates are checked after installing
+their kernels. Winning challengers are checked after paired measurement, and
+the final incumbent is checked again if another challenger has run since its
+last check. A memo hit never bypasses qualification. Packed gradients are
+unpacked into the original checkpoint coordinates. Outputs use staged batch
+readback, avoiding repeated mapped-read calibration for short-lived candidates.
+The fixed maximum/RMS gates match the
 replay policy below; only
 accelerated gradients have the separate 1% whole-gradient tolerance. The outer
 PyTorch comparison remains an independent gate. No optimizer update is part of
@@ -287,6 +295,22 @@ Search comparisons first warm both candidate and incumbent for **two pairs and
 250 ms**, bounded by the remaining session deadline. This is separate from
 publication warmup. The collector checks these actual search options in every
 session receipt, alongside the graph/program limits.
+
+Campaign protocol v17 saves private kernel decisions under
+`native-kernel-memos/<precision>/<model>/`. Runs 2/3 and compatible phase shapes
+resume those decisions; they do not repeat completed kernel comparisons.
+The cache is new for each campaign and keyed by Cargo.lock, device/driver,
+cooperative policy and tuning options. Meganeura additionally checks its memo
+schema and complete kernel-class/candidate keys. Saves are atomic and happen
+only after successful construction. Incompatible or corrupt memos start fresh.
+The first run is cold with respect to this memo; later runs are explicitly
+warm. Receipts record loaded/saved classes, reused class visits and new comparisons;
+reused visits also include reuse within a search. Preparation costs must be
+interpreted with these receipts, not pooled as independent cold-start searches.
+Whole-program graph/layout/submission search still runs in each fresh process,
+with unchanged bounds and no patience stop. This does not persist weights,
+inputs, GPU state or the selected whole program. Numerical gates and held-out
+measurement warmup remain unchanged.
 
 Both engines warm up with the actual phase workload until **both** five calls
 and two seconds have completed. Actual warmup counts and elapsed seconds are
@@ -324,6 +348,8 @@ Optional, separate studies:
 - `--max-autotune`: add searched PyTorch under the same 120-second deadline.
 - `--graph-ablation`: also collect the uncaptured default reference.
 - `--compile-seconds N` / `--tune-seconds N`: explicitly different budgets.
+- `--no-kernel-memo`: disable cross-process kernel reuse for a separate
+  independent-search preparation study.
 - `--no-graphs` / `--eager`: explicit reference overrides, never automatic fallbacks.
 - `--sdpa auto|math|efficient`: explicit PyTorch attention backend, recorded in
   the campaign and checked against every runner receipt. This overrides all

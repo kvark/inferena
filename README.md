@@ -5,7 +5,7 @@
 Single-GPU ML systems benchmark for matched inference and training workloads.
 
 This experiment branch adds validated whole-phase CUDA Graph replay to the
-PyTorch comparison and pins Meganeura to merged main. See the
+PyTorch comparison and pins a published Meganeura search revision. See the
 [protocol, controls and scaling results](EXPERIMENT.md). Generated records
 stay outside Git; submitted results remain reproducible at `paper-arxiv-1`.
 
@@ -116,6 +116,14 @@ Precision is part of every result:
 
 The two configurations are separate comparison classes because TF32 and f16
 are not numerically equivalent.
+
+Supplementary `amp-bf16` and `amp-fp16` PyTorch columns use autocast with f32
+losses and fp16 gradient scaling. They have their own full-output and
+32-step loss-curve gates; they do not change the paired f32 classes.
+`scripts/amp_reference.py` writes qualified timing records and `columns.csv`.
+`scripts/convergence.py` separately runs 256 real optimizer updates on
+SmolLM2-135M text, with identical batches across engines. See the
+[AMP and convergence protocol](EXPERIMENT.md#amp-reference-and-real-data-convergence).
 
 ## Prerequisites
 

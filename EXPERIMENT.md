@@ -1,8 +1,8 @@
 # P3HPC paired collection
 
 Use branch `experiment/p3hpc-cuda-graphs`. Meganeura is pinned to
-`2c42b4488310d83640c934c411202dde05b055e0` (merged search/f16 support and
-derived-weight sharing/kernel-memo hardening), with Blade
+`5b37124efe405b5c11e37986fc88867b151aa351` (published search-order candidate,
+[Meganeura PR #245](https://github.com/kvark/meganeura/pull/245)), with Blade
 `56f05651cca73659130e924e497dda633f839d40`. Protocol
 `p3hpc-paired-campaign-v18` retains the merged joint graph/schedule search:
 up to 16 graph/implementation forms, interleaved physical-plan choices, and
@@ -10,6 +10,11 @@ at least two warmup pairs and 250 ms before comparing whole programs, within
 the shared 30-second session deadline. Private kernel probes have no separate
 two-second cap. Held-out timing warms both engines for at least ten
 seconds and five calls per phase.
+
+The pin adds incumbent-guided coverage of physical choices within the existing
+64-program cap. It is fetchable from the PR branch; full cohort qualification
+is still required. The final commit only corrects a wall-clock test's assumed
+trial count, with no change to search behavior.
 
 V18 extends the held-out warmup from two to ten seconds. B570 diffusion
 diagnostics showed substantial timing drift after the old warmup, including
@@ -706,3 +711,82 @@ preparation times. `scripts/nsys_report.py` summarizes the resulting SQLite
 events; [ANALYSIS.md](ANALYSIS.md) documents attribution limits and earlier
 pinned findings. Keep traces and raw results outside Git. Git history preserves
 the superseded protocol notes and experiment revisions without binary artifacts.
+
+## AMP reference and real-data convergence
+
+These are supplementary studies, separate from the paired v18 cohort.
+`amp-bf16` and `amp-fp16` keep f32 parameters, use PyTorch autocast for eligible
+operations, and reduce losses in f32. Remaining f32 matmuls use `highest` with
+TF32 disabled. fp16 uses `torch.amp.GradScaler`; bf16 disables scaling.
+Native f16 activation storage is not required to collect these reference columns.
+
+```sh
+.venv-p3hpc-xpu/bin/python scripts/amp_reference.py --backend xpu --gpu B570 \
+  --models SmolLM2-135M Whisper-tiny --precisions bf16 fp16 \
+  --results-dir ../amp-b570
+```
+
+The default reference is compiled, math SDPA, explicitly uncaptured, with the
+same 120 s compilation deadline and five-call/ten-second warmup followed by
+twenty samples. Three fresh processes per condition are the default; dtype
+order alternates. `--mode eager` is a labelled diagnostic. No capture or
+compiler failure substitutes another timing. `columns.csv` names each dtype,
+compiler mode, capture setting and replicate. Graph replay is rejected for
+this AMP version because scaling bookkeeping runs outside capture.
+
+Before timing, the requested compiled/eager candidate must match eager strict
+f32 on the entire forward output: per-tensor RMS and maximum error bounded by
+`1e-6 + 0.02 * reference magnitude`. Its training gate performs 32 SGD updates
+at learning rate 0.001 on the fixed benchmark input. Every loss must be finite,
+no update may be skipped, per-step loss error is at most
+`1e-6 + 0.02 * abs(reference)`, and curve relative L2 is at most 0.01.
+Weights, buffers and random state are restored afterward. This precision gate
+does not establish learning on real data. Ordinary full-tensor repeatability
+qualification still applies before each timed phase.
+
+AMP v2 counts completed optimizer updates. If GradScaler detects overflow,
+it lowers the scale and retries the **same batch with unchanged weights**,
+up to eight attempts. Every attempted loss, scale and update decision is
+retained; a batch is never silently dropped. The timed backward starts with
+the qualified scale. The initial v1 diagnostic counted attempts, which left
+only 255 updates after one fp16 overflow; that failed receipt is retained.
+
+Timed training retains the existing forward/loss/backward scope. The fp16
+reference includes scaling, unscaling, finite checks and scale maintenance.
+GradScaler uses an optimizer whose step performs no update; real SGD appears
+only in the untimed gate and convergence study. See PyTorch's
+[AMP guidance](https://docs.pytorch.org/docs/stable/notes/amp_examples.html).
+
+The real-data study uses the pinned SmolLM2-135M checkpoint and tokenizer with
+Project Gutenberg's [A Midsummer Night's Dream](https://www.gutenberg.org/ebooks/1514).
+The corpus and tokenizer SHA-256 values are frozen in `scripts/convergence.py`;
+a changed download is rejected. Gutenberg headers/footers are stripped before
+tokenization, no special tokens are added, and the first 80% of tokens train
+while the last 20% are held out. All engines receive the same saved 128-token
+next-token batches and seeded order, for 256 SGD updates at the same f32
+learning rate, without momentum, weight decay or clipping.
+
+```sh
+curl --fail --location https://www.gutenberg.org/ebooks/1514.txt.utf-8 \
+  --output ../pg1514.txt
+.venv-p3hpc-xpu/bin/python scripts/convergence.py --backend xpu --gpu B570 \
+  --corpus ../pg1514.txt --results-dir ../convergence-b570
+```
+
+Start with B570, then repeat on the other devices. Each worker has a 1,200 s
+process-tree watchdog. Receipts are replaced atomically after every update;
+the study keeps source archives, the corpus, tokenizer, ordered token batches,
+search preparation and raw losses outside Git. Native construction uses a
+fresh kernel memo and the 30 s search policy. PyTorch is explicitly eager,
+math SDPA and uncaptured. Real-text XPU runs qualify embedding backward on
+the first batch, including repeated tokens, and record any selected
+mathematically equivalent `index_add` workaround.
+
+The learning gate requires every update, a changed finite `model.norm.weight`,
+at least 5% lower loss on four fixed training probe sequences, and no more
+than 2% higher loss on four held-out sequences. Probe and held-out losses are
+recorded at steps 0, 64, 128, 192 and 256. Native f32 and each AMP trajectory
+must also pass the same per-step/relative-L2 curve bounds against PyTorch f32,
+including every evaluation sequence. Failed numerical gates remain failures.
+This establishes a short matched training trajectory for one model, corpus
+and seed; it does not establish general convergence or supply throughput data.

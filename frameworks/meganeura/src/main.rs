@@ -15,6 +15,7 @@ thread_local! {
     static SESSION_PREPARATION: RefCell<Vec<serde_json::Value>> = const { RefCell::new(Vec::new()) };
 }
 
+mod convergence;
 mod initialization;
 mod qualification;
 mod search_cache;
@@ -544,13 +545,8 @@ fn capture_gap_profile(
     Some(format!("{directory_name}/{file_name}"))
 }
 
-fn bench_smollm2(model_name: &str) {
+fn smollm2_config(path: &std::path::Path) -> meganeura::models::smollm2::Config {
     use meganeura::models::smollm2;
-
-    let mut profile_artifacts = std::collections::BTreeMap::new();
-    let mut memory = MemoryCollector::default();
-    let path = find_local_model(model_name)
-        .expect("prepare pinned weights first: python scripts/prepare_models.py <model>");
     let source: serde_json::Value = serde_json::from_reader(
         std::fs::File::open(path.with_file_name("config.json")).expect("model config missing"),
     )
@@ -565,7 +561,7 @@ fn bench_smollm2(model_name: &str) {
     assert!(source["mlp_bias"].is_null() || source["mlp_bias"] == false);
     let size = |name: &str| usize::try_from(source[name].as_u64().expect(name)).unwrap();
     let scalar = |name: &str| source[name].as_f64().expect(name) as f32;
-    let config = smollm2::Config {
+    smollm2::Config {
         vocab_size: size("vocab_size"),
         hidden_size: size("hidden_size"),
         num_hidden_layers: size("num_hidden_layers"),
@@ -575,7 +571,17 @@ fn bench_smollm2(model_name: &str) {
         rms_norm_eps: scalar("rms_norm_eps"),
         rope_theta: scalar("rope_theta"),
         tie_word_embeddings: source["tie_word_embeddings"].as_bool().unwrap(),
-    };
+    }
+}
+
+fn bench_smollm2(model_name: &str) {
+    use meganeura::models::smollm2;
+
+    let mut profile_artifacts = std::collections::BTreeMap::new();
+    let mut memory = MemoryCollector::default();
+    let path = find_local_model(model_name)
+        .expect("prepare pinned weights first: python scripts/prepare_models.py <model>");
+    let config = smollm2_config(&path);
 
     let seq_len: usize = 128;
     let vocab = config.vocab_size;
@@ -1632,6 +1638,12 @@ fn main() {
     env_logger::init();
 
     let model_name = std::env::args().nth(1).unwrap_or("SmolLM2-135M".into());
+    if model_name == "--converge" {
+        let spec = std::env::args().nth(2).expect("--converge SPEC OUTPUT");
+        let output = std::env::args().nth(3).expect("--converge SPEC OUTPUT");
+        convergence::run(std::path::Path::new(&spec), std::path::Path::new(&output));
+        return;
+    }
     if model_name == "--list-devices" {
         let devices: Vec<_> = blade_graphics::Context::enumerate()
             .expect("native device enumeration failed")

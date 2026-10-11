@@ -12,7 +12,7 @@ MODEL="${1:-SmolLM2-135M}"
 # environment-variable escape hatch that can force TF32 even when
 # torch.set_float32_matmul_precision("highest") is requested. The practical
 # default leaves the choice to the explicit PyTorch settings in bench.py.
-if [ "${INFERENA_STRICT:-0}" = "1" ]; then
+if [ "${INFERENA_STRICT:-0}" = "1" ] || [ -n "${INFERENA_AUTOCAST:-}" ]; then
     export NVIDIA_TF32_OVERRIDE=0
     unset TORCH_ALLOW_TF32_CUBLAS_OVERRIDE
 else

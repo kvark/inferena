@@ -255,7 +255,7 @@ therefore need a longer measurement window; see the
 
 The isolated library change is commit `975fafa` in
 `/x/Code/meganeura-search-order`, branch `fix/physical-search-coverage`,
-based on the current Inferena pin `2c42b44`.
+based on the then-current Inferena pin `2c42b44`.
 It carries only the recovered search changes, with coverage tests and boundary
 fixes; the GEMV and convolution prototypes remain separate. After the first
 three graph baselines, it alternates graph forms using the incumbent's physical
@@ -301,8 +301,10 @@ telemetry, watchdog receipts and the analysis script are retained outside Git
 in `../inferena-results/search-order-30s-20261011`. Each process starts with
 an empty learned-kernel memo; driver shader caches are not cleared. These are
 strict-f32 native diagnostics with unchanged full-tensor candidate checks,
-not a replicated PyTorch comparison or a replacement cohort. The new library
-revision still needs integration and full cohort qualification.
+not a replicated PyTorch comparison or a replacement cohort. The library
+revision is now published in [PR #245](https://github.com/kvark/meganeura/pull/245)
+and integrated through pin `5b37124`, whose additional commit only fixes a
+test's assumed wall-clock trial count. Full cohort qualification remains.
 
 Validation passes 16 library search tests, nine campaign tests and eleven
 harness tests, plus formatting, Clippy and library documentation checks.

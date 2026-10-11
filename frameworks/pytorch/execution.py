@@ -31,6 +31,10 @@ def compare_tensors(actual, reference, *, gradient=False, reduced_precision=Fals
         raise QualificationError("tensor shape or dtype changed")
     if not actual.numel():
         raise QualificationError("empty qualification tensor")
+    # NumPy has no native bfloat16 dtype. Cast both after checking that their
+    # original dtypes agree; every bfloat16 value is exactly representable in f32.
+    if actual.dtype == torch.bfloat16:
+        actual, reference = actual.float(), reference.float()
     actual, reference = actual.numpy(), reference.numpy()
     if not np.isfinite(actual).all() or not np.isfinite(reference).all():
         raise QualificationError("non-finite values")

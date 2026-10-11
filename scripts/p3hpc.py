@@ -568,6 +568,7 @@ def main():
         "INFERENA_MAX_SUBMISSION_CHUNKS",
         "INFERENA_KERNEL_MEMO_DIR",
         "INFERENA_SDPA", "INFERENA_REFERENCE_DIAGNOSTIC",
+        "INFERENA_AUTOCAST", "INFERENA_AMP_REPORT",
     )]
     if overrides:
         parser.error(f"remove experimental/profiling overrides: {', '.join(overrides)}")

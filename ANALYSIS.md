@@ -550,3 +550,51 @@ the complete history ending at the frozen revision and passes a fresh clone
 check. Its SHA-256 is
 `05c626eb2e95f327590a653b1621d6974dbcb8a11d3e309bc56a744a76b7abe8`.
 It excludes environments, model checkpoints and untracked workspace files.
+
+RTX 5070 first passes all ten qualification conditions and thirty phases on
+the same frozen source, then completes **30/30 paired measurement processes,
+90/90 phase comparisons and all ten replicated-gradient groups**. Qualification
+takes 1,513.4 seconds; collection takes 4,469.7 seconds (74.5 minutes). Reference
+compilation in collection takes 7.2–47.4 seconds. All reference phases use
+qualified graph replay; every watchdog receipt records a successful exit.
+The native driver is NVIDIA 595.91.07 on the same Linux kernel.
+
+Using the same ratio and median definitions as the B570 table:
+
+| Arithmetic | Model | Inference | Latency | Training |
+| --- | --- | ---: | ---: | ---: |
+| Strict | SmolLM2-135M | 0.946× | 1.164× | 0.589× |
+| Strict | SmolVLA | 0.929× | 0.872× | 0.744× |
+| Strict | StableDiffusion | 1.162× | 1.146× | 0.801× |
+| Strict | ResNet-50 | 1.342× | 1.437× | 0.616× |
+| Strict | Whisper-tiny | 0.643× | 0.655× | 0.513× |
+| Accelerated | SmolLM2-135M | 0.364× | 1.158× | 0.371× |
+| Accelerated | SmolVLA | 0.518× | 0.928× | 0.529× |
+| Accelerated | StableDiffusion | 0.740× | 0.740× | 0.494× |
+| Accelerated | ResNet-50 | 0.479× | 0.509× | 0.293× |
+| Accelerated | Whisper-tiny | 0.602× | 0.607× | 0.437× |
+
+Meganeura wins six of the thirty RTX 5070 timing cells: strict ResNet and
+diffusion inference/latency, plus SmolLM2's stateless one-token latency in
+both classes. PyTorch remains faster in every training cell on both local
+GPUs. The primary accelerated class is separate from the autocast study;
+these results do not establish native f16 activation storage or mixed-precision
+training. On RTX 5070, 21 of 42 accelerated native sessions select programs
+with cooperative dispatches, compared with none of the 42 strict sessions.
+
+The NVIDIA campaign has the same recorded memo pattern as B570: ten first-session
+misses and eighteen subsequent hits in replicate one, followed by twenty-eight
+hits in each later replicate. Preparation remains separate from the execution
+ratios. The combined figure shows the range of paired process-median ratios;
+those whiskers are observed ranges across three processes, not confidence
+intervals.
+
+The RTX qualification and measurement receipts are in
+`../inferena-results/rtx5070-qualification-0a718b6-20261011` and
+`../inferena-results/rtx5070-cohort-0a718b6-20261011`. Named archives, both
+GPU summaries, analysis/plot scripts, PNG/SVG/PDF figures and
+`RUN-COHORT.txt` are in `../inferena-results/local-cohort-20261011`.
+The source bundle and instructions provide the frozen handoff for H100/M3
+collection and 780M/9600X/RPL-U CPU-oracle qualification on the user's machines.
+Those devices still need their own evidence. No CPU timing is substituted for
+a GPU reference.

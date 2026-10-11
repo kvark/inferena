@@ -15,8 +15,9 @@ two-second cap. Held-out timing warms both engines for at least ten
 seconds and five calls per phase.
 
 The pin adds incumbent-guided coverage of physical choices within the existing
-64-program cap. It is fetchable from the PR branch; full cohort qualification
-is still required. The final commit only corrects a wall-clock test's assumed
+64-program cap. It is fetchable from the PR branch. B570 and RTX 5070 complete
+local qualification and replicated collection; other backends still need
+qualification. The final library commit only corrects a wall-clock test's assumed
 trial count, with no change to search behavior.
 
 V18 extends the held-out warmup from two to ten seconds. B570 diffusion
@@ -90,6 +91,8 @@ Neither requires rollback of tuning or weaker numerical checks.
 First qualify the frozen candidate on each backend. To transfer this local
 revision without depending on a moving remote branch, use the source bundle
 `../inferena-results/local-cohort-20261011/inferena-cohort-0a718b6.bundle`.
+The adjacent `RUN-COHORT.txt` contains portable instructions for the remaining
+machines and explains how to preserve each run's archive.
 From an existing Inferena checkout, after copying the bundle to that machine:
 
 ```sh
@@ -657,12 +660,12 @@ failures.
 
 ## Local acceptance evidence
 
-At `0a718b6`, all five models in both arithmetic classes pass B570
+At `0a718b6`, all five models in both arithmetic classes pass B570 and RTX 5070
 qualification on the current library pin: ten valid conditions and thirty
-valid inference/latency/training phase comparisons. The subsequent B570
+valid inference/latency/training phase comparisons per GPU. Each subsequent
 collection also completes all thirty paired processes and ninety phase
 comparisons, including all ten replicated-gradient gates. PyTorch graph
-replay is enabled, numerical gates and budgets are unchanged, and the new
+replay is enabled, numerical gates and budgets are unchanged, and each new
 campaign starts with an empty kernel memo before recorded reuse. Other
 backends require their own receipts. See the
 [October 11 diagnosis and qualification](ANALYSIS.md#b570-amp-diagnosis-and-kernel-review-october-11-2026)

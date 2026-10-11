@@ -20,11 +20,12 @@ local qualification and replicated collection; other backends still need
 qualification. The final library commit only corrects a wall-clock test's assumed
 trial count, with no change to search behavior.
 
-The development checkout now pins merged upstream Meganeura
-`430f14b153afe1d92839b50b4c9f897933e335ba`. Its complete Git tree is identical
-to the cohort's `5b37124` (`6a0de86a78eaf49e24a9ed853bb458044bcd9a84`);
-this replaces the PR revision with the merged revision without changing library
-code. The frozen cohort records and source bundle retain their original pins.
+The development checkout now pins upstream Meganeura
+`d7a7293378db1b0e8ee3b94a1e6d73ef14a1a32c`, including the subsequent Vulkan
+correctness, scalar-product splitting and convolution indexing changes. This
+is a different library tree from the frozen cohort. The intermediate merged
+revision `430f14b` had the same tree as the cohort's `5b37124`; neither its
+records nor the frozen source bundle are relabelled for the new pin.
 
 V18 extends the held-out warmup from two to ten seconds. B570 diffusion
 diagnostics showed substantial timing drift after the old warmup, including

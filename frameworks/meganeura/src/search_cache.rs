@@ -151,7 +151,9 @@ mod tests {
         graph.set_outputs(vec![loss]);
         let options = train::BuildSearchOptions {
             max_graphs: 1,
-            max_programs: 1,
+            // The ordinary fallback and its tuned challenger each need a slot.
+            max_programs: 2,
+            min_improvement: 0.99,
             max_time: Duration::from_secs(30),
             tuning: TuneOptions {
                 max_time: Duration::from_secs(30),
@@ -204,23 +206,31 @@ mod tests {
                 let receipt = cache.finish(&report).unwrap();
                 assert!(!cache.memo.lock().unwrap().is_empty());
                 assert_eq!(receipt["load"], if run == 0 { "miss" } else { "hit" });
-                let selected = &report.trials[report.selected];
-                let tuning = selected.kernel_tuning.as_ref().unwrap();
+                // A memo contains private decisions, even when whole-program
+                // timing retains the untuned fallback instead of installing them.
+                let tuning = report
+                    .trials
+                    .iter()
+                    .find_map(|trial| trial.kernel_tuning.as_ref())
+                    .unwrap();
                 assert!(!tuning.time_budget_exhausted);
                 if run == 0 {
                     assert!(!tuning.outcomes.is_empty());
-                    assert_eq!(selected.qualifications, 2);
                 } else {
                     assert!(tuning.outcomes.is_empty());
                     assert!(!tuning.reused_classes.is_empty());
                     assert_eq!(receipt["new_comparisons"], 0);
-                    assert_eq!(selected.qualifications, 1);
                 }
+                assert!(report.trials.iter().all(|trial| trial.outcome.qualified));
                 assert_eq!(
                     qualification.report()["qualified_calls"],
-                    selected.qualifications
+                    report
+                        .trials
+                        .iter()
+                        .map(|trial| trial.qualifications)
+                        .sum::<u32>()
+                        + u32::from(!report.final_qualification_time.is_zero())
                 );
-                assert_eq!(report.final_qualification_time, Duration::ZERO);
                 eprintln!("{mode:?} run {}: {receipt}", run + 1);
                 drop(session);
             }

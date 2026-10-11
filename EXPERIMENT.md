@@ -2,8 +2,8 @@
 
 The October 11 cohort freezes Inferena source
 `0a718b6fb9d6c990410dc274618978ad4988a36d` on branch
-`experiment/p3hpc-cuda-graphs`. Later documentation commits do not change the
-source used for this cohort. Meganeura is pinned to
+`experiment/p3hpc-cuda-graphs`. Use that frozen checkout for additional cohort
+devices. Its Meganeura pin is
 `5b37124efe405b5c11e37986fc88867b151aa351` (published search-order candidate,
 [Meganeura PR #245](https://github.com/kvark/meganeura/pull/245)), with Blade
 `56f05651cca73659130e924e497dda633f839d40`. Protocol
@@ -15,10 +15,16 @@ two-second cap. Held-out timing warms both engines for at least ten
 seconds and five calls per phase.
 
 The pin adds incumbent-guided coverage of physical choices within the existing
-64-program cap. It is fetchable from the PR branch. B570 and RTX 5070 complete
+64-program cap. B570 and RTX 5070 complete
 local qualification and replicated collection; other backends still need
 qualification. The final library commit only corrects a wall-clock test's assumed
 trial count, with no change to search behavior.
+
+The development checkout now pins merged upstream Meganeura
+`430f14b153afe1d92839b50b4c9f897933e335ba`. Its complete Git tree is identical
+to the cohort's `5b37124` (`6a0de86a78eaf49e24a9ed853bb458044bcd9a84`);
+this replaces the PR revision with the merged revision without changing library
+code. The frozen cohort records and source bundle retain their original pins.
 
 V18 extends the held-out warmup from two to ten seconds. B570 diffusion
 diagnostics showed substantial timing drift after the old warmup, including

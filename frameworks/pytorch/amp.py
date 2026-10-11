@@ -123,7 +123,8 @@ class BenchmarkBackward:
 
     def metadata(self):
         return {"enabled": self.scaler.is_enabled(), "state": self.scaler.state_dict(),
-                "scope": "scale, backward, unscale, finite check, scale update; no optimizer update"}
+                "scope": ("scale, backward, unscale, finite check, scale update; no optimizer update"
+                          if self.scaler.is_enabled() else "backward; scaling disabled; no optimizer update")}
 
 
 def qualify(model, candidate, forward, loss_fn, inputs, policy, *, training=True):

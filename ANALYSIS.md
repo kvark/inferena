@@ -311,3 +311,97 @@ harness tests, plus formatting, Clippy and library documentation checks.
 Debug GPU tests emit the existing SPIR-V validation-layer message
 `VUID-StandaloneSpirv-None-10684`; it also reproduces on a freshly rebuilt
 unchanged `2c42b44`, and the test assertions pass on both revisions.
+
+## AMP and real-data training (October 11, 2026)
+
+Inferena `273ac31` adds separate AMP references and a real-data training
+study. Later commits align compiler concurrency/attention with the cohort and
+retain independently qualified timing phases. The library pin is `5b37124`;
+[PR #245](https://github.com/kvark/meganeura/pull/245) passes all CI jobs,
+including Metal, Vulkan/lavapipe, Windows, MSRV and quality checks. It remains
+a published PR branch, not a claim that the full cohort has been qualified.
+
+The real-data run uses SmolLM2-135M, 128-token next-token batches from
+Project Gutenberg's *A Midsummer Night's Dream*, 256 completed SGD updates,
+learning rate 0.001, and identical seeded token order across engines. Every
+run begins from the pinned checkpoint. Four fixed training sequences and
+four held-out sequences are evaluated at steps 0/64/128/192/256. The protocol
+and predeclared gates are in [EXPERIMENT.md](EXPERIMENT.md#amp-reference-and-real-data-convergence).
+These are single-seed correctness studies with no throughput claim.
+
+The following relative L2 errors are **percent**, against PyTorch strict f32.
+All eight final trajectories completed 256 updates, changed the checked
+parameter and passed the learning gate.
+
+| GPU | Engine / arithmetic | Training curve | Fixed training probe | Held out | Curve gate |
+| --- | --- | ---: | ---: | ---: | --- |
+| B570 | Meganeura f32 | 0.000763% | 0.000809% | 0.000648% | pass |
+| B570 | PyTorch bf16 | 0.5525% | 1.0603% | 0.4175% | fail |
+| B570 | PyTorch fp16 + scaling | 0.2270% | 0.4134% | 0.1541% | pass |
+| RTX 5070 | Meganeura f32 | 0.000861% | 0.000926% | 0.000703% | pass |
+| RTX 5070 | PyTorch bf16 | 0.5621% | 0.9764% | 0.3378% | pass |
+| RTX 5070 | PyTorch fp16 + scaling | 0.2271% | 0.4121% | 0.1554% | pass |
+
+Native f32 lowers fixed training-probe loss by about 6.70% and held-out loss
+by 3.60% on both GPUs. bf16 also learns, but the B570 fixed-probe curve fails
+the declared 1% L2 bound; the 5070 result is close to that boundary too.
+Neither justifies widening the gate after seeing these runs. Each fp16 run
+records one initial overflow retry on the same batch, then completes all 256
+updates. The original attempt-counting diagnostic completed only 255 updates
+and remains recorded as failed.
+
+The first real-text XPU run failed in native embedding backward, with
+`Trying to create tensor with negative dimension -1`. A separate probe of
+the first real batch also found non-finite gradients. The existing dense
+`index_add` autograd workaround matches every one of the 28,311,552 expected
+gradient elements, including repeated and unused rows. Real-text workers now
+qualify that input pattern and record the selected primitive. With it, the
+XPU f32 trajectory matches native f32 closely. No CPU timing replaces a GPU
+reference.
+
+Compiled Whisper on the RTX 5070 passes the full-output, 32-update precision
+and ordinary repeatability gates in both AMP modes. These are one-process
+diagnostics, with backend-auto SDPA, explicit uncaptured execution, normal
+compiler concurrency, 120 s compilation deadline and ten-second warmups:
+
+| Reference | Compile | Inference | Latency | Forward/loss/backward |
+| --- | ---: | ---: | ---: | ---: |
+| PyTorch AMP bf16 | 8.796 s | 1.313 ms | 1.317 ms | 4.023 ms |
+| PyTorch AMP fp16 + scaling | 8.152 s | 1.370 ms | 1.441 ms | 4.724 ms |
+
+The respective 32-update loss-curve L2 errors are 0.00207% and 0.00122%.
+fp16 timings include gradient unscaling, finite checks and scale maintenance;
+there is no timed optimizer update. These columns are not paired speedup
+claims against earlier native measurements and do not qualify AMP graph replay.
+
+B570 SmolLM2 AMP still needs work before the cohort. With normal compiler
+concurrency, bf16 compilation completed in 108.6 s, but its fixed-input
+32-update training curve differed by 13.08% L2. A later phase-preserving
+diagnostic compiled in 97.2 s and failed the forward maximum-error bound
+(0.7799 versus 0.7272 allowed; RMS passed). fp16 compilation reached the
+120 s deadline. The separately labelled eager fp16 diagnostic qualifies
+inference/latency (33.697/30.835 ms), but fails the fixed-input training curve
+at 5.43% L2, so it emits no training timing. Passing the real-data trajectory
+does not override a failed benchmark-specific gate. All failures remain
+visible, with no tolerance changes or timing substitution.
+
+Two earlier compilation attempts forced one compiler worker through the new
+study launcher. That differed from the cohort's default twelve workers here;
+those timeouts are retained as serial-compilation diagnostics and excluded
+from the compiler comparison. The launcher override is removed and effective
+compiler concurrency is now reported.
+
+Artifacts are under `../inferena-results/amp-convergence-20261011`:
+`b570-v2` and `rtx5070-v2` contain the committed real-data runs, raw losses,
+checkpoints, source archives, corpus/tokenizer/spec hashes and PNG/SVG plots;
+`convergence-summary.json` tabulates all curve metrics. AMP directories retain
+every compilation/qualification receipt, raw timing samples, source archive
+and watchdog result; qualified phases have `columns.csv`. Library and Inferena
+checks pass, including ten AMP tests, nine campaign tests, eleven harness
+tests and four native runner tests (one separate GPU cache test is ignored).
+
+Next, resolve the B570 AMP failures and review the separate GEMV/convolution
+prototypes before freezing a full B570-first qualification/cohort. The new
+AMP references quantify the motivation for native f16 activations; stage 2
+remains unimplemented. Cross-GPU transfer, energy and footprint studies remain
+separate roadmap work.

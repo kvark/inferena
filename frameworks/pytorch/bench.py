@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """PyTorch benchmark runner for inferena.
 
-Runs a fake training step (forward + backward) on a given model and prints
-a JSON result to stdout matching the BenchResult schema.
+Times forward and forward/loss/backward on a given model and prints a JSON
+result matching BenchResult. AMP optimizer updates belong to untimed qualification.
 
 Features inspired by meganeura's bench/compare.sh (PR #30):
 - torch.compile with fresh inductor cache for fair compile-time measurement
@@ -1582,6 +1582,7 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
 
     inputs = prepare_inputs(model_type, model, dev)
     if amp.dtype is not None:
+        qualification_started = time.perf_counter()
         try:
             execution["amp_qualification"] = qualify_amp(
                 eager_model, model,
@@ -1590,9 +1591,11 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
                 inputs, amp, training=training_requested,
             )
         except QualificationError as error:
+            error.details["elapsed_seconds"] = time.perf_counter() - qualification_started
             if path := os.environ.get("INFERENA_AMP_REPORT"):
                 save(Path(path), {"status": "failed", **error.details})
             raise
+        execution["amp_qualification"]["elapsed_seconds"] = time.perf_counter() - qualification_started
         if path := os.environ.get("INFERENA_AMP_REPORT"):
             save(Path(path), execution["amp_qualification"])
         if training_requested and execution["amp_qualification"]["training"]["status"] != "pass":

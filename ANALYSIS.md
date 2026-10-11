@@ -467,3 +467,13 @@ are retained in `../inferena-results/b570-amp-diagnosis-20261011`. Its first
 diagnostic attempt stopped after the f32 repeats because the diagnostic
 launcher incorrectly combined the strict environment flag with explicit AMP;
 the corrected `xpu-eager-v2` and `cuda-eager` runs above are complete.
+
+The first frozen B570 qualification at `0c78dff` completed SmolLM2-135M in
+both engines, then exposed a collector schema bug: Rust omits an empty
+`TuneReport.reused_classes`, but the Python memo validator indexed it as
+mandatory. The validator now interprets that omitted list as empty while
+still rejecting inconsistent aggregate reuse counts. Contract tests cover
+omitted/explicit empty lists, nonempty hits and missing claimed hits. Read-only
+reassessment of the retained first pair passes all three phases; the original
+campaign remains marked incomplete. A new qualification campaign is required
+for the corrected source, with its own empty memo directory.

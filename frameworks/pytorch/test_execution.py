@@ -423,7 +423,8 @@ class CampaignTest(unittest.TestCase):
                     "selected": 0, "trials": [{"outcome": {"qualified": True}, "qualifications": 2, "kernel_tuning": {
                         "options": tuning, "class_limit_reached": False,
                         "visited_classes": 1, "eligible_classes": 1, "time_budget_exhausted": False,
-                        "reused_classes": [], "outcomes": [{}],
+                        # Rust omits reused_classes when there are no hits.
+                        "outcomes": [{}],
                     }}],
                 },
                 "memory_budget": {"device_budget_bytes": 4 * 1024**3, "device_usage_bytes": 0,
@@ -462,6 +463,10 @@ class CampaignTest(unittest.TestCase):
               }}
         check = lambda records: check_pair(records, args, "default", True, 1, "source", precision="strict")
         check([mg, pt])
+        explicit_empty = copy.deepcopy(mg)
+        for session in explicit_empty["optimizer"]["sessions"]:
+            session["search"]["trials"][0]["kernel_tuning"]["reused_classes"] = []
+        check([explicit_empty, pt])
         # Cache hits need a fresh full-tensor check, not a redundant pre-tune
         # check when every kernel decision is already known.
         resumed = copy.deepcopy(mg)
@@ -473,6 +478,10 @@ class CampaignTest(unittest.TestCase):
             session["kernel_memo"].update(load="hit", loaded_classes=1,
                                           reused_class_visits=1, new_comparisons=0)
         check([resumed, pt])
+        missing_hits = copy.deepcopy(resumed)
+        del missing_hits["optimizer"]["sessions"][0]["search"]["trials"][0]["kernel_tuning"]["reused_classes"]
+        with self.assertRaisesRegex(ValueError, "kernel-memo"):
+            check([missing_hits, pt])
         disabled = copy.deepcopy(mg)
         for session in disabled["optimizer"]["sessions"]:
             session["kernel_memo"].update(enabled=False, key=None, load="disabled", saved_classes=None)

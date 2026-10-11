@@ -208,11 +208,14 @@ def check_native_search(session, seconds, max_submission_chunks, kernel_memo=Fal
         raise ValueError("native construction lacks full-output/gradient qualification")
     memo = session["kernel_memo"]
     reports = [trial["kernel_tuning"] for trial in trials if trial["kernel_tuning"] is not None]
+    # TuneReport uses serde's skip_serializing_if for an empty reuse list.
+    # Absence means zero visits, but the aggregate receipt must still agree.
+    reused_visits = sum(len(report.get("reused_classes", [])) for report in reports)
     if (memo["policy"] != KERNEL_MEMO_POLICY or memo["enabled"] is not kernel_memo
             or memo["load"] not in (("miss", "hit", "invalid") if kernel_memo else ("disabled",))
             or not isinstance(memo["loaded_classes"], int) or memo["loaded_classes"] < 0
             or memo["load"] != "hit" and memo["loaded_classes"] != 0
-            or memo["reused_class_visits"] != sum(len(report["reused_classes"]) for report in reports)
+            or memo["reused_class_visits"] != reused_visits
             or memo["new_comparisons"] != sum(len(report["outcomes"]) for report in reports)):
         raise ValueError("native kernel-memo receipt differs from executed search")
     if kernel_memo:

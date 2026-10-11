@@ -82,12 +82,24 @@ class Device:
             with log.open("wb") as stream:
                 result = subprocess.run([*self.prefix, "shell", wrapped], stdout=stream,
                                         stderr=subprocess.STDOUT, timeout=timeout)
+            if result.returncode:
+                self.capture_crash(log.parent)
             return result.returncode
         except (subprocess.TimeoutExpired, KeyboardInterrupt):
             pid = self.shell("cat " + shlex.quote(pidfile))
             if re.fullmatch(r"[1-9][0-9]*", pid):
                 self.shell(f"kill -9 {pid}")
+            self.capture_crash(log.parent)
             raise
+
+    def capture_crash(self, folder):
+        # Preserve the existing crash buffer without clearing unrelated device
+        # diagnostics. A logging failure must not hide the native failure.
+        try:
+            crash = self.call("logcat", "-d", "-b", "crash", "-v", "threadtime")
+        except Exception as error:
+            crash = f"Could not retrieve Android crash buffer: {error}"
+        (folder / "android-crash.log").write_text(crash + "\n", encoding="utf-8")
 
 
 def android_environment(ndk):

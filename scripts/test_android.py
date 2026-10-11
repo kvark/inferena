@@ -84,10 +84,19 @@ class AndroidContract(unittest.TestCase):
     def test_adb_timeout_kills_remote_workload(self):
         import subprocess
         device = Device("quest")
-        with tempfile.TemporaryDirectory() as tmp, patch("p3hpc_android.subprocess.run", side_effect=subprocess.TimeoutExpired("adb", 1)), patch.object(device, "shell", side_effect=["1234", ""]) as shell:
+        with tempfile.TemporaryDirectory() as tmp, patch("p3hpc_android.subprocess.run", side_effect=subprocess.TimeoutExpired("adb", 1)), patch.object(device, "shell", side_effect=["1234", ""]) as shell, patch.object(device, "call", return_value="tombstone"):
             with self.assertRaises(subprocess.TimeoutExpired):
                 device.run("runner", Path(tmp) / "log", "/tmp/pid", 1)
             self.assertEqual(shell.call_args.args, ("kill -9 1234",))
+            self.assertEqual((Path(tmp) / "android-crash.log").read_text(), "tombstone\n")
+
+    def test_native_crash_is_preserved_without_retry(self):
+        device = Device("quest")
+        with tempfile.TemporaryDirectory() as tmp, patch("p3hpc_android.subprocess.run", return_value=SimpleNamespace(returncode=139)) as run, patch.object(device, "call", return_value="SIGSEGV in driver"):
+            folder = Path(tmp)
+            self.assertEqual(device.run("runner", folder / "runner.log", "/tmp/pid", 1), 139)
+            run.assert_called_once()
+            self.assertIn("SIGSEGV", (folder / "android-crash.log").read_text())
 
     def test_oracle_requires_every_gradient_and_current_files(self):
         with tempfile.TemporaryDirectory() as tmp:

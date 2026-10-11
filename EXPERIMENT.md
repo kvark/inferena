@@ -1,8 +1,9 @@
 # P3HPC paired collection
 
 Use branch `experiment/p3hpc-cuda-graphs`. Meganeura is pinned to
-`2a1f948bec97da3cbbf3bba9d0488f35b5031787` (Quest Vulkan fixes, causal
-SmolVLA training, and bounded long-product accumulation), with Blade
+`5b4745cf88eaa18a4c507a10705d666d75da8fe7` (Quest Vulkan fixes, causal
+SmolVLA training, bounded long-product accumulation, and serialized Adreno
+driver pipeline compilation), with Blade
 `56f05651cca73659130e924e497dda633f839d40`. Protocol
 `p3hpc-paired-campaign-v18` retains the merged joint graph/schedule search:
 up to 16 graph/implementation forms, interleaved physical-plan choices, and
@@ -523,6 +524,11 @@ actual Vulkan budget/usage, system availability, cap source and effective bound.
 This is a conservative shared-memory search limit, not a GPU allocation or peak
 measurement. Drivers with a usable Vulkan budget keep the common budget policy.
 
+The pinned Meganeura serializes Android Adreno driver pipeline creation after
+an intermittent crash was observed inside Qualcomm's LLVM compiler during
+parallel pipeline construction. Shader generation stays parallel, and this
+workaround does not serialize measured GPU execution.
+
 Every process exports the selected program's exact full parameters, inputs,
 inference/latency outputs, training loss, and all canonical gradients outside
 the timing regions. A fresh host PyTorch CPU **float64** model checks every
@@ -539,7 +545,8 @@ binary snapshots, raw device/CPU logs, timing samples, tensor blobs, full CPU
 reference arrays and comparison receipts. Reserve tens of GB on both host and
 headset for a full campaign. `latest.tgz` is produced as on desktop. Remote
 evidence remains at the recorded `remote_directory` until explicitly removed.
-Failed processes and mismatches remain visible; only complete, qualified
+Failed native processes also retain the Android crash log buffer (which may
+include older device crashes). Failed processes and mismatches remain visible; only complete, qualified
 replicate groups produce timings in the report. Qualification produces coverage
 but no publication timings. Host CPU duration never enters performance ratios.
 

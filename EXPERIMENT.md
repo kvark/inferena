@@ -796,3 +796,12 @@ must also pass the same per-step/relative-L2 curve bounds against PyTorch f32,
 including every evaluation sequence. Failed numerical gates remain failures.
 This establishes a short matched training trajectory for one model, corpus
 and seed; it does not establish general convergence or supply throughput data.
+
+SmolLM2-135M currently fails the fixed synthetic-input AMP training gate on
+both B570 and RTX 5070, including eager math SDPA. The corresponding real-data
+study has different outcomes. Preserve these as separate results: do not
+substitute the real-data gate for failed benchmark training cells, or block
+the primary f32 cohort on an assumed XPU-specific AMP defect. The
+[diagnostic and kernel review](ANALYSIS.md#b570-amp-diagnosis-and-kernel-review-october-11-2026)
+records the evidence. GEMV unrolling and convolution interleaving prototypes
+remain excluded from the frozen `0c78dff` qualification candidate.

@@ -405,3 +405,65 @@ prototypes before freezing a full B570-first qualification/cohort. The new
 AMP references quantify the motivation for native f16 activations; stage 2
 remains unimplemented. Cross-GPU transfer, energy and footprint studies remain
 separate roadmap work.
+
+## B570 AMP diagnosis and kernel review (October 11, 2026)
+
+The SmolLM2 synthetic-input AMP failures are reproducible on **both GPUs**,
+including eager execution. Untimed diagnostics at `0c78dff` use the same
+checkpoint, 128-token benchmark input, math SDPA and 32 completed SGD updates
+as the declared gate. Each trajectory restores the checkpoint and RNG;
+f32 is repeated before testing bf16 and fp16. The following errors compare
+each trajectory to its device's initial f32 trajectory, in percent:
+
+| GPU | Repeated f32 | AMP bf16 | AMP fp16 |
+| --- | ---: | ---: | ---: |
+| B570 | 0.02114% | 13.0641% | 5.4744% |
+| RTX 5070 | 0.00000% | 13.0150% | 5.4259% |
+
+Both f32 repeats pass the unchanged gate; all four AMP trajectories fail.
+Each fp16 trajectory retries two overflowed attempts and completes all 32
+updates. The eager bf16 forward maximum-error gate also fails on both GPUs:
+1.0780 on B570 and 0.8898 on 5070, against a 0.7272 bound. fp16 forward passes
+on both. The corresponding AMP curves agree across GPUs much more closely
+than they agree with f32 (0.3796% L2 for bf16, 0.1516% for fp16).
+This points to sensitivity of the repeated synthetic workload to AMP
+arithmetic, rather than an XPU-only or compiler-only defect. It does not
+establish a particular operator as the cause. The real-data study remains
+separate evidence; no thresholds or failed benchmark cells are changed.
+
+A single, explicitly extended-deadline B570 fp16 compilation diagnostic
+finishes in 96.36 s, qualifies forward execution and again fails its training
+curve (5.4780% L2). It retains inference/latency at 8.872/8.089 ms and leaves
+training empty. The configured deadline was 300 s, so this is a diagnostic,
+not a replacement for the earlier 120 s timeout or a qualified cohort replicate.
+It establishes that this configuration can finish, not that a retry fixes the
+earlier failure. The cohort compilation limit stays 120 s.
+
+The kernel prototypes are excluded from the frozen candidate:
+
+- **GEMV:** the current library already searches subgroup reductions, row
+  groups and forward column groups. The additional prototype reads
+  `MEGANEURA_GEMV_UNROLL` inside code generation, outside the typed, serialized
+  tuning configuration. The saved `sweep.sh` never sets it, so its results
+  evaluate the existing shape choices, not unrolling. Its example times
+  chains without reading back or validating their outputs. Promotion requires
+  a represented tuning choice, numerical checks and matched full-model
+  measurements; these sweeps cannot establish an unrolling improvement.
+- **Convolution:** the process-global interleaving prototype changes scalar
+  register tiling, not cooperative matrix execution. The three saved greedy
+  ResNet training runs have medians 53.349 → 52.434 ms on B570 (1.7% lower)
+  and 28.559 → 30.122 ms on 5070 (5.5% higher), under the older protocol.
+  This does not justify a universal default. A future implementation should
+  make it a measured, persisted per-kernel choice.
+- **Xe2 cooperative matrices:** a fresh capability query of the pinned native
+  runner reports f16-input/f32-accumulate shape `[8, 16, 16]` on B570 and no
+  native-f32 shape. ANV exposes the capability; the existing square-tile
+  implementation cannot use that shape. Rectangular code generation is
+  separate library work, and would not accelerate the strict-f32 column.
+
+Raw diagnostics, all losses, initial full logits, per-parameter first-gradient
+comparisons, source archives, watchdogs, capability logs and prototype patches
+are retained in `../inferena-results/b570-amp-diagnosis-20261011`. Its first
+diagnostic attempt stopped after the f32 repeats because the diagnostic
+launcher incorrectly combined the strict environment flag with explicit AMP;
+the corrected `xpu-eager-v2` and `cuda-eager` runs above are complete.

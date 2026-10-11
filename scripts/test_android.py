@@ -8,13 +8,39 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from p3hpc import create_parser
+from p3hpc import create_parser, check_native_search, TUNE_SCRATCH_BYTES
 from p3hpc_android import (PROTOCOL, Device, battery_info, check_battery, check_native,
                            validate_oracle, write_json, sha256)
 from p3hpc_report import campaign_rows
 
 
 class AndroidContract(unittest.TestCase):
+    def test_memory_fallback_is_bounded_and_android_only(self):
+        import sys
+        tuning = dict(scope="All", max_classes=2 * sys.maxsize + 1, min_improvement=0.05,
+                      max_time=dict(secs=30, nanos=0), max_scratch_bytes=TUNE_SCRATCH_BYTES)
+        session = dict(mode="Training", search=dict(options=dict(max_time=dict(secs=30, nanos=0),
+            max_graphs=16, max_programs=64, max_submission_chunks=64, patience=None,
+            min_improvement=0.01, warmup_runs=2, warmup_time=dict(secs=0, nanos=250000000),
+            max_plan_bytes=3 * 1024**3 // 2, tuning=tuning), selected=0,
+            trials=[dict(outcome=dict(qualified=True), qualifications=1, kernel_tuning=dict(
+                options=tuning, class_limit_reached=False, visited_classes=1, eligible_classes=1,
+                time_budget_exhausted=False, reused_classes=[], outcomes=[]))]),
+            memory_budget=dict(device_budget_bytes=0, device_usage_bytes=0,
+                               source="android-memavailable-capped-2gib", system_available_bytes=4 * 1024**3,
+                               available_bytes=2 * 1024**3, plan_fraction_of_available=0.75),
+            qualification=dict(policy="fixed-full-tensor-v4", reference="first checked program", rtol=1e-4,
+                               atol=1e-6, accelerated_gradient_rtol=0.01, qualified_calls=1,
+                               output_elements=1, gradient_elements=1),
+            kernel_memo=dict(policy="campaign-kernel-memo-v1", enabled=False, load="disabled", loaded_classes=0,
+                             reused_class_visits=0, new_comparisons=0, key=None, saved_classes=None))
+        check_native_search(session, 30, 64, android=True)
+        with self.assertRaises(ValueError):
+            check_native_search(session, 30, 64)
+        session["memory_budget"]["available_bytes"] = 3 * 1024**3
+        with self.assertRaises(ValueError):
+            check_native_search(session, 30, 64, android=True)
+
     def test_cli_retains_common_measurement_policy(self):
         args = create_parser().parse_args(["--backend", "android", "--adb-serial", "quest"])
         self.assertEqual(args.replicates, 3)

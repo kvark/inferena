@@ -59,10 +59,8 @@ fn build_session(
             .expect("INFERENA_MAX_SUBMISSION_CHUNKS must be a positive integer");
         assert!((1..=64).contains(&max_submission_chunks));
         let memory = config.gpu.as_ref().unwrap().memory_stats();
-        assert!(
-            memory.budget > memory.usage,
-            "GPU memory budget is unavailable or exhausted"
-        );
+        let (available, memory_source, system_available) =
+            search_memory_budget(memory.budget, memory.usage);
         let mut qualification = qualification::Qualification::new(graph, mode);
         let mut options = train::BuildSearchOptions {
             max_graphs: 16,
@@ -77,7 +75,7 @@ fn build_session(
             max_time: Duration::from_secs_f64(seconds),
             // Leave room for padding, driver allocations, readback and private probes.
             // This is a logical-plan bound, not a measured heap peak.
-            max_plan_bytes: ((memory.budget - memory.usage) / 4 * 3) as usize,
+            max_plan_bytes: (available / 4 * 3) as usize,
             tuning: TuneOptions {
                 max_classes: usize::MAX,
                 max_time: Duration::from_secs_f64(seconds),
@@ -134,6 +132,9 @@ fn build_session(
         preparation["memory_budget"] = serde_json::json!({
             "device_budget_bytes": memory.budget,
             "device_usage_bytes": memory.usage,
+            "source": memory_source,
+            "available_bytes": available,
+            "system_available_bytes": system_available,
             "plan_fraction_of_available": 0.75,
         });
         session
@@ -153,6 +154,38 @@ fn build_session(
     );
     SESSION_PREPARATION.with_borrow_mut(|reports| reports.push(preparation));
     session
+}
+
+fn search_memory_budget(budget: u64, usage: u64) -> (u64, &'static str, Option<u64>) {
+    if budget > usage {
+        return (budget - usage, "vulkan", None);
+    }
+    // Android drivers may omit VK_EXT_memory_budget entirely. Bound search by
+    // current shared-system availability and a fixed 2 GiB ceiling. This is a
+    // plan limit, not a fabricated GPU-heap measurement or allocation guarantee.
+    #[cfg(target_os = "android")]
+    {
+        let meminfo =
+            std::fs::read_to_string("/proc/meminfo").expect("Android memory availability");
+        let kib: u64 = meminfo
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("MemAvailable:")
+                    .and_then(|value| value.split_whitespace().next())
+            })
+            .expect("MemAvailable missing")
+            .parse()
+            .expect("invalid MemAvailable");
+        let bytes = kib.checked_mul(1024).expect("memory availability overflow");
+        assert!(bytes > 0, "system memory exhausted");
+        return (
+            bytes.min(2 * 1024 * 1024 * 1024),
+            "android-memavailable-capped-2gib",
+            Some(bytes),
+        );
+    }
+    #[cfg(not(target_os = "android"))]
+    panic!("GPU memory budget is unavailable or exhausted");
 }
 
 fn session_config() -> SessionConfig<'static> {

@@ -135,7 +135,7 @@ def check_native(record, args, model, precision, count, dependency, native):
         if (session["cooperative_matrix_policy"] != ("NativeF32" if precision == "strict" else "Auto")
                 or session["cooperative_dispatches"] != 0):
             raise ValueError("Quest f32/no-cooperative-matrix contract changed")
-        check_native_search(session, args.tune_seconds, args.max_submission_chunks, args.kernel_memo)
+        check_native_search(session, args.tune_seconds, args.max_submission_chunks, args.kernel_memo, android=True)
 
 
 def validate_oracle(folder, report, precision):

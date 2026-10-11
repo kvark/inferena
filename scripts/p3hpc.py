@@ -136,13 +136,22 @@ def duration_seconds(duration):
     return duration["secs"] + duration["nanos"] / 1e9
 
 
-def check_native_search(session, seconds, max_submission_chunks, kernel_memo=False):
+def check_native_search(session, seconds, max_submission_chunks, kernel_memo=False, android=False):
     search = session.get("search")
     if not search:
         raise ValueError("native session did not use calibrated construction")
     options = search["options"]
     tuning = options["tuning"]
     memory = session["memory_budget"]
+    available = memory["device_budget_bytes"] - memory["device_usage_bytes"]
+    if memory.get("source", "vulkan") == "android-memavailable-capped-2gib":
+        if not android or available > 0 or memory["system_available_bytes"] <= 0:
+            raise ValueError("invalid Android shared-memory search budget")
+        available = min(memory["system_available_bytes"], 2 * 1024**3)
+        if memory["available_bytes"] != available:
+            raise ValueError("Android search budget differs from the declared cap")
+    elif memory.get("source", "vulkan") != "vulkan":
+        raise ValueError("unknown native memory budget source")
     if (duration_seconds(options["max_time"]) != seconds
             or options["max_graphs"] != 16 or options["max_programs"] != 64
             or options["max_submission_chunks"] != max_submission_chunks
@@ -151,7 +160,7 @@ def check_native_search(session, seconds, max_submission_chunks, kernel_memo=Fal
             or options["warmup_runs"] != 2
             or duration_seconds(options["warmup_time"]) != 0.25
             or memory["plan_fraction_of_available"] != 0.75
-            or options["max_plan_bytes"] != (memory["device_budget_bytes"] - memory["device_usage_bytes"]) // 4 * 3
+            or options["max_plan_bytes"] != available // 4 * 3
             or options["max_plan_bytes"] <= 0
             or tuning["scope"] != "All" or tuning["max_classes"] != 2 * sys.maxsize + 1
             or tuning["min_improvement"] != 0.05

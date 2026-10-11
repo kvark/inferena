@@ -698,7 +698,8 @@ regresses 2.0%, with ranges 27.235–27.362 and 27.790–27.825 ms. These are
 observed ranges, not confidence intervals. Median preparation increases from
 65.492 to 71.020 seconds on B570, and 59.237 to 68.123 seconds on NVIDIA.
 
-**Keep `91fb22d` experimental; Inferena retains merged upstream `430f14b`.**
+**Keep `91fb22d` experimental.** Inferena retained merged upstream `430f14b`
+at this checkpoint; the later development update is described below.
 Faster isolated convolution choices do not establish a whole-model gain. The
 first B570 candidate process records interleaved winners in forward and
 weight-gradient classes, but still returns graph/program zero for all three
@@ -724,3 +725,103 @@ cooperative kernels. Native f16 activation storage remains separate work.
 `model-summary.json` also retains kernel-comparison decisions, qualification
 receipts and the four replicated-gradient reports. `run_model_comparison.py`
 and `summarize_models.py` reproduce this diagnostic and its analysis.
+
+### Acceptance safeguard diagnostics on newer upstream
+
+Development commit `d02d60c` updates Inferena to Meganeura `d7a7293`, including
+the subsequent Vulkan correctness fixes. The frozen cohort remains unchanged.
+The acceptance safeguard is being tested separately: qualify an untuned
+incumbent, reserve comparison time within the existing deadline, and require
+private kernel choices (including memo reuse) to pass whole-program timing
+before replacing it. Failed qualification, incomplete pairs and late samples
+retain the incumbent. A new input callback reproduces uploads before every
+execution, outside step timing but inside the search budget.
+
+The initial safeguard constructs a second session for the kernel challenger.
+Meganeura `98bdb57` instead retains the original dispatches and compiled
+pipelines, switches choices on the same tensor allocations, and restores the
+original on rejection. Eighteen search tests and the explicit training-state
+crossover test pass on both local GPUs, including restoration of pruned
+convolution pipelines. All-target/all-feature clippy passes.
+
+The ten-second pilots did **not establish performance acceptance**. With independent cold
+searches, ten-second held-out warmup and twenty samples, the following B570
+ResNet-50 pilots pass the unchanged PyTorch output and gradient gates:
+
+| Implementation | Meganeura | Latency (ms) |
+| --- | --- | ---: |
+| Fresh upstream control | `d7a7293` | 5.213 |
+| Safeguard, unchanged kernel space, separate sessions | `18b46b0` | 6.306 |
+| Safeguard, unchanged kernel space, original allocations | `98bdb57` | 6.203 |
+
+These are single-process pilots, not a replicated acceptance study. The
+separate-session pilot's recorded private kernel decisions match an upstream
+control, so isolated-kernel reports alone do not explain the gap. Reusing the
+original allocations does not eliminate it. The expanded convolution space
+also remains rejected: two B570 triplets stop the initial study before RTX
+timing, and adding input refresh alone still gives 6.291 ms in a later pilot.
+
+Further controls limit interpretation of the earlier 5.224 ms ordinary-build
+observation. New ordinary-build runs measure 6.321 ms on `d7a7293` and 6.316 ms
+on the old `430f14b` binary, both passing correctness. This does not support
+attributing the slower ordinary result to the upstream update. In one fixed
+selected session, alternating input uploads off/on/off/on gives 4.993, 6.075,
+5.266 and 6.351 ms; uploads affect subsequent execution even when their own
+time is excluded. GPU timestamps also perturb the comparison: the timestamped
+control and in-place safeguard measure 6.396 and 6.349 ms before detailed
+profiling. Those instrumented results are diagnostic, not an acceptance gate.
+
+Raw evidence is retained in `../inferena-results/search-acceptance-20261011/`
+and its `-input-refresh`, `-refreshed`, `-standalone`, `-core` and `-inplace`
+counterparts. Failed and superseded attempts are explicitly labelled.
+
+A thirty-second warmup trace without GPU timestamps, in
+`../inferena-results/search-acceptance-settling-20261011/`, shows substantial
+drift within each fixed latency session. The control's two-second bin medians
+rise from 5.326 ms initially to 6.327 ms at 28–30 seconds while its sampled GPU
+clock falls from 2750 to 2150 MHz. The safeguard starts at 5.034 ms and reaches
+6.177 ms at 28–30 seconds, with the GPU clock falling from 2750 to 2100 MHz.
+Host submission time also varies. This is direct evidence of changing
+operating conditions of sufficient size to confound the earlier comparison;
+it does not reconstruct the clocks of the earlier runs. Held-out latency
+after thirty seconds is 6.330 ms for the control and 6.134 ms for the safeguard.
+Both complete processes pass the numerical gates.
+
+A fresh three-process-per-variant study uses a fixed thirty-second warmup
+on both GPUs, without tracing or GPU timestamps. The numerical gates, 1%
+whole-program threshold, 5% private-kernel threshold and 5% material-regression
+limit remain unchanged. These supplemental records use their own protocol;
+they do not replace frozen cohort records.
+
+**The safeguard passes this local acceptance gate.** All twelve processes
+complete within their watchdogs and pass the preserved PyTorch output, loss
+and parameter-gradient gates. All four device/variant groups pass replicated
+gradients, and all six execution comparisons stay within the prespecified 5%
+material-regression limit. Times are medians of three process medians:
+
+| GPU | Phase | Upstream (ms) | Safeguard (ms) | Time change |
+| --- | --- | ---: | ---: | ---: |
+| B570 | Inference | 12.777 | 13.184 | +3.2% |
+| B570 | Small-batch latency | 6.352 | 6.154 | −3.1% |
+| B570 | Training | 53.625 | 53.381 | −0.5% |
+| RTX 5070 | Inference | 5.010 | 4.989 | −0.4% |
+| RTX 5070 | Small-batch latency | 2.547 | 2.538 | −0.4% |
+| RTX 5070 | Training | 27.162 | 27.009 | −0.6% |
+
+Preparation remains reported separately: 65.150 / 66.837 seconds on B570
+and 57.592 / 54.989 seconds on RTX (upstream / safeguard). This includes
+qualification, the untuned fallback, kernel probes and whole-program search.
+The result supports retaining the safeguard for review; it does not establish
+a general speedup, recover the earlier operating conditions, or promote the
+expanded convolution candidate. The earlier apparent B570 latency regression
+must not be presented as a demonstrated kernel effect without accounting for
+the observed clock drift.
+
+`../inferena-results/search-acceptance-steady-20261011/` contains every process,
+the full summary with observed ranges, gradient reports, source patches, locks,
+retained binaries and a Meganeura bundle for `98bdb57` based on upstream
+`d7a7293`. The library changes remain on the local
+`experiment/search-acceptance-core-2026-10-11` review branch; Inferena's normal
+dependency remains the published upstream `d7a7293`. The integration patch
+records the input-refresh callback used in this study without introducing an
+unpublished remote dependency into the development checkout.

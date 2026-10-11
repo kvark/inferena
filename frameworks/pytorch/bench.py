@@ -14,6 +14,7 @@ Features inspired by meganeura's bench/compare.sh (PR #30):
 from contextlib import nullcontext
 import hashlib
 import json
+import math
 import os
 import platform
 import shutil
@@ -1070,7 +1071,9 @@ def _timing_summary(samples):
     }
 
 
-WARMUP_SECONDS = 10.0
+WARMUP_SECONDS = float(os.environ.get("INFERENA_WARMUP_SECONDS", "10"))
+if not math.isfinite(WARMUP_SECONDS) or WARMUP_SECONDS <= 0:
+    raise ValueError("INFERENA_WARMUP_SECONDS must be a positive number")
 
 
 def _measure_call(fn, warmup_runs: int, measurement_runs: int, device, phase, before=None):

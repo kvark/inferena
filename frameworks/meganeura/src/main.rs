@@ -20,7 +20,17 @@ mod initialization;
 mod qualification;
 mod search_cache;
 
-const WARMUP_TIME: Duration = Duration::from_secs(10);
+fn warmup_time() -> Duration {
+    let seconds = std::env::var("INFERENA_WARMUP_SECONDS")
+        .unwrap_or_else(|_| "10".to_owned())
+        .parse::<f64>()
+        .expect("INFERENA_WARMUP_SECONDS must be a positive number");
+    assert!(
+        seconds.is_finite() && seconds > 0.0,
+        "INFERENA_WARMUP_SECONDS must be a finite positive number"
+    );
+    Duration::from_secs_f64(seconds)
+}
 
 fn build_session(
     graph: &Graph,
@@ -419,10 +429,11 @@ fn bench_session(
     set_inputs: &dyn Fn(&mut meganeura::Session),
 ) -> BenchStats {
     let (warmups, samples) = benchmark_counts();
+    let warmup_time = warmup_time();
     let warmup_range = nsys_range(&format!("meganeura/{phase}/warmup"));
     let warmup_start = Instant::now();
     let mut warmup_runs = 0;
-    while warmup_runs < warmups || warmup_start.elapsed() < WARMUP_TIME {
+    while warmup_runs < warmups || warmup_start.elapsed() < warmup_time {
         set_inputs(session);
         session.step();
         session.wait();
@@ -1098,7 +1109,7 @@ fn emit_result(
             "name": "inferena-paper-v4",
             "synthetic_parameter_init": initialization::POLICY,
             "warmup_runs": warmup_runs,
-            "warmup_seconds": WARMUP_TIME.as_secs_f64(),
+            "warmup_seconds": warmup_time().as_secs_f64(),
             "warmup": {
                 "inference": forward.warmup,
                 "latency": latency.warmup,

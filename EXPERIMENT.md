@@ -34,6 +34,13 @@ use the same fixed floor; search keeps its existing deadline and comparison
 warmup. Linux manifests also retain CPU frequency governor, energy preference
 and frequency-limit settings. See the [search-order study](ANALYSIS.md#search-order-and-warmup-diagnostic-october-11-2026).
 
+Development runners accept `INFERENA_WARMUP_SECONDS` for standalone experiments
+(a finite positive number, default `10`). Both PyTorch and Meganeura report the
+requested floor and actual warmup duration. The paired collector explicitly
+sets its frozen ten-second floor and still rejects mismatched protocol records.
+The separate acceptance study uses thirty seconds after observing B570 clock
+drift; see the [acceptance diagnostics](ANALYSIS.md#acceptance-safeguard-diagnostics-on-newer-upstream).
+
 V15 retains matched deterministic pseudorandom parameters, model shapes, inputs,
 pinned SmolLM2 checkpoints, arithmetic classes and numerical
 thresholds. It updates Meganeura and Blade, including descriptor-set reuse,

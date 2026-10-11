@@ -1463,7 +1463,7 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
     strict = os.environ.get("INFERENA_STRICT", "0") == "1"
     amp = AmpPolicy(dev)
     precision_mode = f"amp-{amp.name}" if amp.dtype is not None else "strict-f32" if strict else "accelerated-f32"
-    protocol = "inferena-amp-v2" if amp.dtype is not None else "inferena-graph-replay-v8"
+    protocol = "inferena-amp-v3" if amp.dtype is not None else "inferena-graph-replay-v8"
     warmup_runs = int(os.environ.get("INFERENA_WARMUP_RUNS", "5"))
     measurement_runs = int(os.environ.get("INFERENA_MEASUREMENT_RUNS", "20"))
     if warmup_runs < 0 or measurement_runs < 1:
@@ -1595,7 +1595,9 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
             raise
         if path := os.environ.get("INFERENA_AMP_REPORT"):
             save(Path(path), execution["amp_qualification"])
-        if training_requested and amp.name == "fp16":
+        if training_requested and execution["amp_qualification"]["training"]["status"] != "pass":
+            execution["amp_training_failure"] = execution["amp_qualification"]["training"]
+        elif training_requested and amp.name == "fp16":
             backward.scaler.load_state_dict(execution["amp_qualification"]["training"]["scaler_state"])
 
     def inference_call():
@@ -1648,7 +1650,12 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
         return _benchmark_logits(model_type, outputs), step_loss
 
     training_samples = None
-    if training_requested:
+    if "amp_training_failure" in execution:
+        train_call = None
+        execution["graph_replay"]["phases"]["training"] = {
+            "status": "not-attempted", "reason": "AMP training precision gate failed; checkpoint restored",
+        }
+    elif training_requested:
         train_call = prepare_phase("training", train_call, model)
         if train_call is not None:
             _reset_peak_memory(dev)
@@ -1794,7 +1801,7 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
             profiles[name] = profile_phase(fn, path, samples, before, device=dev)
 
     result = {
-        "status": "partial" if "failure" in execution else "ok",
+        "status": "partial" if "failure" in execution or "amp_training_failure" in execution else "ok",
         "framework": "pytorch",
         "framework_rev": torch.__version__,
         "model": model_name,

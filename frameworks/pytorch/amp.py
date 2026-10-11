@@ -192,8 +192,8 @@ def qualify(model, candidate, forward, loss_fn, inputs, policy, *, training=True
             try:
                 report["training"] = {**compare_loss_curves(actual_losses, reference_losses), **trajectory_report}
             except QualificationError as error:
-                error.details["trajectory"] = trajectory_report
-                raise
+                report["status"] = "partial"
+                report["training"] = {"status": "failed", **error.details, **trajectory_report}
         return report
     finally:
         restore()

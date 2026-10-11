@@ -726,7 +726,8 @@ Native f16 activation storage is not required to collect these reference columns
   --results-dir ../amp-b570
 ```
 
-The default reference is compiled, math SDPA, explicitly uncaptured, with the
+The default reference is compiled, explicitly uncaptured, and uses the cohort's
+attention policy (math on XPU, auto elsewhere). It retains the
 same 120 s compilation deadline and five-call/ten-second warmup followed by
 twenty samples. Three fresh processes per condition are the default; dtype
 order alternates. `--mode eager` is a labelled diagnostic. No capture or
@@ -743,6 +744,11 @@ no update may be skipped, per-step loss error is at most
 Weights, buffers and random state are restored afterward. This precision gate
 does not establish learning on real data. Ordinary full-tensor repeatability
 qualification still applies before each timed phase.
+
+AMP v3 preserves qualified inference and latency when only the training curve
+fails. The checkpoint is restored before measurement, the training cell is
+empty, and the record/campaign is marked partial. Its failed training gate
+and complete trajectories remain in the receipt; no training timing is substituted.
 
 AMP v2 counts completed optimizer updates. If GradScaler detects overflow,
 it lowers the scale and retries the **same batch with unchanged weights**,

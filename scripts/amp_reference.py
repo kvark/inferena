@@ -10,15 +10,17 @@ import sys
 
 from collection import write_json
 from p3hpc import (SUPPORTED_MODELS, check_torch_identity, gpu_matches, input_hashes, positive_seconds,
-                  cpu_frequency_policies, PYTHON_VERSION)
+                  cpu_frequency_policies, reference_sdpa_policy, PYTHON_VERSION)
 from study import ROOT, begin, environment, run_json
 
 
-def check_record(record, model, precision, mode, gpu):
+def check_record(record, model, precision, mode, gpu, *, sdpa=None):
     execution, protocol = record["execution"], record["protocol"]
-    if record["model"] != model or record["status"] != "ok" or not gpu_matches(gpu, record["gpu_name"]):
+    if sdpa is not None and execution["sdpa_policy"] != sdpa:
+        raise ValueError("requested attention policy did not execute")
+    if record["model"] != model or record["status"] not in ("ok", "partial") or not gpu_matches(gpu, record["gpu_name"]):
         raise ValueError("unexpected model/device or incomplete AMP result")
-    if record["precision"]["comparison_class"] != f"amp-{precision}" or protocol["name"] != "inferena-amp-v2":
+    if record["precision"]["comparison_class"] != f"amp-{precision}" or protocol["name"] != "inferena-amp-v3":
         raise ValueError("requested AMP arithmetic did not execute")
     if (record["precision"]["autocast"] != precision
             or record["precision"]["torch_float32_matmul_precision"] != "highest"
@@ -29,12 +31,20 @@ def check_record(record, model, precision, mode, gpu):
             or execution["graph_replay"]["requested"] or not execution["compile_budget_enforced"]):
         raise ValueError("requested uncaptured compiler policy did not execute")
     gate = execution["amp_qualification"]
-    if (gate["status"] != "pass" or gate["training"]["status"] != "pass" or gate["training"]["steps"] != 32
+    if gate["status"] not in ("pass", "partial") or gate["training"]["status"] not in ("pass", "failed"):
+        raise ValueError("AMP precision qualification is incomplete")
+    training_valid = gate["training"]["status"] == "pass"
+    if training_valid and (gate["training"]["steps"] != 32
             or gate["training"]["completed_updates"] != 32 or gate["training"]["skipped_steps"]
             or gate["training"]["policy"] != "loss-curve-v1" or gate["training"]["rtol"] != 0.02
             or gate["training"]["atol"] != 1e-6 or gate["training"]["relative_l2_limit"] != 0.01):
         raise ValueError("AMP output/loss-curve gate did not pass")
     for phase in ("inference", "training", "latency"):
+        if phase == "training" and not training_valid:
+            if (record["timing_samples_ms"][phase] is not None or record["timings"]["training_ms"] is not None
+                    or record["status"] != "partial" or "amp_training_failure" not in execution):
+                raise ValueError("failed AMP training must not supply timings")
+            continue
         if (execution["graph_replay"]["phases"][phase]["status"] != "validated-uncaptured"
                 or protocol["warmup"][phase]["runs"] < 5 or protocol["warmup"][phase]["seconds"] < 10
                 or len(record["timing_samples_ms"][phase]) != 20):
@@ -43,6 +53,7 @@ def check_record(record, model, precision, mode, gpu):
             raise ValueError(f"{phase} has invalid timings")
     if execution["gradient_scaler"]["enabled"] != (precision == "fp16"):
         raise ValueError("wrong gradient-scaling policy")
+    return {"inference": "pass", "latency": "pass", "training": "pass" if training_valid else "failed"}
 
 
 def main():
@@ -52,7 +63,8 @@ def main():
     parser.add_argument("--models", nargs="+", choices=SUPPORTED_MODELS, default=["Whisper-tiny"])
     parser.add_argument("--precisions", nargs="+", choices=("bf16", "fp16"), default=["bf16", "fp16"])
     parser.add_argument("--mode", choices=("default", "eager"), default="default")
-    parser.add_argument("--sdpa", choices=("auto", "math", "efficient"), default="math")
+    parser.add_argument("--sdpa", choices=("auto", "math", "efficient"),
+                        help="cohort default: math on XPU, auto elsewhere")
     parser.add_argument("--replicates", type=int, default=3)
     parser.add_argument("--compile-seconds", type=positive_seconds, default=120)
     parser.add_argument("--run-seconds", type=positive_seconds, default=1200)
@@ -67,8 +79,9 @@ def main():
     check_torch_identity(torch.__version__, torch.version.git_version, torch.__version__)
     hashes = input_hashes(args.models)
     destination = args.results_dir.resolve()
-    manifest = begin(destination, "amp-reference-v2", args)
+    manifest = begin(destination, "amp-reference-v3", args)
     manifest.update(input_sha256=hashes, cpu_frequency_policies=cpu_frequency_policies(),
+                    reference_sdpa_policy={model: reference_sdpa_policy(args, model) for model in args.models},
                     timing_class="supplementary AMP, compiled uncaptured" if args.mode == "default" else "supplementary AMP, eager uncaptured",
                     publication_ready=False, scope="per-model precision qualification and timing; real-data learning is a separate study")
     path = destination / "campaign.json"
@@ -82,7 +95,7 @@ def main():
                     folder = destination / f"r{replicate + 1}" / model / precision
                     env = environment(args.backend)
                     env.update(INFERENA_AUTOCAST=precision, INFERENA_STRICT="0", INFERENA_TORCH_MODE=args.mode,
-                               INFERENA_GRAPH_REPLAY="0", INFERENA_SDPA=args.sdpa,
+                               INFERENA_GRAPH_REPLAY="0", INFERENA_SDPA=reference_sdpa_policy(args, model),
                                INFERENA_WARMUP_RUNS="5", INFERENA_MEASUREMENT_RUNS="20",
                                INFERENA_COMPILE_SECONDS=str(args.compile_seconds),
                                INFERENA_PREPARATION_REPORT=str(folder / "preparation.json"),
@@ -94,17 +107,20 @@ def main():
                     print(run["path"], flush=True)
                     record = run_json([sys.executable, str(ROOT / "frameworks/pytorch/budget.py"),
                                        str(ROOT / "frameworks/pytorch/bench.py"), model], folder, env, args.run_seconds)
-                    check_record(record, model, precision, args.mode, args.gpu)
+                    phases = check_record(record, model, precision, args.mode, args.gpu,
+                                          sdpa=reference_sdpa_policy(args, model))
                     if record["backend"].split()[0].lower() != args.backend:
                         raise ValueError("requested PyTorch backend did not execute")
-                    run.update(status="pass", timings=record["timings"])
+                    run.update(status="pass" if all(value == "pass" for value in phases.values()) else "partial",
+                               phases=phases, timings=record["timings"])
                     columns.append({"model": model, "gpu": record["gpu_name"], "reference": f"amp-{precision}",
                                     "mode": args.mode, "graph_replay": False, "replicate": replicate + 1,
+                                    "training_gate": phases["training"],
                                     **record["timings"]})
                     write_json(path, manifest)
         if input_hashes(args.models) != hashes:
             raise ValueError("input checkpoint changed during collection")
-        manifest["status"] = "pass"
+        manifest["status"] = "pass" if all(run["status"] == "pass" for run in manifest["runs"]) else "partial"
         with (destination / "columns.csv").open("w", newline="") as stream:
             writer = csv.DictWriter(stream, fieldnames=list(columns[0]))
             writer.writeheader()
@@ -117,7 +133,8 @@ def main():
     finally:
         write_json(path, manifest)
     print(json.dumps({"status": manifest["status"], "campaign": str(path)}))
+    return 0 if manifest["status"] == "pass" else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

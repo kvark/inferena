@@ -105,7 +105,7 @@ class AmpTest(unittest.TestCase):
                 _bench("test", {"type": "whisper"}, "cpu", None)
             record = json.loads(output.getvalue())
         self.assertEqual(record["status"], "ok")
-        self.assertEqual(record["protocol"]["name"], "inferena-amp-v2")
+        self.assertEqual(record["protocol"]["name"], "inferena-amp-v3")
         self.assertEqual(record["precision"]["comparison_class"], "amp-bf16")
         self.assertEqual(record["execution"]["amp_qualification"]["training"]["status"], "pass")
         self.assertFalse(record["execution"]["gradient_scaler"]["enabled"])
@@ -126,6 +126,20 @@ class AmpTest(unittest.TestCase):
         with patch.dict(os.environ, dict(env, INFERENA_GRAPH_REPLAY="1")), \
                 self.assertRaisesRegex(ValueError, "GradScaler bookkeeping is uncaptured"):
             _bench("test", {"type": "whisper"}, "cpu", None)
+
+        partial = copy.deepcopy(record["execution"]["amp_qualification"])
+        partial["status"] = "partial"
+        partial["training"]["status"] = "failed"
+        with patch.dict(os.environ, env), patch("bench.load_model", return_value=model), \
+                patch("bench.prepare_inputs", return_value={"input_features": torch.ones(1, 4)}), \
+                patch("bench._measure_call", side_effect=measure), patch("bench.qualify_amp", return_value=partial):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                _bench("test", {"type": "whisper"}, "cpu", None)
+            failed_training = json.loads(output.getvalue())
+        self.assertEqual(check_record(failed_training, "test", "bf16", "eager", "cpu"),
+                         {"inference": "pass", "latency": "pass", "training": "failed"})
+        self.assertIsNone(failed_training["outputs"]["grad_norm"])
 
     def test_real_data_gate_rejects_skips_stale_weights_and_missing_checkpoints(self):
         import copy
@@ -186,6 +200,27 @@ class AmpTest(unittest.TestCase):
         self.assertEqual(sum(attempt["updated"] for attempt in attempts), 1)
         self.assertTrue(all(attempt["loss"] == 4.0 for attempt in attempts))
         torch.testing.assert_close(model.weight, torch.tensor([[0.2]]))
+
+    def test_wrong_backward_fails_the_curve_but_preserves_forward_and_weights(self):
+        with patch.dict(os.environ, {"INFERENA_STRICT": "0"}):
+            policy = AmpPolicy("cpu", "bf16")
+        model = torch.nn.Linear(4, 2, bias=False)
+        with torch.no_grad():
+            model.weight.fill_(0.125)
+        initial = model.weight.detach().clone()
+        class WrongBackward(torch.nn.Module):
+            def __init__(self, original):
+                super().__init__()
+                self.original = original
+            def forward(self, x):
+                y = self.original(x)
+                return y.detach() + 5 * (y - y.detach())
+        report = qualify(model, WrongBackward(model), lambda m, x: m(x),
+                         lambda y, _: y.float().square().mean(), torch.ones(1, 4), policy)
+        self.assertEqual(report["status"], "partial")
+        self.assertEqual(report["training"]["status"], "failed")
+        self.assertEqual(report["forward"]["max_abs_error"], 0)
+        torch.testing.assert_close(model.weight, initial, atol=0, rtol=0)
 
 
 if __name__ == "__main__":

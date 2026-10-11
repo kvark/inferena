@@ -646,6 +646,14 @@ failures.
 
 ## Local acceptance evidence
 
+At `0a718b6`, all five models in both arithmetic classes pass B570
+qualification on the current library pin: ten valid conditions and thirty
+valid inference/latency/training phase comparisons. PyTorch graph replay is
+enabled, numerical gates and budgets are unchanged, and each model/precision
+starts with an empty kernel memo. This qualifies the local B570 candidate;
+replicated collection and other backends require their own receipts. See the
+[October 11 diagnosis and qualification](ANALYSIS.md#b570-amp-diagnosis-and-kernel-review-october-11-2026).
+
 For v12, CPU checks cover shared Rust/Python f32 bit patterns, transposed storage,
 matrix rank and scale, and refusal of missing or stale initializer receipts.
 An all-model CPU audit matches all 508 canonical parameter layouts/counts and
@@ -804,4 +812,5 @@ substitute the real-data gate for failed benchmark training cells, or block
 the primary f32 cohort on an assumed XPU-specific AMP defect. The
 [diagnostic and kernel review](ANALYSIS.md#b570-amp-diagnosis-and-kernel-review-october-11-2026)
 records the evidence. GEMV unrolling and convolution interleaving prototypes
-remain excluded from the frozen `0c78dff` qualification candidate.
+remain excluded from the frozen `0a718b6` candidate, which corrects the
+collector's handling of omitted empty reuse lists from `0c78dff`.

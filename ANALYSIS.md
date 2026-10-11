@@ -446,7 +446,10 @@ The kernel prototypes are excluded from the frozen candidate:
   `MEGANEURA_GEMV_UNROLL` inside code generation, outside the typed, serialized
   tuning configuration. The saved `sweep.sh` never sets it, so its results
   evaluate the existing shape choices, not unrolling. Its example times
-  chains without reading back or validating their outputs. Promotion requires
+  chains without reading back or validating their outputs. An analytic lower
+  bound using its positive initializer also exceeds f32 range in the 40-pair
+  chains for 576×576, 576×1536 and 576×3072; these need a bounded fixture.
+  Promotion requires
   a represented tuning choice, numerical checks and matched full-model
   measurements; these sweeps cannot establish an unrolling improvement.
 - **Convolution:** the process-global interleaving prototype changes scalar
@@ -477,3 +480,19 @@ omitted/explicit empty lists, nonempty hits and missing claimed hits. Read-only
 reassessment of the retained first pair passes all three phases; the original
 campaign remains marked incomplete. A new qualification campaign is required
 for the corrected source, with its own empty memo directory.
+
+The corrected campaign at `0a718b6` then completes all five models in both
+strict and accelerated classes on B570: **10/10 valid conditions and 30/30
+valid phase comparisons**, with captured PyTorch inference, latency and
+training. SmolVLA completes in both classes without a hang. PyTorch compilation
+takes 18.8–85.0 seconds, within the unchanged 120-second limit. The full
+qualification takes 1,942.6 seconds. These are one-sample qualification
+records, not replicated throughput estimates.
+
+Every model/precision starts with a memo miss and zero loaded classes in its
+first native session. Later sessions in that same process reuse qualified
+decisions, as their receipts explicitly record. A separate campaign directory
+is used for replicated collection, so qualification does not seed its cache.
+Receipts are in `../inferena-results/b570-qualification-memo-fix-20261011`;
+the first, schema-rejected attempt and its read-only reassessment remain in
+`../inferena-results/b570-qualification-0c78dff-20261011`.

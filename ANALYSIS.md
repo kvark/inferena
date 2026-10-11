@@ -598,3 +598,129 @@ The source bundle and instructions provide the frozen handoff for H100/M3
 collection and 780M/9600X/RPL-U CPU-oracle qualification on the user's machines.
 Those devices still need their own evidence. No CPU timing is substituted for
 a GPU reference.
+
+## B570 kernel candidates on merged upstream (October 11, 2026)
+
+Inferena development commit `60d4b43` pins upstream Meganeura
+`430f14b153afe1d92839b50b4c9f897933e335ba`. Its complete tree matches the
+cohort's `5b37124` exactly; the frozen source and records above retain their
+original identities. Subsequent kernel experiments use a separate Meganeura
+worktree and branch, `experiment/b570-kernel-tuning-2026-10-11`, at
+`91fb22d5423d96fac4feaed9f600efa092a9c148`.
+
+The GEMV experiment replaces the overflowing positive chain with independent,
+signed products. A bank of distinct weights totals at least 64 MiB; every
+output is checked against an f64 dot product before and after timing. Each
+variant warms for ten seconds, followed by twenty rotated/reversed timing
+rounds, each timing ten completed steps. Construction, uploads and readbacks
+are excluded. These are effective weight bytes per wall-clock second for a
+reused bank, not hardware DRAM counters or whole-model latency.
+
+For the 576×3072 projection, the best tested existing geometry and the best
+load-batching prototype give:
+
+| GPU | Weight layout | Existing GB/s | Existing time / best batched time |
+| --- | --- | ---: | ---: |
+| B570 | forward | 181.3 | 0.932× |
+| B570 | transposed B | 179.5 | 1.006× |
+| RTX 5070 | forward | 361.1 | 1.005× |
+| RTX 5070 | transposed B | 361.3 | 1.001× |
+
+These are one process per device/layout, with three geometries and K-load
+batching factors 1, 2 and 4. None of the added choices beats the best existing
+geometry by the 5% kernel-selection threshold in this fixture. Batching helps
+the B570's default transposed kernel, but existing row grouping is faster
+still. The prototype is retained as evidence and omitted from the candidate
+library. `examples/bench_gemv_layout.rs` keeps the bounded, checked fixture
+for the existing layouts; a separate B570 576×1536 run verifies its explicit
+device selection and reaches 168.9 GB/s with grouped columns.
+
+The initial diagnostic launcher called `init_gpu_context()`, which ignores
+`MEGANEURA_DEVICE_ID`; all four initial records identify the RTX 5070. Two
+filenames incorrectly said B570. Those attempts remain in
+`initial-default-adapter/` and are excluded from B570 evidence. The corrected
+B570 reruns restrict the Intel ICD and check the recorded adapter name; the
+committed example uses `GpuOptions::from_env()` and records the requested ID.
+
+The convolution candidate makes column interleaving a typed, serialized
+per-kernel choice for forward, input gradients and weight gradients. Pipeline
+keys include the choice; plan-cache format 24 and kernel-memo revision 2
+invalidate older decisions. Ordinary builds keep the previous column layout.
+The candidate adds four legal alternatives per convolution class, with the
+existing numerical gates and improvement thresholds. It does not enable
+rectangular Xe2 cooperative matrices or f16 activations.
+
+Validation passes clippy across all targets/features, 96 targeted unit tests,
+and three GPU suites on each device: explicit convolution kernels against the
+f64 oracle, tuning across padding/stride/tile edges with preserved training
+state, and indexing at reciprocal boundaries. The rejected GEMV prototype
+also passes its five regression tests on each GPU, including f16/RMSNorm and
+loop tails.
+
+Raw records, source patches, dependency locks, retained binaries, validation
+logs and analysis scripts are in
+`../inferena-results/b570-kernel-tuning-20261011/`. This study is separate from
+the frozen paired cohort.
+
+### Whole-model acceptance
+
+The strict-f32 ResNet-50 comparison completes twelve processes: three each for
+upstream and candidate on B570 and RTX 5070, with order reversed in replicate
+two. Runner source is Inferena `60d4b43`; library revisions are recorded above.
+All builds finish before timing. Each process starts independent 30-second
+searches with cross-process kernel memos disabled, then uses the same minimum
+five-call/ten-second warmup and twenty samples per phase. This cold-search
+study has a different memo policy from the primary cohort; its timings must
+not replace that cohort's warm-reuse cells.
+
+All twelve processes pass the harness's unchanged output, loss and parameter
+gradient gates against their corresponding preserved PyTorch strict-f32
+reference records. All four groups pass the replicated-gradient gate. This
+reuses numerical references, not their timing as a new paired measurement.
+Every watchdog exits successfully. Native construction also qualifies complete
+outputs and gradients against its first checked program.
+
+Times below are medians of three process medians, in milliseconds. Ratios are
+upstream time divided by candidate time; greater than one favors the candidate.
+
+| GPU | Phase | Upstream | Candidate | Ratio |
+| --- | --- | ---: | ---: | ---: |
+| B570 | Inference | 12.812 | 12.710 | 1.008× |
+| B570 | Small-batch latency | 5.333 | 6.365 | 0.838× |
+| B570 | Training | 53.397 | 53.421 | 1.000× |
+| RTX 5070 | Inference | 4.948 | 4.947 | 1.000× |
+| RTX 5070 | Small-batch latency | 2.547 | 2.510 | 1.015× |
+| RTX 5070 | Training | 27.253 | 27.792 | 0.981× |
+
+B570 small-batch latency regresses 19.4%; its observed process ranges are
+5.231–6.078 ms upstream and 6.252–6.385 ms with the candidate. NVIDIA training
+regresses 2.0%, with ranges 27.235–27.362 and 27.790–27.825 ms. These are
+observed ranges, not confidence intervals. Median preparation increases from
+65.492 to 71.020 seconds on B570, and 59.237 to 68.123 seconds on NVIDIA.
+
+**Keep `91fb22d` experimental; Inferena retains merged upstream `430f14b`.**
+Faster isolated convolution choices do not establish a whole-model gain. The
+first B570 candidate process records interleaved winners in forward and
+weight-gradient classes, but still returns graph/program zero for all three
+sessions. In `src/train/search/measure.rs`, the first program installs private
+kernel winners before becoming the incumbent; it has no paired timing against
+its pre-tuning form. Later program comparisons therefore do not by themselves
+guarantee that this initial kernel tuning helped. This is a concrete acceptance
+gap to investigate before expanding the kernel search further; it does not
+establish the complete cause of the observed regression.
+
+A separate **single-process** B570 ordinary-build control (`MEGANEURA_TUNE=0`)
+passes the same preserved PyTorch gates and measures 12.825 ms inference,
+5.224 ms small-batch latency and 53.368 ms training, with 1.763 seconds of
+preparation. It retains the default graph optimizer but disables measured
+construction. This is not an identical-plan, kernel-only ablation, and it is
+not a replicated cohort. It provides a useful performance baseline for the
+next acceptance change: retain an ordinary/pre-tuning incumbent and require a
+whole-program improvement before replacing it with private kernel decisions.
+Only then revisit the additional convolution choices and rectangular Xe2
+cooperative kernels. Native f16 activation storage remains separate work.
+
+`model-summary.json`/`.csv` retain all process timings and ranges;
+`model-summary.json` also retains kernel-comparison decisions, qualification
+receipts and the four replicated-gradient reports. `run_model_comparison.py`
+and `summarize_models.py` reproduce this diagnostic and its analysis.

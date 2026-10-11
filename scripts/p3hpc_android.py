@@ -129,7 +129,7 @@ def check_native(record, args, model, precision, count, dependency, native):
     optimizer = record["optimizer"]
     sessions = optimizer["sessions"]
     if (optimizer["measured_construction"] is not True or optimizer["mode"] != "egglog-outlined"
-            or [s["mode"] for s in sessions] != ["Inference", "Inference", "Training"]):
+            or sorted(s["mode"] for s in sessions) != ["Inference", "Inference", "Training"]):
         raise ValueError("missing calibrated sessions")
     for session in sessions:
         if (session["cooperative_matrix_policy"] != ("NativeF32" if precision == "strict" else "Auto")
@@ -294,6 +294,11 @@ def collect(args, parser, packages, started_at, started):
                     run["device_seconds"] = time.monotonic() - run_start
                     run["returncode"] = returncode
                     run["health_after"] = device.health()
+                    # Retain partial tensors even when later construction or
+                    # receipt validation fails. They are not qualified timings.
+                    if device.shell("if test -d " + shlex.quote(remote_capture) + "; then echo present; fi") == "present":
+                        device.call("pull", remote_capture + "/.", folder, timeout=300)
+                    check_battery(run["health_after"]["battery"])
                     if returncode:
                         # Keep a failed process visible and never re-run the condition.
                         run.update(status="failed", error="Android runner failed; inspect runner.log",
@@ -308,7 +313,6 @@ def collect(args, parser, packages, started_at, started):
                     check_native(record, args, model, precision, count, dependency, native)
                     record.update(benchmark_rev=revision, platform="Quest 3S", status="ok")
                     write_json(folder / f"{model}_meganeura.json", record)
-                    device.call("pull", remote_capture + "/.", folder, timeout=300)
                     cpu_command = [sys.executable, str(ROOT / "scripts/compare_android.py"), str(folder),
                                    "--inferena", str(ROOT), "--dtype", "float64"]
                     if model in SMOLLM2_PINS:

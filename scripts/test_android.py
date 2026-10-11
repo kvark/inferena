@@ -22,13 +22,13 @@ class AndroidContract(unittest.TestCase):
         session = dict(mode="Training", search=dict(options=dict(max_time=dict(secs=30, nanos=0),
             max_graphs=16, max_programs=64, max_submission_chunks=64, patience=None,
             min_improvement=0.01, warmup_runs=2, warmup_time=dict(secs=0, nanos=250000000),
-            max_plan_bytes=3 * 1024**3 // 2, tuning=tuning), selected=0,
+            max_plan_bytes=9 * 1024**3 // 4, tuning=tuning), selected=0,
             trials=[dict(outcome=dict(qualified=True), qualifications=1, kernel_tuning=dict(
                 options=tuning, class_limit_reached=False, visited_classes=1, eligible_classes=1,
                 time_budget_exhausted=False, reused_classes=[], outcomes=[]))]),
             memory_budget=dict(device_budget_bytes=0, device_usage_bytes=0,
-                               source="android-memavailable-capped-2gib", system_available_bytes=4 * 1024**3,
-                               available_bytes=2 * 1024**3, plan_fraction_of_available=0.75),
+                               source="android-memavailable-capped-3gib", system_available_bytes=4 * 1024**3,
+                               available_bytes=3 * 1024**3, plan_fraction_of_available=0.75),
             qualification=dict(policy="fixed-full-tensor-v4", reference="first checked program", rtol=1e-4,
                                atol=1e-6, accelerated_gradient_rtol=0.01, qualified_calls=1,
                                output_elements=1, gradient_elements=1),
@@ -37,7 +37,7 @@ class AndroidContract(unittest.TestCase):
         check_native_search(session, 30, 64, android=True)
         with self.assertRaises(ValueError):
             check_native_search(session, 30, 64)
-        session["memory_budget"]["available_bytes"] = 3 * 1024**3
+        session["memory_budget"]["available_bytes"] = 4 * 1024**3
         with self.assertRaises(ValueError):
             check_native_search(session, 30, 64, android=True)
 
@@ -47,6 +47,23 @@ class AndroidContract(unittest.TestCase):
         self.assertEqual(args.precisions, ["strict", "accelerated"])
         self.assertEqual(args.tune_seconds, 30)
         self.assertTrue(args.kernel_memo)
+
+    def test_native_phase_order_and_measurement_gate(self):
+        args = create_parser().parse_args([])
+        record = dict(framework="meganeura", framework_rev="revision", model="SmolVLA", gpu_name="Adreno",
+            protocol=dict(name="inferena-paper-v3", diagnostic=False, synthetic_parameter_init="name-index-uniform-v1",
+                          warmup_runs=5, warmup_seconds=2, measurement_runs=20, training_requested=True,
+                          warmup={p: dict(runs=5, seconds=2.1) for p in ("inference", "latency", "training")}),
+            timing_samples_ms={p: [1.] * 20 for p in ("inference", "latency", "training")},
+            precision=dict(comparison_class="strict-f32"), optimizer=dict(measured_construction=True,
+                mode="egglog-outlined", sessions=[dict(mode=mode, cooperative_matrix_policy="NativeF32", cooperative_dispatches=0)
+                    for mode in ("Inference", "Training", "Inference")]))
+        with patch("p3hpc_android.check_native_search") as search:
+            check_native(record, args, "SmolVLA", "strict", 20, {"rev": "revision"}, {"name": "Adreno"})
+            self.assertEqual(search.call_count, 3)
+            record["timing_samples_ms"]["training"] = [1.]
+            with self.assertRaises(ValueError):
+                check_native(record, args, "SmolVLA", "strict", 20, {"rev": "revision"}, {"name": "Adreno"})
 
     def test_charger_and_temperature(self):
         good = battery_info("  AC powered: true\n  Weak Charger: false\n  level: 70\n  temperature: 325")

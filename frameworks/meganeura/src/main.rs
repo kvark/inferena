@@ -161,7 +161,7 @@ fn search_memory_budget(budget: u64, usage: u64) -> (u64, &'static str, Option<u
         return (budget - usage, "vulkan", None);
     }
     // Android drivers may omit VK_EXT_memory_budget entirely. Bound search by
-    // current shared-system availability and a fixed 2 GiB ceiling. This is a
+    // current shared-system availability and a fixed 3 GiB ceiling. This is a
     // plan limit, not a fabricated GPU-heap measurement or allocation guarantee.
     #[cfg(target_os = "android")]
     {
@@ -179,8 +179,8 @@ fn search_memory_budget(budget: u64, usage: u64) -> (u64, &'static str, Option<u
         let bytes = kib.checked_mul(1024).expect("memory availability overflow");
         assert!(bytes > 0, "system memory exhausted");
         return (
-            bytes.min(2 * 1024 * 1024 * 1024),
-            "android-memavailable-capped-2gib",
+            bytes.min(3 * 1024 * 1024 * 1024),
+            "android-memavailable-capped-3gib",
             Some(bytes),
         );
     }

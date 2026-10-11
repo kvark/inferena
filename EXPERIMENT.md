@@ -518,7 +518,7 @@ runner; they do not retry it. Each campaign uses a new remote directory and new
 kernel memo; replicas share only that campaign's kernel decisions.
 
 When the Android driver reports no GPU memory budget, the search uses 75% of
-`min(MemAvailable, 2 GiB)` as its logical-plan bound. Each session records the
+`min(MemAvailable, 3 GiB)` as its logical-plan bound. Each session records the
 actual Vulkan budget/usage, system availability, cap source and effective bound.
 This is a conservative shared-memory search limit, not a GPU allocation or peak
 measurement. Drivers with a usable Vulkan budget keep the common budget policy.

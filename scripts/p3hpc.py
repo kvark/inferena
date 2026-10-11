@@ -144,10 +144,10 @@ def check_native_search(session, seconds, max_submission_chunks, kernel_memo=Fal
     tuning = options["tuning"]
     memory = session["memory_budget"]
     available = memory["device_budget_bytes"] - memory["device_usage_bytes"]
-    if memory.get("source", "vulkan") == "android-memavailable-capped-2gib":
+    if memory.get("source", "vulkan") == "android-memavailable-capped-3gib":
         if not android or available > 0 or memory["system_available_bytes"] <= 0:
             raise ValueError("invalid Android shared-memory search budget")
-        available = min(memory["system_available_bytes"], 2 * 1024**3)
+        available = min(memory["system_available_bytes"], 3 * 1024**3)
         if memory["available_bytes"] != available:
             raise ValueError("Android search budget differs from the declared cap")
     elif memory.get("source", "vulkan") != "vulkan":

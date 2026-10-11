@@ -201,7 +201,7 @@ def check_native_search(session, seconds, max_submission_chunks, kernel_memo=Fal
             or memo["load"] not in (("miss", "hit", "invalid") if kernel_memo else ("disabled",))
             or not isinstance(memo["loaded_classes"], int) or memo["loaded_classes"] < 0
             or memo["load"] != "hit" and memo["loaded_classes"] != 0
-            or memo["reused_class_visits"] != sum(len(report["reused_classes"]) for report in reports)
+            or memo["reused_class_visits"] != sum(len(report.get("reused_classes", [])) for report in reports)
             or memo["new_comparisons"] != sum(len(report["outcomes"]) for report in reports)):
         raise ValueError("native kernel-memo receipt differs from executed search")
     if kernel_memo:

@@ -35,6 +35,9 @@ class AndroidContract(unittest.TestCase):
             kernel_memo=dict(policy="campaign-kernel-memo-v1", enabled=False, load="disabled", loaded_classes=0,
                              reused_class_visits=0, new_comparisons=0, key=None, saved_classes=None))
         check_native_search(session, 30, 64, android=True)
+        # Meganeura omits empty reused-class arrays from its serialized receipt.
+        del session["search"]["trials"][0]["kernel_tuning"]["reused_classes"]
+        check_native_search(session, 30, 64, android=True)
         with self.assertRaises(ValueError):
             check_native_search(session, 30, 64)
         session["memory_budget"]["available_bytes"] = 4 * 1024**3

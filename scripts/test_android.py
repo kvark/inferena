@@ -64,9 +64,14 @@ class AndroidContract(unittest.TestCase):
         with patch("p3hpc_android.check_native_search") as search:
             check_native(record, args, "SmolVLA", "strict", 20, {"rev": "revision"}, {"name": "Adreno"})
             self.assertEqual(search.call_count, 3)
-            record["timing_samples_ms"]["training"] = [1.]
+            record["optimizer"]["sessions"].pop()
             with self.assertRaises(ValueError):
                 check_native(record, args, "SmolVLA", "strict", 20, {"rev": "revision"}, {"name": "Adreno"})
+            record["model"] = "Whisper-tiny"
+            check_native(record, args, "Whisper-tiny", "strict", 20, {"rev": "revision"}, {"name": "Adreno"})
+            record["timing_samples_ms"]["training"] = [1.]
+            with self.assertRaises(ValueError):
+                check_native(record, args, "Whisper-tiny", "strict", 20, {"rev": "revision"}, {"name": "Adreno"})
 
     def test_charger_and_temperature(self):
         good = battery_info("  AC powered: true\n  Weak Charger: false\n  level: 70\n  temperature: 325")

@@ -128,8 +128,11 @@ def check_native(record, args, model, precision, count, dependency, native):
             raise ValueError(f"invalid {phase} warmup or samples")
     optimizer = record["optimizer"]
     sessions = optimizer["sessions"]
+    # Whisper measures the same encoder session for inference and latency;
+    # the other models construct a second input shape.
+    expected_modes = ["Inference"] * (1 if model == "Whisper-tiny" else 2) + ["Training"]
     if (optimizer["measured_construction"] is not True or optimizer["mode"] != "egglog-outlined"
-            or sorted(s["mode"] for s in sessions) != ["Inference", "Inference", "Training"]):
+            or sorted(s["mode"] for s in sessions) != expected_modes):
         raise ValueError("missing calibrated sessions")
     for session in sessions:
         if (session["cooperative_matrix_policy"] != ("NativeF32" if precision == "strict" else "Auto")
@@ -208,9 +211,12 @@ def collect(args, parser, packages, started_at, started):
     destination.mkdir(parents=True)
     remote = f"/data/local/tmp/inferena-{stamp}-{revision[:8]}"
     executable = remote + "/inferena-meganeura"
+    import torch
     manifest = dict(protocol=PROTOCOL, paired_protocol="p3hpc-paired-campaign-v18", source=revision,
                     started_at=started_at, platform="Quest 3S", backend="android-vulkan",
                     meganeura=dependency, python=sys.version, packages=packages,
+                    torch=dict(version=torch.__version__, git_version=torch.version.git_version,
+                               build_config=torch.__config__.show()),
                     args={key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()},
                     sha256=hashes, device=identity, initial_health=initial_health,
                     android_ndk=ndk_properties, target=TARGET, remote_directory=remote,
@@ -370,6 +376,7 @@ def collect(args, parser, packages, started_at, started):
         from p3hpc_report import campaign_rows, render
         (destination / "results.md").write_text(render(campaign_rows(destination)), encoding="utf-8")
         try:
+            print("Archiving complete tensors and receipts...", flush=True)
             print(f"Archive: {archive_results(destination)}", flush=True)
         except OSError as error:
             print(f"Archive not updated: {error}; results remain in {destination}", file=sys.stderr)

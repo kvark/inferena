@@ -15,6 +15,7 @@ import socket
 import statistics
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import tomllib
@@ -113,9 +114,13 @@ def positive_seconds(value):
 def archive_results(destination):
     archive = destination.parent / "latest.tgz"
     with tempfile.TemporaryDirectory(prefix=".p3hpc-archive-", dir=destination.parent) as temporary:
-        staged = shutil.make_archive(str(Path(temporary) / "latest"), "gztar",
-                                     root_dir=destination.parent, base_dir=destination.name)
-        Path(staged).replace(archive)
+        staged = Path(temporary) / "latest.tgz"
+        # Full-tensor Android captures include expanded bf16 checkpoints. The
+        # highest gzip setting spends minutes searching these repeated bytes.
+        # Retain the same tar.gz contents with bounded compression effort.
+        with tarfile.open(staged, "w:gz", compresslevel=1) as bundle:
+            bundle.add(destination, arcname=destination.name)
+        staged.replace(archive)
     return archive
 
 

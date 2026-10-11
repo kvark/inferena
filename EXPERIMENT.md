@@ -1,6 +1,9 @@
 # P3HPC paired collection
 
-Use branch `experiment/p3hpc-cuda-graphs`. Meganeura is pinned to
+The October 11 cohort freezes Inferena source
+`0a718b6fb9d6c990410dc274618978ad4988a36d` on branch
+`experiment/p3hpc-cuda-graphs`. Later documentation commits do not change the
+source used for this cohort. Meganeura is pinned to
 `5b37124efe405b5c11e37986fc88867b151aa351` (published search-order candidate,
 [Meganeura PR #245](https://github.com/kvark/meganeura/pull/245)), with Blade
 `56f05651cca73659130e924e497dda633f839d40`. Protocol
@@ -84,17 +87,23 @@ Neither requires rollback of tuning or weaker numerical checks.
 
 ## What to run
 
-First qualify the candidate on each backend, using an existing checkout/environment:
+First qualify the frozen candidate on each backend. To transfer this local
+revision without depending on a moving remote branch, use the source bundle
+`../inferena-results/local-cohort-20261011/inferena-cohort-0a718b6.bundle`.
+From an existing Inferena checkout, after copying the bundle to that machine:
 
 ```sh
-git switch experiment/p3hpc-cuda-graphs
-git pull --ff-only
+git fetch /path/to/inferena-cohort-0a718b6.bundle HEAD
+git worktree add --detach ../inferena-cohort-20261011 FETCH_HEAD
+cd ../inferena-cohort-20261011
 git rev-parse HEAD
-.venv-p3hpc/bin/python scripts/p3hpc.py --qualify-only
+/absolute/path/to/existing/.venv-p3hpc/bin/python scripts/p3hpc.py --qualify-only
 ```
 
-Use the same complete source SHA on every machine. Existing pinned environments
-do not need reinstalling. No `--no-max-autotune` is needed on any platform;
+Verify the complete SHA above on every machine. Existing pinned environments
+do not need reinstalling; use their absolute interpreter path from the clean
+worktree. Model preparation downloads the pinned checkpoint if it is not
+already present. No `--no-max-autotune` is needed on any platform;
 that old spelling remains accepted as a no-op.
 Qualification checks all five models and both arithmetic classes once. Keep
 the results, including any failure, and resolve protocol problems before
@@ -111,9 +120,10 @@ max-autotune by default. No existing venv is overwritten.
 |---|---|---|
 | NVIDIA Linux / H100 | `bash scripts/setup.sh cu130` | `python scripts/p3hpc.py --backend cuda` |
 | NVIDIA Windows / 3050 | `.\scripts\setup.ps1 cu130` | `python scripts/p3hpc.py --backend cuda` |
-| AMD / 7900 XT, 780M | `bash scripts/setup.sh rocm7.2` | `python scripts/p3hpc.py --backend rocm` |
+| AMD / 7900 XT | `bash scripts/setup.sh rocm7.2` | `python scripts/p3hpc.py --backend rocm` |
 | Intel Arc B570 | `bash scripts/setup.sh xpu` | `python scripts/p3hpc.py --backend xpu` |
 | Apple M3 | `bash scripts/setup.sh mps` | `python scripts/p3hpc.py --backend mps` |
+| Radeon 780M, CPU correctness oracle | `bash scripts/setup.sh cpu` | `python scripts/p3hpc.py --backend cpu --gpu 780M --qualify-only --eager` |
 | Intel RPL-U, qualification only | `bash scripts/setup.sh cpu` | `python scripts/p3hpc.py --backend cpu --gpu RPL-U --qualify-only --eager` |
 | Ryzen 5 9600X iGPU on rubik, qualification only | `bash scripts/setup.sh cpu` | `python scripts/p3hpc.py --backend cpu --gpu 'AMD Ryzen 5 9600X' --qualify-only --eager` |
 
@@ -617,7 +627,7 @@ limitation, not missing matrix hardware or a setup failure. Rectangular-tile
 support would benefit the accelerated path; it would not make f16 operands
 eligible for the strict contract.
 
-On the Radeon 780M configuration previously reported in
+For a separate ROCm diagnostic on the Radeon 780M configuration previously reported in
 [issue #61](https://github.com/kvark/inferena/issues/61), retain the needed
 runtime workarounds:
 
@@ -627,7 +637,8 @@ export HSA_ENABLE_SDMA=0
 .venv-p3hpc/bin/python scripts/p3hpc.py --backend rocm
 ```
 
-Do not add those workarounds on machines that do not need them. Their values
+The cohort uses the CPU correctness oracle above on this device while its
+ROCm failure remains unresolved. Do not add those workarounds on machines that do not need them. Their values
 are recorded. The missing gfx1103 rocBLAS library, SDMA failure and failing
 max-autotune kernels were observed portability problems, not numerical
 exceptions invented by the harness. The new common primary condition omits
@@ -648,11 +659,14 @@ failures.
 
 At `0a718b6`, all five models in both arithmetic classes pass B570
 qualification on the current library pin: ten valid conditions and thirty
-valid inference/latency/training phase comparisons. PyTorch graph replay is
-enabled, numerical gates and budgets are unchanged, and each model/precision
-starts with an empty kernel memo. This qualifies the local B570 candidate;
-replicated collection and other backends require their own receipts. See the
-[October 11 diagnosis and qualification](ANALYSIS.md#b570-amp-diagnosis-and-kernel-review-october-11-2026).
+valid inference/latency/training phase comparisons. The subsequent B570
+collection also completes all thirty paired processes and ninety phase
+comparisons, including all ten replicated-gradient gates. PyTorch graph
+replay is enabled, numerical gates and budgets are unchanged, and the new
+campaign starts with an empty kernel memo before recorded reuse. Other
+backends require their own receipts. See the
+[October 11 diagnosis and qualification](ANALYSIS.md#b570-amp-diagnosis-and-kernel-review-october-11-2026)
+and the [replicated local cohort](ANALYSIS.md#frozen-local-cohort-october-11-2026).
 
 For v12, CPU checks cover shared Rust/Python f32 bit patterns, transposed storage,
 matrix rank and scale, and refusal of missing or stale initializer receipts.

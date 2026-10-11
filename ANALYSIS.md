@@ -496,3 +496,57 @@ is used for replicated collection, so qualification does not seed its cache.
 Receipts are in `../inferena-results/b570-qualification-memo-fix-20261011`;
 the first, schema-rejected attempt and its read-only reassessment remain in
 `../inferena-results/b570-qualification-0c78dff-20261011`.
+
+## Frozen local cohort (October 11, 2026)
+
+The B570 primary cohort at Inferena
+`0a718b6fb9d6c990410dc274618978ad4988a36d` and Meganeura `5b37124` completes
+all **30/30 paired processes and 90/90 phase comparisons**. All ten
+replicated-gradient groups pass. The five models run in strict and accelerated
+classes, with three independent processes per condition and twenty held-out
+samples per phase. Every PyTorch phase uses qualified graph replay. There are
+no hangs, watchdog failures or substituted diagnostic timings. Collection takes
+5,758.6 seconds (96.0 minutes); compilation takes 18.9–85.5 seconds per reference
+process, within the unchanged 120-second limit.
+
+Meganeura is slower in every B570 cell. The following ratios are **PyTorch time
+divided by Meganeura time**, so values above one would favor Meganeura. Each
+engine's time is the median of its three process medians, with twenty samples
+in each process. These are execution timings; preparation is recorded separately.
+
+| Arithmetic | Model | Inference | Latency | Training |
+| --- | --- | ---: | ---: | ---: |
+| Strict | SmolLM2-135M | 0.438× | 0.574× | 0.310× |
+| Strict | SmolVLA | 0.502× | 0.611× | 0.541× |
+| Strict | StableDiffusion | 0.255× | 0.266× | 0.311× |
+| Strict | ResNet-50 | 0.413× | 0.325× | 0.306× |
+| Strict | Whisper-tiny | 0.639× | 0.636× | 0.333× |
+| Accelerated | SmolLM2-135M | 0.443× | 0.574× | 0.305× |
+| Accelerated | SmolVLA | 0.520× | 0.571× | 0.534× |
+| Accelerated | StableDiffusion | 0.249× | 0.268× | 0.307× |
+| Accelerated | ResNet-50 | 0.411× | 0.373× | 0.304× |
+| Accelerated | Whisper-tiny | 0.629× | 0.628× | 0.335× |
+
+The driver remains Mesa 26.0.3-1ubuntu1 on Linux 7.0.0-38-generic throughout
+the cohort. Native execution uses scalar kernels on this Xe2 stack; the
+rectangular cooperative-matrix limitation described above still applies.
+The results establish a complete, numerically qualified baseline, and leave
+the B570 kernel gap as substantial library work.
+
+The first native session of every model/precision in replicate one misses the
+new campaign memo (ten misses). Its later sessions already reuse decisions
+(eighteen hits). All twenty first sessions in replicates two and three hit the
+memo; all fifty-six sessions in those replicates record hits. Thus replicate
+one is not an all-cold phase set. Every PyTorch process owns a fresh Inductor
+and Triton cache. Native preparation, search costs and memo counts remain
+available per session; the execution table does not hide them inside a
+purported cold-start comparison.
+
+Raw receipts are in `../inferena-results/b570-cohort-0a718b6-20261011`.
+`../inferena-results/local-cohort-20261011` retains a named B570 archive,
+derived JSON/CSV with process medians and ranges, the analysis script, and the
+portable source bundle `inferena-cohort-0a718b6.bundle`. The bundle contains
+the complete history ending at the frozen revision and passes a fresh clone
+check. Its SHA-256 is
+`05c626eb2e95f327590a653b1621d6974dbcb8a11d3e309bc56a744a76b7abe8`.
+It excludes environments, model checkpoints and untracked workspace files.

@@ -35,6 +35,7 @@ def main():
         parser.error("commit source changes before capture")
     if any(key.startswith("MEGANEURA_") or key in (
         "INFERENA_PROFILE_DIR", "INFERENA_MEGANEURA_PATH", "INFERENA_DRY_RUN", "CARGO_TARGET_DIR",
+        "INFERENA_KERNEL_MEMO_DIR",
     ) for key in os.environ):
         parser.error("remove local dependency and profiling overrides; capture the normal grouped schedule")
     destination = args.results_dir.resolve()

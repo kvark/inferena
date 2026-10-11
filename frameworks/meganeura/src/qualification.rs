@@ -259,7 +259,9 @@ impl Qualification {
     pub fn report(&self) -> serde_json::Value {
         let reference = self.reference.as_ref().expect("qualified anchor");
         serde_json::json!({
-            "policy": "fixed-full-tensor-v4", "reference": "ordinary untuned construction",
+            // With a completed memo, the first check is already kernel-tuned.
+            // The outer PyTorch oracle is still checked in every fresh process.
+            "policy": "fixed-full-tensor-v4", "reference": "first checked program",
             "rtol": 1e-4, "atol": 1e-6, "accelerated_gradient_rtol": 0.01,
             "qualified_calls": self.calls,
             "output_elements": reference.outputs.iter().map(Vec::len).sum::<usize>(),

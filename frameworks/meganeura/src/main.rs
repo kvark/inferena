@@ -17,6 +17,7 @@ thread_local! {
 
 mod initialization;
 mod qualification;
+mod search_cache;
 
 const WARMUP_TIME: Duration = Duration::from_secs(2);
 
@@ -61,9 +62,12 @@ fn build_session(
             "GPU memory budget is unavailable or exhausted"
         );
         let mut qualification = qualification::Qualification::new(graph, mode);
-        let options = train::BuildSearchOptions {
+        let mut options = train::BuildSearchOptions {
             max_graphs: 16,
             max_programs: 64,
+            // Keep coverage bounded by the existing time/program limits.
+            patience: None,
+            kernel_memo: None,
             max_submission_chunks,
             min_improvement: 0.01,
             warmup_runs: 2,
@@ -79,15 +83,32 @@ fn build_session(
                 ..TuneOptions::default()
             },
         };
+        let device = config.gpu.as_ref().unwrap().device_information();
+        let cache_dir = std::env::var_os("INFERENA_KERNEL_MEMO_DIR").map(std::path::PathBuf::from);
+        let cache = search_cache::Cache::open(
+            cache_dir.as_deref(),
+            serde_json::json!({
+                "device": device.device_name,
+                "driver": device.driver_name,
+                "driver_info": device.driver_info,
+                "cooperative_policy": policy,
+                "tuning": options.tuning,
+            }),
+        )
+        .expect("cannot load kernel memo");
+        options.kernel_memo = Some(cache.memo.clone());
         let (session, report) = train::build_measured(
             graph,
             config,
             options,
             |session, incumbent| {
-                let reused = match incumbent {
-                    Some(source) => initialization::reuse_parameters(session, source)?,
-                    None => false,
-                };
+                // Construction already shares immutable weights. Check derived
+                // representations too before skipping the source uploads.
+                let reused = incumbent.is_some_and(|source| {
+                    qualification::source_parameters(session)
+                        .iter()
+                        .all(|(name, _)| session.inherits_parameter(source, name))
+                });
                 if !reused {
                     initialize_parameters(session);
                 }
@@ -105,6 +126,7 @@ fn build_session(
             report.elapsed.as_secs_f64(),
             report.truncated
         );
+        preparation["kernel_memo"] = cache.finish(&report).expect("cannot save kernel memo");
         preparation["search"] = serde_json::to_value(report).unwrap();
         preparation["qualification"] = qualification.report();
         preparation["memory_budget"] = serde_json::json!({

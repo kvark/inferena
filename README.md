@@ -218,10 +218,13 @@ below 5% across the three processes. Every raw result remains in the campaign.
 The primary matrix has 30 paired processes per device. Meganeura always uses
 qualified calibrated graph/kernel/submission search, with submission counts
 from 1 through 64 (powers of two) available on every GPU.
-The v16 native policy retains up to 16 graph/schedule forms and compares
+The v17 native policy retains up to 16 graph/schedule forms and compares
 qualified programs after two warmup pairs and at least 250 ms, within the
-shared 30-second per-session budget. Qualify the new pin before collection;
-do not mix v16 records with earlier campaigns.
+shared 30-second per-session budget. A campaign-local kernel memo lets runs 2/3
+reuse completed kernel comparisons; whole-program search and fresh numerical
+checks still run. Receipts distinguish cold and warm preparation. Use
+`--no-kernel-memo` for an independent-search study. Qualify the new pin before
+collection; do not mix v17 records with earlier campaigns.
 PyTorch uses default compilation
 with a 120-second compilation deadline, not max-autotune. CUDA, ROCm and XPU
 use qualified whole-phase graph replay; MPS compiles without an equivalent

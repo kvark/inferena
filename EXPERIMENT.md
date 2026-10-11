@@ -4,12 +4,19 @@ Use branch `experiment/p3hpc-cuda-graphs`. Meganeura is pinned to
 `2c42b4488310d83640c934c411202dde05b055e0` (merged search/f16 support and
 derived-weight sharing/kernel-memo hardening), with Blade
 `56f05651cca73659130e924e497dda633f839d40`. Protocol
-`p3hpc-paired-campaign-v17` retains the merged joint graph/schedule search:
+`p3hpc-paired-campaign-v18` retains the merged joint graph/schedule search:
 up to 16 graph/implementation forms, interleaved physical-plan choices, and
 at least two warmup pairs and 250 ms before comparing whole programs, within
 the shared 30-second session deadline. Private kernel probes have no separate
-two-second cap. Held-out timing still warms both engines for at least two
+two-second cap. Held-out timing warms both engines for at least ten
 seconds and five calls per phase.
+
+V18 extends the held-out warmup from two to ten seconds. B570 diffusion
+diagnostics showed substantial timing drift after the old warmup, including
+a reversed control/candidate ranking when process order changed. Both engines
+use the same fixed floor; search keeps its existing deadline and comparison
+warmup. Linux manifests also retain CPU frequency governor, energy preference
+and frequency-limit settings. See the [search-order study](ANALYSIS.md#search-order-and-warmup-diagnostic-october-11-2026).
 
 V15 retains matched deterministic pseudorandom parameters, model shapes, inputs,
 pinned SmolLM2 checkpoints, arithmetic classes and numerical
@@ -148,7 +155,7 @@ matches or a different reference GPU stop the run. Do not run both collectors
 together. Avoid host suspension, competing GPU work and profiling.
 
 Defaults collect five models, strict and accelerated arithmetic, three fresh
-processes per condition, at least five warmup calls and two seconds of actual
+processes per condition, at least five warmup calls and ten seconds of actual
 workload execution, then twenty samples per phase:
 **30 paired processes per device**, not the former 90 CUDA pairs. Results go
 to a new `../inferena-results/<host>-<UTC>-<source>/` directory outside Git.
@@ -298,7 +305,7 @@ Search comparisons first warm both candidate and incumbent for **two pairs and
 publication warmup. The collector checks these actual search options in every
 session receipt, alongside the graph/program limits.
 
-Campaign protocol v17 saves private kernel decisions under
+Since campaign protocol v17, private kernel decisions are saved under
 `native-kernel-memos/<precision>/<model>/`. Runs 2/3 and compatible phase shapes
 resume those decisions; they do not repeat completed kernel comparisons.
 The cache is new for each campaign and keyed by Cargo.lock, device/driver,
@@ -311,11 +318,10 @@ reused visits also include reuse within a search. Preparation costs must be
 interpreted with these receipts, not pooled as independent cold-start searches.
 Whole-program graph/layout/submission search still runs in each fresh process,
 with unchanged bounds and no patience stop. This does not persist weights,
-inputs, GPU state or the selected whole program. Numerical gates and held-out
-measurement warmup remain unchanged.
+inputs, GPU state or the selected whole program. Numerical gates are unchanged.
 
 Both engines warm up with the actual phase workload until **both** five calls
-and two seconds have completed. Actual warmup counts and elapsed seconds are
+and ten seconds have completed. Actual warmup counts and elapsed seconds are
 retained for each phase and checked by the collector. This addresses observed
 post-construction timing drift; it does not guarantee thermal equilibrium or
 constant clocks. There is no CPU busy-loop priming, forced clock setting,
@@ -420,8 +426,8 @@ Inputs remain unchanged, including sinusoidal inputs. SmolLM2 loads its pinned
 weights and does not use this synthetic policy. Other framework runners on this
 experimental branch have not been migrated to the new fixture.
 
-The collector requires native `inferena-paper-v3`, PyTorch
-`inferena-graph-replay-v7` and matching initializer policies. Rust builds are
+The collector requires native `inferena-paper-v4`, PyTorch
+`inferena-graph-replay-v8` and matching initializer policies. Rust builds are
 locked and finish before the first pair; build parallelism defaults to one job.
 
 Both captured and uncaptured execution check every output/loss tensor separately, with exact

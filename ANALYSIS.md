@@ -184,8 +184,10 @@ Git retains the source/recipe and this conclusion, not trace binaries or raw arr
 
 ## Pre-cohort checklist review (October 11, 2026)
 
-Durable records and a process-tree watchdog are implemented. Before collection,
-resolve the search-order regression and freeze the source, budgets and cache policy.
+Durable records and a process-tree watchdog are implemented. The follow-up
+search-order study below isolates candidate coverage from a warmup sensitivity.
+Before collection, integrate the reviewed library change and freeze the source,
+budgets and cache policy.
 PyTorch CPU remains the correctness oracle on the graphics-only platforms;
 its times are excluded from GPU comparisons. No ggml/ONNX reference is needed.
 Qualification-only coverage must remain labelled separately from replicated
@@ -208,7 +210,7 @@ paths identify experiments, not branches certified for the cohort:
 | 9. Ablations | The saved `search-vs-greedy-20261010` study covers greedy, kernel tuning, graph-count and time budgets; it does not isolate all four mechanisms. Use explicit fusion/layout/chunking/cooperative controls with the same budget and correctness gates. Strict-f32 runs already exclude reduced-input cooperative tiles, so toggling those there would be a no-op. |
 | 10. B570 kernels | GEMV changes and sweeps survive in `/x/Code/meganeura-next` and `../inferena-results/b570-gemv-20261011`. Convolution register-column interleaving survives in `/x/Code/meganeura-conv`; three saved greedy ResNet runs improve B570 training median from 53.35 to 52.43 ms but worsen 5070 from 28.56 to 30.12 ms. This is not the proposed cooperative convolution implementation. ANV's recorded 8×16×16 tile remains incompatible with the square-tile codegen. |
 | 11. f16 activations | `/x/Code/meganeura-f16` contains completed f16 **weight** work and `docs/reduced-precision-storage.md`; stage 2 activations and stage 3 training remain unimplemented. Treat weight storage and AMP as distinct labelled precision policies. Do not make stage 2 a prerequisite for measuring the reference. |
-| 12. Whisper search gap | Uncommitted coordinate-order changes are in `/x/Code/meganeura-next/src/train/search.rs` and `search/measure.rs`; saved runs are in `../inferena-results/coordinate-search-20261011`. They reach useful attention choices earlier, but also regress B570 diffusion training. Resolve this before adopting the change. |
+| 12. Whisper search gap | The recovered prototype remains in `/x/Code/meganeura-next`; the isolated change and coverage tests are in `/x/Code/meganeura-search-order`. The 30 s study below separates candidate starvation from warmup-sensitive B570 timings. Integrate and qualify the reviewed library revision before the cohort. |
 
 The old strict 5070 Whisper `r1` study is concrete evidence of candidate
 starvation: `graph1` selects the 128-thread, 16-key flash layout at trial 17,
@@ -248,3 +250,62 @@ For energy, NVML exposes a cumulative energy query where supported, while its
 power query can report a one-second average. Millisecond-step power snapshots
 therefore need a longer measurement window; see the
 [NVML device-query reference](https://docs.nvidia.com/deploy/archive/R550/nvml-api/group__nvmlDeviceQueries.html).
+
+## Search order and warmup diagnostic (October 11, 2026)
+
+The isolated library change is commit `975fafa` in
+`/x/Code/meganeura-search-order`, branch `fix/physical-search-coverage`,
+based on the current Inferena pin `2c42b44`.
+It carries only the recovered search changes, with coverage tests and boundary
+fixes; the GEMV and convolution prototypes remain separate. After the first
+three graph baselines, it alternates graph forms using the incumbent's physical
+choice with physical choices on the incumbent's graph. A winner carries its
+choice to the other axis. Remaining interactions follow diagonally if the
+budget permits. The exact previously missed Whisper layout has a regression
+test that reserves half the 64-program allowance for submission probes.
+
+The old B570 diffusion slowdown could be reproduced with the isolated change
+and a 30 s budget, but its sign depended on the run. With two-second warmup,
+control/candidate training was 8.803/10.004 ms; reversing process order gave
+12.315/10.005 ms. Both controls selected graph 2 and both candidates graph 13.
+Ten additional one-second windows after selection showed the candidate drifting
+from 10.093 to roughly 11.3 ms. Late clock samples differed between the two
+programs, around 2,050 MHz for the control and 2,250 MHz for the candidate,
+with no reported GPU throttling. These observations establish sensitivity to
+operating state; they do not identify a single driver or hardware cause.
+
+Protocol v18 therefore uses a fixed ten-second, five-call minimum warmup for
+both engines, followed by all twenty samples. This changes held-out warmup,
+not the 30 s search budget, 250 ms comparison warmup, candidate cap or
+numerical gates. A fixed longer warmup reduces the observed drift; it does
+not promise constant clocks. Old receipts are rejected by the collector.
+
+With ten-second warmup, both process orders retain graph 2 for the B570
+diffusion control and graph 13 for the candidate. Training is
+11.622/11.688 ms for the control and 11.439/11.483 ms for the candidate.
+The earlier training regression is absent in these matched runs. Inference
+and latency still show run-to-run variation, so this is not evidence of
+eliminated clock variation or a precise speedup claim.
+
+On the 5070, the same 30 s policy reaches the missing 128-thread, 16-key,
+non-interleaved flash layout at trial 49 in both process orders. Inference
+search finishes its 64 trials in 28.51/26.01 s. With ten-second warmup,
+Whisper inference changes from 5.719/5.790 ms to 5.333/5.335 ms; latency
+changes from 5.657/5.797 ms to 5.321/5.406 ms. Training remains close:
+24.369/24.651 ms versus 24.671/24.445 ms. The paired output samples and
+parameter-gradient norm vectors are identical for Whisper; diffusion's
+gradient-norm-vector relative L2 difference is below 0.000001.
+
+Raw attempts, source patches, binary hashes, paired-search samples, hardware
+telemetry, watchdog receipts and the analysis script are retained outside Git
+in `../inferena-results/search-order-30s-20261011`. Each process starts with
+an empty learned-kernel memo; driver shader caches are not cleared. These are
+strict-f32 native diagnostics with unchanged full-tensor candidate checks,
+not a replicated PyTorch comparison or a replacement cohort. The new library
+revision still needs integration and full cohort qualification.
+
+Validation passes 16 library search tests, nine campaign tests and eleven
+harness tests, plus formatting, Clippy and library documentation checks.
+Debug GPU tests emit the existing SPIR-V validation-layer message
+`VUID-StandaloneSpirv-None-10684`; it also reproduces on a freshly rebuilt
+unchanged `2c42b44`, and the test assertions pass on both revisions.

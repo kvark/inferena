@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Workload/validation contract; the PyTorch execution protocol is versioned separately.
-pub const PAPER_PROTOCOL: &str = "inferena-paper-v3";
+pub const PAPER_PROTOCOL: &str = "inferena-paper-v4";
 
 /// Result produced by each framework benchmark runner.
 /// Every runner must print exactly one JSON object matching this schema to stdout.
@@ -629,7 +629,7 @@ fn run_framework(
                 r.extra.remove("status").as_ref().and_then(|v| v.as_str()) == Some("partial");
             if matches!(framework, "pytorch" | "meganeura") {
                 let expected_protocol = if framework == "pytorch" {
-                    "inferena-graph-replay-v7"
+                    "inferena-graph-replay-v8"
                 } else {
                     PAPER_PROTOCOL
                 };

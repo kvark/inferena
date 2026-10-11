@@ -19,7 +19,7 @@ mod initialization;
 mod qualification;
 mod search_cache;
 
-const WARMUP_TIME: Duration = Duration::from_secs(2);
+const WARMUP_TIME: Duration = Duration::from_secs(10);
 
 fn build_session(
     graph: &Graph,
@@ -519,7 +519,7 @@ fn capture_gap_profile(
             "mode": std::env::var("MEGANEURA_OPTIMIZER").unwrap_or_else(|_| "egglog-outlined".to_string()),
             "extraction_cost": std::env::var("MEGANEURA_EGRAPH_COST").unwrap_or_else(|_| "tensor-traffic".to_string()),
         },
-        "benchmark_protocol": "inferena-paper-v3",
+        "benchmark_protocol": "inferena-paper-v4",
         "normal_benchmark": {
             "samples_ms": &benchmark.samples_ms,
             "median_ms": benchmark.median_ms,
@@ -1089,7 +1089,7 @@ fn emit_result(
         "backend": backend,
         "environment": environment,
         "protocol": {
-            "name": "inferena-paper-v3",
+            "name": "inferena-paper-v4",
             "synthetic_parameter_init": initialization::POLICY,
             "warmup_runs": warmup_runs,
             "warmup_seconds": WARMUP_TIME.as_secs_f64(),

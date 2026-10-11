@@ -39,13 +39,29 @@ TUNE_SCRATCH_BYTES = 1024**3
 KERNEL_MEMO_POLICY = "campaign-kernel-memo-v1"
 COMPILE_SECONDS = 120.0
 RUN_SECONDS = 1200.0
-WARMUP_SECONDS = 2.0
+WARMUP_SECONDS = 10.0
 SYNTHETIC_PARAMETER_INIT = "name-index-uniform-v1"
 SDPA_BACKENDS = {"MATH", "FLASH_ATTENTION", "EFFICIENT_ATTENTION", "CUDNN_ATTENTION", "OVERRIDEABLE"}
 
 
 class NumericalMismatch(ValueError):
     pass
+
+
+def cpu_frequency_policies():
+    """Read Linux policy settings, not transient sampled clock frequencies."""
+    policies = {}
+    for directory in sorted(Path("/sys/devices/system/cpu/cpufreq").glob("policy*")):
+        settings = {}
+        for name in ("related_cpus", "scaling_driver", "scaling_governor",
+                     "energy_performance_preference", "scaling_min_freq", "scaling_max_freq"):
+            try:
+                settings[name] = (directory / name).read_text().strip()
+            except OSError:
+                continue
+        if settings:
+            policies[directory.name] = settings
+    return policies or None
 
 
 def gpu_matches(expected, actual):
@@ -238,7 +254,7 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
         if record["protocol"]["warmup_runs"] != 5:
             raise ValueError("unexpected warmup count")
         protocol = record["protocol"]
-        expected = "inferena-paper-v3" if engine == "meganeura" else "inferena-graph-replay-v7"
+        expected = "inferena-paper-v4" if engine == "meganeura" else "inferena-graph-replay-v8"
         if protocol.get("name") != expected or protocol.get("warmup_seconds") != WARMUP_SECONDS:
             raise ValueError("runner did not declare the workload warmup policy")
         if protocol.get("synthetic_parameter_init") != SYNTHETIC_PARAMETER_INIT:
@@ -614,10 +630,11 @@ def main():
                INFERENA_REQUIRE_LOCAL_WEIGHTS="1", INFERENA_TORCH_BACKEND=args.backend)
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v17", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v18", "source": revision,
         "started_at": started_at,
         "host": {"name": socket.gethostname(), "os": platform.system(),
-                 "kernel": platform.release(), "platform": platform.platform(), "arch": platform.machine()},
+                 "kernel": platform.release(), "platform": platform.platform(), "arch": platform.machine(),
+                 "cpu_frequency_policies": cpu_frequency_policies()},
         "synthetic_parameter_init": SYNTHETIC_PARAMETER_INIT,
         "model_revisions": {name: SMOLLM2_REVISIONS[name] for name in args.models if name in SMOLLM2_REVISIONS},
         "meganeura": dependency, "python": sys.version, "packages": packages,

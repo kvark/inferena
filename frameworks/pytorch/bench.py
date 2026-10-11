@@ -1054,7 +1054,7 @@ def _timing_summary(samples):
     }
 
 
-WARMUP_SECONDS = 2.0
+WARMUP_SECONDS = 10.0
 
 
 def _measure_call(fn, warmup_runs: int, measurement_runs: int, device, phase, before=None):
@@ -1480,7 +1480,7 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
     }
 
     print(
-        f"[pytorch] inferena-graph-replay-v7: {precision_mode}, at least {warmup_runs} warmups / {WARMUP_SECONDS}s, "
+        f"[pytorch] inferena-graph-replay-v8: {precision_mode}, at least {warmup_runs} warmups / {WARMUP_SECONDS}s, "
         f"{measurement_runs} samples",
         file=sys.stderr,
     )
@@ -1761,7 +1761,7 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
         "execution": execution,
         "profile_artifacts": profiles,
         "protocol": {
-            "name": "inferena-graph-replay-v7",
+            "name": "inferena-graph-replay-v8",
             "synthetic_parameter_init": SYNTHETIC_PARAMETER_INIT,
             "warmup_runs": warmup_runs,
             "warmup_seconds": WARMUP_SECONDS,

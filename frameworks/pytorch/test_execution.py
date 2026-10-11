@@ -398,10 +398,10 @@ class CampaignTest(unittest.TestCase):
             "status": "ok", "benchmark_rev": "source", "gpu_name": args.gpu, "model": "Whisper-tiny",
             "validation": {"comparison_performed": True, "forward_valid": True,
                            "training_valid": True, "reference_framework": "pytorch"},
-            "protocol": {"name": "inferena-paper-v3", "training_requested": True,
+            "protocol": {"name": "inferena-paper-v4", "training_requested": True,
                          "synthetic_parameter_init": "name-index-uniform-v1",
-                         "diagnostic": False, "warmup_runs": 5, "warmup_seconds": 2.0,
-                         "warmup": {phase: {"runs": 5, "seconds": 2.1}
+                         "diagnostic": False, "warmup_runs": 5, "warmup_seconds": 10.0,
+                         "warmup": {phase: {"runs": 5, "seconds": 10.1}
                                     for phase in ("inference", "latency", "training")}},
             "timing_samples_ms": {phase: [1.0] for phase in ("inference", "latency", "training")},
             "precision": {"comparison_class": "strict-f32", "reduced_precision_allowed": False,
@@ -438,7 +438,7 @@ class CampaignTest(unittest.TestCase):
             } for mode in ("Inference", "Training")],
         }}
         pt = {**copy.deepcopy(base), "framework": "pytorch", "backend": "CUDA",
-              "protocol": {**copy.deepcopy(base["protocol"]), "name": "inferena-graph-replay-v7"},
+              "protocol": {**copy.deepcopy(base["protocol"]), "name": "inferena-graph-replay-v8"},
               "torch_version": TORCH_VERSION,
               "environment": {"torch_git_version": TORCH_REVISION, "python_version": PYTHON_VERSION,
                               "triton_backend": "nvidia"},
@@ -561,10 +561,13 @@ class CampaignTest(unittest.TestCase):
                     eager_diagnostic(command, {}, folder, "Whisper-tiny", args, 1, "source", "strict")
         for engine, path, wrong in (
             (0, ("protocol", "warmup_seconds"), 0),
-            (1, ("protocol", "warmup", "inference", "seconds"), 1.9),
+            (1, ("protocol", "warmup_seconds"), 2.0),
+            (1, ("protocol", "warmup", "inference", "seconds"), 9.9),
             (1, ("protocol", "warmup", "latency", "runs"), 4),
             (0, ("protocol", "name"), "inferena-paper-v2"),
+            (0, ("protocol", "name"), "inferena-paper-v3"),
             (1, ("protocol", "name"), "inferena-graph-replay-v5"),
+            (1, ("protocol", "name"), "inferena-graph-replay-v7"),
             (0, ("protocol", "synthetic_parameter_init"), None),
             (1, ("protocol", "synthetic_parameter_init"), "sinusoidal"),
             (0, ("optimizer", "measured_construction"), False),
@@ -642,7 +645,7 @@ class CampaignTest(unittest.TestCase):
         args.backend = "cuda"
 
         from bench import _measure_call
-        for duration, expected_runs in ((0.125, 16), (1.0, 5)):
+        for duration, expected_runs in ((0.125, 80), (1.0, 10), (3.0, 5)):
             clock = [0.0]
             def step():
                 clock[0] += duration

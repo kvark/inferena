@@ -49,7 +49,7 @@ def environment(backend):
     env.pop("TORCH_ALLOW_TF32_CUBLAS_OVERRIDE", None)
     env.update(PYTHON=sys.executable, PYTHONUTF8="1", PYTHONIOENCODING="utf-8", HF_HUB_OFFLINE="1",
                TRANSFORMERS_OFFLINE="1", INFERENA_REQUIRE_LOCAL_WEIGHTS="1", INFERENA_TORCH_BACKEND=backend,
-               NVIDIA_TF32_OVERRIDE="0", TORCHINDUCTOR_COMPILE_THREADS="1")
+               NVIDIA_TF32_OVERRIDE="0")
     return env
 
 

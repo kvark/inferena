@@ -1750,6 +1750,7 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
         "torch_git_version": torch.version.git_version,
         "torch_build_config": torch.__config__.show(),
         "inductor_compile_threads": os.environ.get("TORCHINDUCTOR_COMPILE_THREADS"),
+        "inductor_compile_threads_effective": torch._inductor.config.compile_threads,
         "triton_backend": os.environ.get("TRITON_DEFAULT_BACKEND"),
         "cuda_version": torch.version.cuda,
         "hip_version": torch.version.hip,

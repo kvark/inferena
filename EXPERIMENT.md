@@ -110,8 +110,10 @@ Here `python` means the created environment's interpreter:
 `.venv-p3hpc/Scripts/python.exe` on native Windows. After activation,
 `python scripts/p3hpc.py` needs no arguments on a supported single-GPU
 machine. CPU PyTorch is only a correctness oracle for graphics-only qualification,
-not a timing competitor. `--eager` avoids compiling this oracle; it does not
-disable Meganeura tuning or relax validation. Verify the exact native name with
+not a timing competitor. Keep those native GPU results as portability evidence;
+ggml or ONNX Runtime is not needed as an additional reference.
+`--eager` avoids compiling this oracle; it does not disable Meganeura tuning or
+relax validation. Verify the exact native name with
 `cargo run --release --locked -p inferena-meganeura -- --list-devices` before
 selecting an integrated GPU. The shared RADV name RAPHAEL_MENDOCINO does not
 identify a separate Mendocino APU. See the [qualification instructions](https://github.com/kvark/meganeura/blob/e8d7d9e3b2192671c0a9fb1aab2e3fc505153260/paper/p3hpc/QUALIFICATION.md)
@@ -336,6 +338,29 @@ returns a failure: it never substitutes eager. Model loading and replay/
 numerical qualification are outside this compile interval and have a separate
 ten-minute process safety cap. The setup probe uses the same supervisor.
 
+The collector also applies a **1,200-second wall-clock watchdog per paired
+runner**, including both engines, their wrappers and compiler workers. Its
+`watchdog.json` records the limit, elapsed time, exit code or timeout. Expiration
+stops the campaign without retrying or starting another GPU workload. The same
+cap applies to a separate eager diagnostic. `--run-seconds N` changes this
+safety limit explicitly; it does not change either engine's search/compile
+budget. A killed process cannot guarantee recovery of a wedged GPU driver.
+
+Campaign manifests, per-engine records and summaries are published by writing
+and syncing a temporary file in the destination directory, then replacing the
+record atomically. Each completed engine is checkpointed before the next
+starts, so a later hang preserves the completed half of the pair. An interrupted
+pair is still incomplete. File errors stop collection instead of reporting a
+successful save. The manifest records host/kernel identity before benchmarking;
+native device selection records driver name/info (including Mesa's version)
+before the first paired run, and native results retain their environment receipts.
+
+Qualify the frozen source on B570 first, then collect its campaign before the
+other devices. Preserve every attempt. Following a watchdog timeout, inspect
+the retained records and device state before scheduling further work on that
+machine. See the [October 11 checklist review](ANALYSIS.md#pre-cohort-checklist-review-october-11-2026)
+for recovered library experiments and remaining decisions.
+
 This is a bounded-startup comparison, **not an identical total wall-clock
 budget for both engines**: Meganeura has a per-session construction deadline,
 while PyTorch has a per-process compilation deadline. Both can overrun during
@@ -494,6 +519,20 @@ for both replay and its uncaptured ablation; other backends retain automatic
 SDPA selection. The full-model workaround passes
 the same gates on B570.
 `execution.sdpa_policy` and `sdpa_enabled_backends` record the active setting.
+
+The October 10 SmolLM2-360M captured run still fails inside XPU's compiled
+embedding backward with `wait method cannot be used for an event associated
+with a command graph`. An October 11 diagnostic with replay disabled passes
+all three uncaptured phase checks in both arithmetic classes (one process
+each). Forward/loss/backward takes 54.501 ms strict and 54.558 ms accelerated.
+Both also pass the sampled-output and gradient-norm comparison against the
+archived strict native record. Results, source snapshot and commands are in
+`../inferena-results/precohort-20261011/b570-360m-no-graphs/` and
+`../inferena-results/precohort-20261011/rerun_b570.py`. These are diagnostic
+results from a dirty checkout; neither a replay fix nor replicated qualification
+of the current native pin is established. For a separate frozen-source study,
+use `--backend xpu --models SmolLM2-360M --no-graphs`; preserve the captured
+failure and keep the override labelled.
 
 The September 23 RX 7900 XT campaign at Inferena `2a8cbf52` still failed strict
 Whisper after SDPA was excluded from compilation. Inference capture passed;

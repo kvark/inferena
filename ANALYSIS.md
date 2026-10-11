@@ -181,3 +181,70 @@ Local evidence stays outside Git: `/mnt/data/inferena-native-analysis.nC5jZj/`
 `/mnt/data/inferena-ngfx-markers.bx2oTf/`. Failed Graphics attempts are retained
 separately at `inferena-ngfx-large.WKyJMP` and `inferena-ngfx-attached.dvS9uD`.
 Git retains the source/recipe and this conclusion, not trace binaries or raw arrays.
+
+## Pre-cohort checklist review (October 11, 2026)
+
+Durable records and a process-tree watchdog are implemented. Before collection,
+resolve the search-order regression and freeze the source, budgets and cache policy.
+PyTorch CPU remains the correctness oracle on the graphics-only platforms;
+its times are excluded from GPU comparisons. No ggml/ONNX reference is needed.
+Qualification-only coverage must remain labelled separately from replicated
+native timing results. B570 should be the first device qualified and collected
+once the source is frozen.
+
+The recovered work is present locally, including uncommitted changes. These
+paths identify experiments, not branches certified for the cohort:
+
+| Item | Recovered work and disposition |
+| --- | --- |
+| 1. Unsupported PyTorch GPUs | Keep the CPU correctness oracle and native portability rows. B570 SmolLM2-360M now passes a compiled, uncaptured diagnostic in both classes; the failed captured run is retained. Replicated collection remains to be done. |
+| 2. B570 hang | The harness now checkpoints each completed engine with atomic replacement. The collector writes atomic manifests and bounds each pair with `--run-seconds` (1,200 s by default), including the nested PyTorch compiler session. A timeout stops the campaign. |
+| 3. Frozen settings | The current pin declares 30 s/session, 64 programs, 16 graphs and no patience stop. V17 already creates an empty campaign-local kernel memo and records reuse; report its cold and warm preparation separately. Host/kernel identity is now in the manifest before a run; native driver/Mesa identity is already recorded. Do not import a different branch's early-stop assumptions. |
+| 4. Mixed precision reference | A prototype and one-process results already exist in `/x/Code/inferena-halfprec` and `../inferena-results/autocast-20261010`. It wraps forward in autocast but has **no gradient scaling**. The new scaling diagnostic below removes most of Whisper's gradient discrepancy; implement scaling before choosing a new gate. A PyTorch AMP column can be added without waiting for native f16 activations. |
+| 5. Convergence | High-value follow-up: pin real data, batch order, initialization, optimizer, learning rate, update count and seeds; compare loss trajectories and held-out quality. Existing timings cover forward/loss/backward only, with no optimizer update. A single short run supports a bounded convergence claim, not equivalence for all five workloads. |
+| 6. Cross-device decisions | This is not a cache-copy experiment: `KernelMemo::bind` rejects another device/driver and the memo stores private kernel decisions, not a selected whole program. Add an explicit capability-checked export/import of decisions, reconstruct and qualify on the target, and report invalid/unavailable choices as well as slowdown against target-local search. Never disable ordinary cache identity checks. |
+| 7. Energy | Useful secondary study after latency is stable. Prefer energy-counter differences over a long repeated batch, divided by completed steps. Record sensor scope, units, sampling interval, idle baseline and missing sensors; GPU-board and package energy are different quantities. Include preparation energy separately if claiming search pays for itself. |
+| 8. Footprint/cold start | Worth adding as a small separate study: runtime binary plus required shared libraries versus the minimal runnable PyTorch environment, with model weights reported separately. Measure process launch to first completed step in a deployed runner, excluding Cargo/package setup. State filesystem, framework and driver cache conditions separately. `compile_s` is not this metric. |
+| 9. Ablations | The saved `search-vs-greedy-20261010` study covers greedy, kernel tuning, graph-count and time budgets; it does not isolate all four mechanisms. Use explicit fusion/layout/chunking/cooperative controls with the same budget and correctness gates. Strict-f32 runs already exclude reduced-input cooperative tiles, so toggling those there would be a no-op. |
+| 10. B570 kernels | GEMV changes and sweeps survive in `/x/Code/meganeura-next` and `../inferena-results/b570-gemv-20261011`. Convolution register-column interleaving survives in `/x/Code/meganeura-conv`; three saved greedy ResNet runs improve B570 training median from 53.35 to 52.43 ms but worsen 5070 from 28.56 to 30.12 ms. This is not the proposed cooperative convolution implementation. ANV's recorded 8×16×16 tile remains incompatible with the square-tile codegen. |
+| 11. f16 activations | `/x/Code/meganeura-f16` contains completed f16 **weight** work and `docs/reduced-precision-storage.md`; stage 2 activations and stage 3 training remain unimplemented. Treat weight storage and AMP as distinct labelled precision policies. Do not make stage 2 a prerequisite for measuring the reference. |
+| 12. Whisper search gap | Uncommitted coordinate-order changes are in `/x/Code/meganeura-next/src/train/search.rs` and `search/measure.rs`; saved runs are in `../inferena-results/coordinate-search-20261011`. They reach useful attention choices earlier, but also regress B570 diffusion training. Resolve this before adopting the change. |
+
+The old strict 5070 Whisper `r1` study is concrete evidence of candidate
+starvation: `graph1` selects the 128-thread, 16-key flash layout at trial 17,
+giving 5.707 ms inference, while `search60` keeps the ordinary candidate at
+6.341 ms. Both reach the 64-program cap at about 29 s, so increasing the time
+budget alone cannot fix that inference result. The layout exists in the search
+space; its ordering prevents it being visited within the program bound.
+
+In the subsequent 60 s coordinate-order pilot, 5070 Whisper inference changes
+from 5.690/5.788 ms to 5.417/5.175 ms across two processes. B570 diffusion
+training changes from 10.958/10.918 ms to 11.470/12.275 ms. These are incomplete
+native-only pilot results on other source revisions, not qualification of the
+current 30 s campaign policy. Preserve the negative results when refining the
+search and then qualify the frozen implementation across the full model set.
+
+Two new diagnostics are retained in `../inferena-results/precohort-20261011`,
+with scripts, source snapshot, logs and watchdog receipts. B570 SmolLM2-360M
+passes all uncaptured phase checks in strict and accelerated modes; training
+medians are 54.501 and 54.558 ms. The separate comparison against the archived
+strict native result passes output and gradient gates in both cases. These
+single-process diagnostics preserve, rather than replace, the failed replay run.
+
+The 5070 Whisper experiment uses the current deterministic fixture, eager
+execution and math SDPA to isolate scaling. With the same fp16 forward and
+f32 loss, enabling `torch.amp.GradScaler` (scale 65,536, gradients unscaled
+before comparison) reduces parameter-norm-vector relative L2 error from
+20.2585% to 0.001887%, and full-gradient relative L2 error from 36.6109% to
+0.027458%. No optimizer step is taken. This supports gradient underflow as
+the cause of the large unscaled discrepancy; it does not establish compiled
+AMP replay correctness or convergence. See `whisper_scaling.py` and
+`whisper-scaling.json` in the diagnostic directory.
+
+For the precision follow-up, PyTorch documents gradient scaling as protection
+against fp16 gradient underflow; bf16 does not have the same exponent-range
+limitation. See the [official AMP examples](https://docs.pytorch.org/docs/stable/notes/amp_examples.html).
+For energy, NVML exposes a cumulative energy query where supported, while its
+power query can report a one-second average. Millisecond-step power snapshots
+therefore need a longer measurement window; see the
+[NVML device-query reference](https://docs.nvidia.com/deploy/archive/R550/nvml-api/group__nvmlDeviceQueries.html).

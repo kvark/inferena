@@ -202,6 +202,7 @@ class CampaignTest(unittest.TestCase):
         self.assertFalse(defaults.max_autotune)
         self.assertFalse(defaults.graph_ablation)
         self.assertEqual(defaults.compile_seconds, 120)
+        self.assertEqual(defaults.run_seconds, 1200)
         self.assertEqual(defaults.tune_seconds, 30)
         self.assertEqual(defaults.max_submission_chunks, 64)
         self.assertTrue(defaults.kernel_memo)
@@ -549,7 +550,7 @@ class CampaignTest(unittest.TestCase):
                 self.assertEqual(kwargs["env"]["INFERENA_SDPA"], "math")
                 self.assertEqual(command[command.index("-f") + 1], "pytorch")
                 return subprocess.CompletedProcess(command, 0)
-            with patch("p3hpc.subprocess.run", side_effect=run_diagnostic) as run, \
+            with patch("p3hpc.run_recorded", side_effect=run_diagnostic) as run, \
                  patch("p3hpc.subprocess.check_output", return_value=json.dumps([mg, eager])):
                 report = eager_diagnostic(command, {}, folder, "Whisper-tiny", args, 1, "source", "strict")
                 run.assert_called_once()

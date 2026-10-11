@@ -2,6 +2,7 @@
 
 use clap::Parser;
 use serde::{Deserialize, Serialize};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -710,8 +711,8 @@ fn run_framework(
 }
 
 /// Save each framework's result as a separate JSON file in results/.
-fn save_results(results_dir: &Path, model: &str, outcomes: &[FrameworkOutcome]) {
-    std::fs::create_dir_all(results_dir).ok();
+fn save_results(results_dir: &Path, model: &str, outcomes: &[FrameworkOutcome]) -> io::Result<()> {
+    std::fs::create_dir_all(results_dir)?;
 
     for outcome in outcomes {
         let (fw, content) = match outcome {
@@ -726,20 +727,23 @@ fn save_results(results_dir: &Path, model: &str, outcomes: &[FrameworkOutcome]) 
             }
         };
         let path = results_dir.join(format!("{model}_{fw}.json"));
-        if let Err(e) = std::fs::write(&path, &content) {
-            eprintln!("Warning: failed to save {}: {e}", path.display());
-        }
+        atomic_write(&path, &content)?;
     }
 
     // Also save a combined summary.
     let summary_path = results_dir.join(format!("{model}_summary.json"));
     let summary = serde_json::to_string_pretty(outcomes).unwrap();
-    if let Err(e) = std::fs::write(&summary_path, &summary) {
-        eprintln!("Warning: failed to save summary: {e}");
-    }
+    atomic_write(&summary_path, &summary)
+}
 
-    eprintln!();
-    eprintln!("Results saved to {}/", results_dir.display());
+fn atomic_write(path: &Path, content: &str) -> io::Result<()> {
+    let mut temporary = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
+    temporary.write_all(content.as_bytes())?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    #[cfg(unix)]
+    std::fs::File::open(path.parent().unwrap())?.sync_all()?;
+    Ok(())
 }
 
 /// Compute error metrics between two logit sample vectors.
@@ -1421,9 +1425,20 @@ fn main() {
             profile_dir.as_deref(),
             cli.profile_samples,
         ));
+        if !cli.dry_run {
+            // Preserve completed engines before starting another one. A GPU
+            // hang must not discard the successful half of a pair. Each new
+            // checkpoint recomputes validation with the references available.
+            annotate_validation(&mut outcomes, &git_revision(&root));
+            if let Err(error) = save_results(&results_dir, &cli.model, &outcomes) {
+                eprintln!(
+                    "Failed to save results to {}: {error}",
+                    results_dir.display()
+                );
+                std::process::exit(1);
+            }
+        }
     }
-    let benchmark_revision = git_revision(&root);
-    annotate_validation(&mut outcomes, &benchmark_revision);
 
     // Collect successful results for comparison.
     let successes: Vec<&BenchResult> = outcomes
@@ -1488,9 +1503,7 @@ fn main() {
         }
     }
 
-    // Save results even when everything fails — the per-framework JSON captures
-    // the stderr excerpt, which is often the only record of what went wrong.
-    save_results(&results_dir, &cli.model, &outcomes);
+    eprintln!("Results saved to {}/", results_dir.display());
 
     if successes.is_empty() {
         eprintln!("No successful benchmark results.");
@@ -1508,6 +1521,48 @@ mod tests {
         compare_gradient_norms, compare_result, precision_contract_error, relative_scalar_error,
     };
     use std::collections::BTreeMap;
+
+    #[test]
+    fn checkpoint_survives_failed_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("record.json");
+        super::atomic_write(&path, r#"{"status":"running"}"#).unwrap();
+        super::atomic_write(&path, r#"{"status":"complete"}"#).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"status":"complete"}"#
+        );
+        // A failed rename must preserve the destination and clean the staged file.
+        let blocked = directory.path().join("directory.json");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(super::atomic_write(&blocked, "{}").is_err());
+        assert!(blocked.is_dir());
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn incremental_results_gain_validation_when_reference_finishes() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut native = result(vec![1, 256], true);
+        native.framework = "meganeura".into();
+        let mut outcomes = vec![FrameworkOutcome::Ok(native.clone())];
+        annotate_validation(&mut outcomes, "test-revision");
+        super::save_results(directory.path(), "model", &outcomes).unwrap();
+        let read = || -> serde_json::Value {
+            serde_json::from_slice(
+                &std::fs::read(directory.path().join("model_summary.json")).unwrap(),
+            )
+            .unwrap()
+        };
+        assert_eq!(read()[0]["validation"]["status"], "NO REFERENCE");
+        assert_eq!(read()[0]["benchmark_rev"], "test-revision");
+        native.framework = "pytorch".into();
+        outcomes.push(FrameworkOutcome::Ok(native));
+        annotate_validation(&mut outcomes, "test-revision");
+        super::save_results(directory.path(), "model", &outcomes).unwrap();
+        assert_eq!(read().as_array().unwrap().len(), 2);
+        assert_eq!(read()[0]["validation"]["comparison_performed"], true);
+    }
 
     /// Archived results predate the memory report and must stay readable —
     /// the paper's analysis reads them alongside new runs.

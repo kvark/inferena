@@ -14,18 +14,31 @@ import time
 
 def save(path, report):
     temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    with temporary.open("w", encoding="utf-8") as stream:
+        json.dump(report, stream, indent=2)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
     temporary.replace(path)
 
 
 def terminate(process):
-    if process.poll() is None:
-        if sys.platform == "win32":
+    if sys.platform == "win32":
+        if process.poll() is None:
             subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], check=True,
                            stdout=sys.stderr, stderr=sys.stderr)
-        else:
+    else:
+        try:
             os.killpg(process.pid, signal.SIGKILL)
-        process.wait(timeout=10)
+        except ProcessLookupError:
+            pass
+    process.wait(timeout=10)
+
+
+def interrupted(signum, _frame):
+    # The campaign watchdog first sends SIGTERM. Exiting through finally reaps
+    # our separate compiler session before the campaign kills its outer group.
+    raise SystemExit(128 + signum)
 
 
 @contextmanager
@@ -49,6 +62,7 @@ def compilation_budget():
 
 
 def main():
+    signal.signal(signal.SIGTERM, interrupted)
     seconds = float(os.environ.get("INFERENA_COMPILE_SECONDS", "120"))
     if not math.isfinite(seconds) or seconds <= 0:
         raise SystemExit("INFERENA_COMPILE_SECONDS must be finite and positive")

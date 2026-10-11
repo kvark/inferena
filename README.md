@@ -239,7 +239,11 @@ but its timings never replace failed compiled timings. Unknown execution or
 configuration errors still stop the campaign. See [the failure policy](EXPERIMENT.md#failed-references-and-the-separate-eager-diagnostic).
 
 The printed `../inferena-results/<host>-<UTC>-<source>/` directory contains the
-manifest, records and logs. Keep that whole directory; `campaign.json` must say
+manifest, records and logs. Records are written atomically after each completed
+engine. A 1,200-second watchdog bounds each paired process and its workers;
+`watchdog.json` preserves timeouts, which stop collection without retrying.
+Use `--run-seconds N` to declare a different process safety limit.
+Keep that whole directory; `campaign.json` must say
 `"status": "complete"` for all gates to have passed. `complete-with-failures`
 means all planned conditions were attempted, with failures preserved and
 exit code 1. Incomplete phase replicate groups are not aggregate timings. Nothing is

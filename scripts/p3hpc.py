@@ -9,6 +9,7 @@ import json
 import math
 import os
 from pathlib import Path
+import platform
 import re
 import shutil
 import socket
@@ -18,6 +19,8 @@ import sys
 import tempfile
 import time
 import tomllib
+
+from collection import run_recorded, write_json
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS = ("SmolLM2-135M", "SmolVLA", "StableDiffusion", "ResNet-50", "Whisper-tiny")
@@ -35,6 +38,7 @@ MAX_SUBMISSION_CHUNKS = 64
 TUNE_SCRATCH_BYTES = 1024**3
 KERNEL_MEMO_POLICY = "campaign-kernel-memo-v1"
 COMPILE_SECONDS = 120.0
+RUN_SECONDS = 1200.0
 WARMUP_SECONDS = 2.0
 SYNTHETIC_PARAMETER_INIT = "name-index-uniform-v1"
 SDPA_BACKENDS = {"MATH", "FLASH_ATTENTION", "EFFICIENT_ATTENTION", "CUDNN_ATTENTION", "OVERRIDEABLE"}
@@ -397,7 +401,8 @@ def eager_diagnostic(command, env, folder, model, args, count, revision, precisi
                        INFERENA_REFERENCE_DIAGNOSTIC="1",
                        INFERENA_PREPARATION_REPORT=str(diagnostic / "torch-preparation.json"))
     with (diagnostic / "runner.log").open("w", encoding="utf-8") as log:
-        result = subprocess.run(command, cwd=ROOT, env=environment, stdout=log, stderr=subprocess.STDOUT)
+        result = run_recorded(command, report_path=diagnostic / "watchdog.json", seconds=args.run_seconds,
+                              cwd=ROOT, env=environment, stdout=log, stderr=subprocess.STDOUT)
     native_path = folder / f"{model}_meganeura.json"
     reference_path = diagnostic / f"{model}_pytorch.json"
     reference = json.loads(reference_path.read_text())
@@ -411,7 +416,7 @@ def eager_diagnostic(command, env, folder, model, args, count, revision, precisi
         records = json.loads(subprocess.check_output(
             [str(harness), "--compare-results", str(native_path), str(reference_path)],
             cwd=ROOT, text=True, encoding="utf-8"))
-        (diagnostic / "comparison.json").write_text(json.dumps(records, indent=2) + "\n")
+        write_json(diagnostic / "comparison.json", records)
     phases, _ = assess_phases(records, args, "eager", False, count, revision, preparation,
                               precision=precision, oracle=True)
     return {"path": "diagnostic-eager", "command": command, "returncode": result.returncode,
@@ -513,6 +518,8 @@ def create_parser():
                         help="search powers of two up to this bound on every GPU (default: %(default)s); 1 disables chunking")
     parser.add_argument("--compile-seconds", type=positive_seconds, default=COMPILE_SECONDS,
                         help="PyTorch compilation/first-specialization deadline (default: 120 s)")
+    parser.add_argument("--run-seconds", type=positive_seconds, default=RUN_SECONDS,
+                        help="wall-clock watchdog for each paired runner and its children (default: %(default)g s); aborts without retry")
     stage = parser.add_mutually_exclusive_group()
     stage.add_argument("--collect", dest="collect", action="store_true", default=True, help="validated measurement (default)")
     stage.add_argument("--qualify-only", dest="collect", action="store_false", help="run correctness gates without publication samples")
@@ -609,6 +616,8 @@ def main():
     manifest = {
         "protocol": "p3hpc-paired-campaign-v17", "source": revision,
         "started_at": started_at,
+        "host": {"name": socket.gethostname(), "os": platform.system(),
+                 "kernel": platform.release(), "platform": platform.platform(), "arch": platform.machine()},
         "synthetic_parameter_init": SYNTHETIC_PARAMETER_INIT,
         "model_revisions": {name: SMOLLM2_REVISIONS[name] for name in args.models if name in SMOLLM2_REVISIONS},
         "meganeura": dependency, "python": sys.version, "packages": packages,
@@ -629,6 +638,7 @@ def main():
                           "qualification": "fixed-full-tensor-v4",
                           "search_seconds_per_session": args.tune_seconds, "strict_coop": "NativeF32"},
         "reference_compile_seconds": args.compile_seconds,
+        "run_watchdog_seconds": args.run_seconds,
         "warmup": {"minimum_runs": 5, "minimum_seconds": WARMUP_SECONDS},
         "reference_sdpa_policy": sdpa,
         "reference_sdpa_compile": {
@@ -662,7 +672,7 @@ def main():
 
     def save():
         manifest["elapsed_seconds"] = time.monotonic() - started
-        (destination / "campaign.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        write_json(destination / "campaign.json", manifest)
 
     save()
     print(f"Campaign: {destination}", flush=True)
@@ -716,6 +726,7 @@ def main():
                             run = {"path": str(folder.relative_to(destination)), "command": command,
                                    "mode": mode, "graphs": graphs, "model": model,
                                    "precision": precision, "replicate": replicate + 1,
+                                   "watchdog": "watchdog.json",
                                    "preparation_policy": "native-tuned/reference-" + mode, "status": "running"}
                             manifest["runs"].append(run)
                             save()
@@ -735,8 +746,9 @@ def main():
                                 save()
                                 run_started = time.monotonic()
                                 try:
-                                    result = subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
-                                                            env=run_env)
+                                    result = run_recorded(command, report_path=folder / "watchdog.json",
+                                                          seconds=args.run_seconds, cwd=ROOT, stdout=log,
+                                                          stderr=subprocess.STDOUT, env=run_env)
                                 finally:
                                     run["elapsed_seconds"] = time.monotonic() - run_started
                             run["returncode"] = result.returncode

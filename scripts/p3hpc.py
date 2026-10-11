@@ -485,7 +485,7 @@ def input_hashes(models):
 def create_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results-dir", type=Path, help="new directory; default: ../inferena-results/<host>-<UTC>-<source>")
-    parser.add_argument("--backend", choices=("cuda", "rocm", "xpu", "mps", "cpu"), help="default: installed GPU backend; no CPU fallback")
+    parser.add_argument("--backend", choices=("cuda", "rocm", "xpu", "mps", "cpu", "android"), help="default: installed GPU backend; no CPU fallback")
     parser.add_argument("--gpu", help="expected GPU-name substring; default: reference GPU")
     parser.add_argument("--torch-version", help="exact vendor build; default: installed build, with common source/version checks")
     parser.add_argument("--models", nargs="+", choices=SUPPORTED_MODELS, default=list(MODELS))
@@ -517,6 +517,11 @@ def create_parser():
     stage.add_argument("--collect", dest="collect", action="store_true", default=True, help="validated measurement (default)")
     stage.add_argument("--qualify-only", dest="collect", action="store_false", help="run correctness gates without publication samples")
     parser.add_argument("--offline", action="store_true", help="require all pinned models to be prepared already")
+    android = parser.add_argument_group("Android / Quest 3S")
+    android.add_argument("--adb-serial", help="explicit USB serial or wireless IP:port")
+    android.add_argument("--android-ndk", type=Path, help="Android NDK r27 directory; defaults to ANDROID_NDK_HOME")
+    android.add_argument("--android-timeout", type=positive_seconds, default=1800,
+                         help="hard deadline for each device or CPU process (seconds)")
     return parser
 
 
@@ -544,7 +549,7 @@ def main():
         "INFERENA_TUNE_SECONDS", "INFERENA_COMPILE_SECONDS", "INFERENA_PREPARATION_REPORT", "INFERENA_BUDGET_ENFORCED",
         "INFERENA_MAX_SUBMISSION_CHUNKS",
         "INFERENA_KERNEL_MEMO_DIR",
-        "INFERENA_SDPA", "INFERENA_REFERENCE_DIAGNOSTIC",
+        "INFERENA_SDPA", "INFERENA_REFERENCE_DIAGNOSTIC", "INFERENA_TENSOR_EXPORT",
     )]
     if overrides:
         parser.error(f"remove experimental/profiling overrides: {', '.join(overrides)}")
@@ -557,6 +562,11 @@ def main():
         check_torch_identity(torch.__version__, torch.version.git_version, args.torch_version)
     except ValueError as error:
         parser.error(str(error))
+    if args.backend == "android":
+        from p3hpc_android import collect
+        sys.exit(collect(args, parser, packages, started_at, started))
+    if args.adb_serial or args.android_ndk:
+        parser.error("Android options require --backend android")
     probe_env = dict(os.environ)
     if args.backend:
         probe_env["INFERENA_TORCH_BACKEND"] = args.backend
@@ -607,7 +617,7 @@ def main():
                INFERENA_REQUIRE_LOCAL_WEIGHTS="1", INFERENA_TORCH_BACKEND=args.backend)
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v17", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v18", "source": revision,
         "started_at": started_at,
         "synthetic_parameter_init": SYNTHETIC_PARAMETER_INIT,
         "model_revisions": {name: SMOLLM2_REVISIONS[name] for name in args.models if name in SMOLLM2_REVISIONS},

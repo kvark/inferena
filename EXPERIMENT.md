@@ -1,10 +1,10 @@
 # P3HPC paired collection
 
 Use branch `experiment/p3hpc-cuda-graphs`. Meganeura is pinned to
-`2c42b4488310d83640c934c411202dde05b055e0` (merged search/f16 support and
-derived-weight sharing/kernel-memo hardening), with Blade
+`2a1f948bec97da3cbbf3bba9d0488f35b5031787` (Quest Vulkan fixes, causal
+SmolVLA training, and bounded long-product accumulation), with Blade
 `56f05651cca73659130e924e497dda633f839d40`. Protocol
-`p3hpc-paired-campaign-v17` retains the merged joint graph/schedule search:
+`p3hpc-paired-campaign-v18` retains the merged joint graph/schedule search:
 up to 16 graph/implementation forms, interleaved physical-plan choices, and
 at least two warmup pairs and 250 ms before comparing whole programs, within
 the shared 30-second session deadline. Private kernel probes have no separate
@@ -69,6 +69,12 @@ The v11 failure investigation found nearly rank-two sinusoidal weights, with
 strong cancellation that also exceeded the gradient bounds in PyTorch f32.
 The initializer fixes that fixture defect; #203 separately fixes the derivative.
 Neither requires rollback of tuning or weaker numerical checks.
+
+V18 adds Quest 3S through the Android collector and updates the common Meganeura
+pin. The SmolVLA training mask and long-product accumulation fixes apply to every
+platform. Requalify all devices at the new Inferena revision; do not mix earlier
+cohorts with this one. Android uses the same native search and timing policy,
+with a separate full-tensor host CPU oracle. See [Quest collection](#quest-3s).
 
 ## What to run
 
@@ -470,6 +476,75 @@ The automatic diagnostic does not change `--eager`: an explicitly requested
 eager primary is a different labelled experiment and has no eager fallback.
 
 ## Platform notes
+
+### Quest 3S
+
+Quest is a native Vulkan measurement target with a host CPU correctness oracle.
+It has no paired PyTorch GPU timing. Use the same committed Inferena revision as
+the other devices. The Android campaign is labelled `p3hpc-android-campaign-v1`
+and records its common `p3hpc-paired-campaign-v18` native policy.
+
+Install Android SDK platform-tools (ADB), Android NDK **r27**, and the Rust target
+`rustup target add aarch64-linux-android`. Use the pinned host Python environment
+above; the existing NVIDIA environment also provides the CPU oracle. No Android
+PyTorch installation or patched benchmark sources are required.
+
+Connect USB once to authorize debugging. To move to a strong charger, run
+`adb -s <USB-serial> tcpip 5555`, find the headset's Wi-Fi address, then
+`adb connect <IP>:5555`. Use that explicit address as `--adb-serial`. The collector
+checks the Quest 3S identity, external power, battery >=30%, and battery
+temperature <45 C. It warns on weak charging and records battery/thermal state before and after every
+process. It enables stay-awake/proximity automation for the campaign and restores
+the original stay-awake setting and normal proximity behavior in `finally`.
+If the connection is lost, `campaign.json` records any failed restoration;
+reconnect and run `adb -s <serial> shell am broadcast -a
+com.oculus.vrpowermanager.automation_disable` and restore the recorded
+`original_stay_on_while_plugged_in` with `settings put global`.
+
+From this checkout, first qualify both arithmetic classes and all five models:
+
+```sh
+python scripts/p3hpc.py --backend android --adb-serial <IP>:5555 --android-ndk <SDK>/ndk/27.0.12077973 --qualify-only
+```
+
+Then start collection by omitting `--qualify-only`. Defaults retain three fresh
+device processes per model/class, five warmup calls and at least two seconds,
+twenty measured calls per phase, and the common 30-second calibrated search.
+The runner is built from Cargo.lock, pushed, and hash-verified. Pinned SmolLM2
+assets are prepared on the host, pushed, and hash-verified on the headset.
+`--offline` requires already prepared host weights. `--android-timeout` defaults
+to 1800 seconds per device or CPU process. Device timeouts also kill the remote
+runner; they do not retry it. Each campaign uses a new remote directory and new
+kernel memo; replicas share only that campaign's kernel decisions.
+
+Every process exports the selected program's exact full parameters, inputs,
+inference/latency outputs, training loss, and all canonical gradients outside
+the timing regions. A fresh host PyTorch CPU **float64** model checks every
+output/loss/gradient tensor using unchanged maximum and RMS bounds
+`atol=1e-6, rtol=1e-4`, plus the aggregate gradient vector. The higher-precision
+oracle avoids the previously demonstrated SmolLM2 CPU f32 accumulation error.
+Both requested arithmetic classes currently execute f32 on Adreno 740 because
+it exposes no cooperative matrices; the collector verifies this and uses strict
+bounds for both. No reduced-arithmetic benefit is claimed. Native candidate
+qualification also remains enabled throughout search.
+
+The result directory contains `campaign.json`, `results.md`, exact source and
+binary snapshots, raw device/CPU logs, timing samples, tensor blobs, full CPU
+reference arrays and comparison receipts. Reserve tens of GB on both host and
+headset for a full campaign. `latest.tgz` is produced as on desktop. Remote
+evidence remains at the recorded `remote_directory` until explicitly removed.
+Failed processes and mismatches remain visible; only complete, qualified
+replicate groups produce timings in the report. Qualification produces coverage
+but no publication timings. Host CPU duration never enters performance ratios.
+
+Combine same-revision desktop and Quest campaigns with:
+
+```sh
+python scripts/p3hpc_report.py <desktop-campaign> <quest-campaign>
+```
+
+Add `--json` for machine-readable rows. Existing paper artifact cohorts remain
+historical and are not rewritten by this collector.
 
 Windows uses native x64 Python, Git for Windows / Git Bash (not WSL), Rust MSVC,
 and Visual Studio C++ Build Tools with a Windows SDK. Setup selects

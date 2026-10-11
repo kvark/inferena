@@ -15,6 +15,7 @@ thread_local! {
     static SESSION_PREPARATION: RefCell<Vec<serde_json::Value>> = const { RefCell::new(Vec::new()) };
 }
 
+mod export;
 mod initialization;
 mod qualification;
 mod search_cache;
@@ -27,6 +28,7 @@ fn build_session(
     initialize_parameters: impl Fn(&mut Session),
     initialize_inputs: impl Fn(&mut Session),
 ) -> Session {
+    export::set_graph(graph);
     let mut config = session_config();
     config.mode = mode;
     // This runner owns search options and retains its evidence, rather than
@@ -417,6 +419,8 @@ fn bench_session(
     session: &mut meganeura::Session,
     set_inputs: &dyn Fn(&mut meganeura::Session),
 ) -> BenchStats {
+    set_inputs(session);
+    let mut exported = export::before(session, phase);
     let (warmups, samples) = benchmark_counts();
     let warmup_range = nsys_range(&format!("meganeura/{phase}/warmup"));
     let warmup_start = Instant::now();
@@ -446,6 +450,7 @@ fn bench_session(
         drop(wait_range);
         samples_ms.push(t0.elapsed().as_secs_f64() * 1000.0);
     }
+    export::after(session, phase, &mut exported);
     BenchStats::from_samples(samples_ms, warmup)
 }
 

@@ -1,19 +1,19 @@
-"""Explicit AMP reference policy and fixed, untimed numerical gates."""
+"""Accelerated arithmetic policy and fixed, untimed numerical/learning gates."""
 
 from contextlib import contextmanager, nullcontext
 import math
 import os
+from pathlib import Path
+import sys
 
 import torch
 
 from execution import QualificationError
 
-CURVE_STEPS = 32
-CURVE_LEARNING_RATE = 0.001
-CURVE_POLICY = "loss-curve-v1"
-CURVE_RTOL = 0.02
-CURVE_L2_LIMIT = 0.01
-CURVE_ATOL = 1e-6
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+from training_gate import (REAL_TEXT, CURVE_POLICY, CURVE_ATOL,
+                           assess_trajectories, curve_metrics, load_fixture, workload_for)
+
 FORWARD_RTOL = 0.02
 MAX_SCALE_ATTEMPTS = 8
 
@@ -66,23 +66,13 @@ def optimizer_update(optimizer, scaler, loss_call):
 
 def compare_loss_curves(actual, reference):
     """Fixed bounds, declared before running either trajectory; no fitted envelope."""
-    if not actual or len(actual) != len(reference):
-        raise QualificationError("loss curves must have the same nonzero length")
-    if not all(math.isfinite(value) and value >= 0 for value in [*actual, *reference]):
-        raise QualificationError("non-finite or negative loss in convergence check")
-    errors = [abs(a - r) for a, r in zip(actual, reference, strict=True)]
-    bounds = [CURVE_ATOL + CURVE_RTOL * abs(r) for r in reference]
-    relative_l2 = math.sqrt(sum(error * error for error in errors)) / max(
-        math.sqrt(sum(value * value for value in reference)), CURVE_ATOL)
-    report = {
-        "policy": CURVE_POLICY, "steps": len(actual), "rtol": CURVE_RTOL,
-        "atol": CURVE_ATOL, "relative_l2_limit": CURVE_L2_LIMIT,
-        "relative_l2": relative_l2, "max_abs_error": max(errors),
-        "mismatched_steps": sum(error > bound for error, bound in zip(errors, bounds, strict=True)),
-    }
-    if report["mismatched_steps"] or relative_l2 > CURVE_L2_LIMIT:
+    try:
+        report = curve_metrics(actual, reference)
+    except ValueError as error:
+        raise QualificationError(str(error)) from error
+    if report["status"] != "pass":
         raise QualificationError("loss curve exceeds fixed bounds", metrics=report)
-    return {"status": "pass", **report}
+    return report
 
 
 class _GradientSink(torch.optim.Optimizer):
@@ -131,6 +121,7 @@ class BenchmarkBackward:
     """Time AMP housekeeping, while preserving the benchmark's no-update scope."""
 
     def __init__(self, model, policy):
+        self.model = model
         self.scaler = policy.scaler()
         self.sink = _GradientSink(model.parameters())
 
@@ -147,6 +138,30 @@ class BenchmarkBackward:
         self.scaler.step(self.sink)  # public unscale + finite check; step changes no weights
         self.scaler.update()
 
+    def prepare(self, call):
+        """Settle FP16 scaling on the restored timing input before its baseline.
+
+        Real-data qualification has its own scaler and different gradients.
+        No parameter update occurs here; GradScaler steps only the gradient sink.
+        """
+        attempts = []
+        for _ in range(MAX_SCALE_ATTEMPTS):
+            self.model.zero_grad(set_to_none=True)
+            previous_calls = self.sink.calls
+            scale = self.scaler.get_scale()
+            _, loss = call()
+            value = float(loss.detach())
+            if not math.isfinite(value) or value < 0:
+                raise QualificationError("non-finite loss while preparing benchmark scaling")
+            self.finish()
+            finite = self.sink.calls > previous_calls
+            attempts.append({"loss": value, "scale": scale, "finite_gradients": finite})
+            if finite:
+                self.model.zero_grad(set_to_none=True)
+                return {"status": "pass", "scope": "timing input; no parameter updates", "attempts": attempts,
+                        "scaler_state": self.scaler.state_dict()}
+        raise QualificationError("benchmark scaling did not produce finite gradients", attempts=attempts)
+
     def metadata(self):
         return {"enabled": self.scaler.is_enabled(), "state": self.scaler.state_dict(),
                 "scope": ("scale, backward, unscale, finite check, scale update; no optimizer update"
@@ -159,6 +174,7 @@ def preserved_state(model, policy):
     rng = torch.get_rng_state()
     api = getattr(torch, policy.device, None)
     gpu_rng = api.get_rng_state_all() if policy.device in ("cuda", "xpu") else None
+    mps_rng = api.get_rng_state() if policy.device == "mps" else None
     try:
         yield
     finally:
@@ -167,38 +183,102 @@ def preserved_state(model, policy):
         torch.set_rng_state(rng)
         if gpu_rng is not None:
             api.set_rng_state_all(gpu_rng)
+        if mps_rng is not None:
+            api.set_rng_state(mps_rng)
 
 
-def trajectory(model, forward, loss_fn, inputs, policy, *, autocast):
-    optimizer = torch.optim.SGD(model.parameters(), lr=CURVE_LEARNING_RATE, foreach=False)
+@contextmanager
+def strict_arithmetic():
+    """The f32 oracle is independent of the requested TF32/AMP policy."""
+    precision = torch.get_float32_matmul_precision()
+    matmul = torch.backends.cuda.matmul.allow_tf32
+    convolution = torch.backends.cudnn.allow_tf32
+    try:
+        torch.set_float32_matmul_precision("highest")
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        yield
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = matmul
+        torch.backends.cudnn.allow_tf32 = convolution
+        torch.set_float32_matmul_precision(precision)
+
+
+def training_plan(model_name, inputs, device, *, repeated=False):
+    workload = workload_for(model_name, repeated=repeated)
+    if workload["policy"] != REAL_TEXT:
+        return {"workload": workload, "train": [inputs] * workload["steps"]}
+    spec = load_fixture()
+
+    def batch(tokens):
+        # Match the benchmark's keys, shapes, strides and dtypes so data changes
+        # do not introduce an unbudgeted compiler specialization.
+        return {**inputs, "input_ids": torch.tensor([tokens[:-1]], dtype=torch.long, device=device),
+                "labels": torch.tensor([tokens[1:]], dtype=torch.long, device=device)}
+
+    return {"workload": workload, **{key: [batch(tokens) for tokens in spec[key]]
+                                     for key in ("train", "probe", "heldout")}}
+
+
+def trajectory(model, forward, loss_fn, inputs, policy, *, autocast, plan=None):
+    plan = plan or training_plan("", inputs, policy.device)
+    workload = plan["workload"]
+    optimizer = torch.optim.SGD(model.parameters(), lr=workload["learning_rate"], foreach=False)
     scaler = policy.scaler() if autocast else torch.amp.GradScaler(policy.device, enabled=False)
-    losses, attempts = [], []
+    record = {"optimizer": "SGD", "learning_rate": workload["learning_rate"], "losses": [],
+              "completed_updates": 0, "skipped_steps": 0, "scale_attempts": [], "overflow_attempts": 0}
+    real_text = workload["policy"] == REAL_TEXT
+    if real_text:
+        if any(isinstance(module, torch.nn.Dropout) and module.p for module in model.modules()):
+            raise ValueError("frozen real-text gate requires zero dropout")
+        parameter = next(p for name, p in model.named_parameters()
+                         if name.removeprefix("_orig_mod.") == "model.norm.weight")
+        initial = parameter.detach().cpu().clone()
+        record.update(checkpoints=[], parameter_check={"name": "model.norm.weight", "initial": initial.tolist()})
 
-    def loss_call():
+    def loss_call(batch):
         with policy.context() if autocast else nullcontext():
-            return loss_fn(forward(model, inputs), inputs)
+            return loss_fn(forward(model, batch), batch)
 
-    for _ in range(CURVE_STEPS):
-        try:
-            value, step_attempts = optimizer_update(optimizer, scaler, loss_call)
-        except QualificationError as error:
-            error.details.update(trajectory={"arithmetic": policy.name if autocast else "strict-f32",
-                                            "losses": losses, "completed_updates": len(losses),
-                                            "scale_attempts": attempts})
-            raise
-        losses.append(value)
-        attempts.append(step_attempts)
-    return losses, attempts, scaler.state_dict()
+    try:
+        for step in range(workload["steps"] + 1):
+            if real_text and step % workload["checkpoint_every"] == 0:
+                with torch.no_grad():
+                    checkpoint = {"step": step, **{f"{key}_losses": [float(loss_call(batch)) for batch in plan[key]]
+                                                  for key in ("probe", "heldout")}}
+                if any(not math.isfinite(x) or x < 0 for key in ("probe_losses", "heldout_losses") for x in checkpoint[key]):
+                    raise QualificationError("non-finite or negative evaluation loss")
+                record["checkpoints"].append(checkpoint)
+                print(f"[pytorch] {'candidate' if autocast else 'f32 reference'} real-text SGD: {step}/{workload['steps']}",
+                      file=sys.stderr, flush=True)
+            if step == workload["steps"]:
+                break
+            value, attempts = optimizer_update(optimizer, scaler, lambda: loss_call(plan["train"][step]))
+            record["losses"].append(value)
+            record["scale_attempts"].append(attempts)
+            record["overflow_attempts"] += len(attempts) - 1
+            record["completed_updates"] = step + 1
+        if real_text:
+            final = parameter.detach().cpu()
+            if not torch.isfinite(final).all():
+                raise QualificationError("non-finite parameter after real-text SGD")
+            record["parameter_check"].update(final=final.tolist(), changed=not torch.equal(initial, final))
+    except QualificationError as error:
+        error.details.update(trajectory={"arithmetic": (policy.name or "accelerated-f32") if autocast else "strict-f32",
+                                        **record})
+        raise
+    record["scaler_state"] = scaler.state_dict()
+    return record
 
 
-def prepare_reference(model, forward, loss_fn, inputs, policy, *, training=True, snapshot=None):
-    """Compute the f32 oracle before any AMP compilation/execution can affect it.
+def prepare_reference(model, forward, loss_fn, inputs, policy, *, training=True, snapshot=None, plan=None):
+    """Compute the f32 oracle before any candidate compilation/execution can affect it.
 
     Reuse the parameters and restore them in place; do not require a second
     GPU copy of a large model. Only the output tensor and small receipts survive.
     """
     reference = {}
-    with preserved_state(model, policy):
+    with preserved_state(model, policy), strict_arithmetic():
         model.zero_grad(set_to_none=True)
         with torch.set_grad_enabled(training and snapshot is not None):
             output = forward(model, inputs)
@@ -211,23 +291,24 @@ def prepare_reference(model, forward, loss_fn, inputs, policy, *, training=True,
         del output, loss
         if training:
             try:
-                reference["losses"], _, _ = trajectory(model, forward, loss_fn, inputs, policy, autocast=False)
+                reference["trajectory"] = trajectory(model, forward, loss_fn, inputs, policy, autocast=False, plan=plan)
             except QualificationError as error:
                 reference["training_failure"] = error.details
     return reference
 
 
-def qualify(model, candidate, forward, loss_fn, inputs, policy, *, training=True, snapshot=None, reference=None):
+def qualify(model, candidate, forward, loss_fn, inputs, policy, *, training=True, snapshot=None, reference=None, plan=None):
     """Qualify the requested candidate and restore parameters, buffers and RNG."""
     if reference is None:
-        reference = prepare_reference(model, forward, loss_fn, inputs, policy, training=training, snapshot=snapshot)
+        reference = prepare_reference(model, forward, loss_fn, inputs, policy, training=training, snapshot=snapshot, plan=plan)
+    plan = plan or training_plan("", inputs, policy.device)
     prepared = reference
     reference = prepared["output"]
     with preserved_state(model, policy):
         with torch.no_grad(), policy.context():
             actual = forward(candidate, inputs).detach().float().cpu()
         if actual.shape != reference.shape or not torch.isfinite(actual).all() or not torch.isfinite(reference).all():
-            raise QualificationError("AMP forward shape/non-finite failure")
+            raise QualificationError("accelerated forward shape/non-finite failure")
         error = (actual - reference).double()
         reference = reference.double()
         forward_report = {
@@ -239,10 +320,10 @@ def qualify(model, candidate, forward, loss_fn, inputs, policy, *, training=True
         }
         if (forward_report["rms_error"] > forward_report["rms_bound"]
                 or forward_report["max_abs_error"] > forward_report["max_abs_bound"]):
-            raise QualificationError("AMP forward exceeds fixed bounds", metrics=forward_report)
+            raise QualificationError("accelerated forward exceeds fixed bounds", metrics=forward_report)
         report = {"status": "pass", "forward": forward_report, "training": None,
                   "reference": "eager strict f32", "candidate": "requested execution mode",
-                  "scope": "untimed full-output and fixed-input SGD trajectory; state restored"}
+                  "scope": "untimed full-output and declared SGD workload; state restored"}
         if "correctness_reference" in prepared:
             report["correctness_reference"] = prepared["correctness_reference"]
         if training:
@@ -250,20 +331,18 @@ def qualify(model, candidate, forward, loss_fn, inputs, policy, *, training=True
                 if "training_failure" in prepared:
                     failure = prepared["training_failure"]
                     raise QualificationError(failure["message"], **{key: value for key, value in failure.items() if key != "message"})
-                actual_losses, attempts, scaler_state = trajectory(candidate, forward, loss_fn, inputs, policy, autocast=True)
+                actual = trajectory(candidate, forward, loss_fn, inputs, policy, autocast=True, plan=plan)
             except QualificationError as error:
                 report["status"] = "partial"
                 report["training"] = {"status": "failed", "policy": CURVE_POLICY,
-                                      "requested_updates": CURVE_STEPS, "failure": error.details}
+                                      "workload": plan["workload"], "requested_updates": plan["workload"]["steps"],
+                                      "failure": error.details}
                 return report
-            trajectory_report = {"optimizer": "SGD", "learning_rate": CURVE_LEARNING_RATE,
-                                 "reference_losses": prepared["losses"], "losses": actual_losses,
-                                 "skipped_steps": 0, "completed_updates": CURVE_STEPS,
-                                 "scale_attempts": attempts, "scaler_state": scaler_state,
-                                 "overflow_attempts": sum(len(step) - 1 for step in attempts)}
-            try:
-                report["training"] = {**compare_loss_curves(actual_losses, prepared["losses"]), **trajectory_report}
-            except QualificationError as error:
+            reference = prepared["trajectory"]
+            assessment = assess_trajectories(actual, reference, plan["workload"])
+            report["training"] = {**assessment["comparisons"]["training"], **actual, **assessment,
+                                  "workload": plan["workload"], "reference_losses": reference["losses"],
+                                  "reference_trajectory": reference}
+            if assessment["status"] != "pass":
                 report["status"] = "partial"
-                report["training"] = {"status": "failed", **error.details, **trajectory_report}
         return report

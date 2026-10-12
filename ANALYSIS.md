@@ -4,6 +4,71 @@ The evidence separates inefficient resident kernels from weight-representation
 and memory-placement costs. It does **not** establish a removable barrier-cost percentage.
 No new speed samples were collected during the post-OOM offline analysis.
 
+## Accelerated real-text qualification (October 12, 2026)
+
+Development v20 implements a common PyTorch training gate for `off`/TF32,
+FP16 and BF16 within the existing accelerated profile. SmolLM2-135M uses the
+same frozen 256-update real-text workload, fixed training probes and held-out
+blocks as the preceding investigation. The portable token fixture is bundled
+and hash checked. Other models retain their explicitly labelled 32-update
+synthetic numerical check. Native qualification and the separate cross-engine
+learning study are unchanged. See the [protocol](EXPERIMENT.md#development-v20-two-profiles).
+
+Fresh local integration runs retain the existing forward bounds, per-loss 2%
+bound and 1% curve relative-L2 limit. Each row below is one process with the
+requested execution mode, fresh compiler cache and the normal phase warmups;
+these are qualification diagnostics, not replicated performance comparisons.
+
+| GPU / arithmetic | Execution | Training curve L2 | Fixed-probe L2 | Held-out L2 | Result |
+| --- | --- | ---: | ---: | ---: | --- |
+| B570 / off | Eager, uncaptured | <0.0001% | <0.0001% | <0.0001% | All gates pass |
+| B570 / FP16 | Compiled, replay | 0.2272% | 0.4081% | 0.1561% | All gates pass |
+| B570 / BF16 | Compiled, replay | 0.5557% | **1.0018%** | 0.3875% | Probe fails; inference/latency retained |
+| RTX 5070 / TF32 | Compiled, replay | 0.2276% | 0.4084% | 0.1565% | All gates pass |
+| RTX 5070 / FP16 | Compiled, replay | 0.2255% | 0.4107% | 0.1521% | All gates pass |
+| RTX 5070 / BF16 | Compiled, replay requested | — | — | — | Forward gate fails; no timing |
+
+All complete real-text trajectories also pass the fixed learning requirements:
+at least 5% reduction in mean training-probe loss, at most 2% held-out loss
+increase, finite changed parameters and no skipped optimizer updates. B570
+BF16 still fails its separate probe-agreement bound; its proximity to 1% does
+not justify changing that bound. RTX BF16's maximum forward error is
+**1.030688** against **0.727245**, although its RMS error passes. BF16 remains
+unqualified for these respective cells; capability-based `auto` does not
+silently switch to FP16.
+
+The optional repeated-synthetic diagnostic remains available through
+`scripts/amp_reference.py --repeated-batch`. A new RTX eager TF32 run still
+fails it at **5.4673%** training-curve relative L2 while retaining qualified
+inference and latency. The paired collector rejects this diagnostic as a
+substitute for SmolLM2's real-text gate. It recomputes training, probe and
+held-out decisions from raw trajectories rather than trusting status labels.
+The f32 oracle is now prepared before compilation for every accelerated setting,
+with TF32 temporarily disabled and all arithmetic flags restored afterward.
+
+Integration exposed one additional scaler issue. The first B570 FP16 compiled
+run passed the real-text curves, then overflowed on the restored synthetic
+benchmark input. Transferring the real-text scaler state was inappropriate for
+that input's larger gradients. The timing scaler now settles on its own input
+before the repeatability baseline, without updating parameters. The successful
+B570 replay run records an overflowing attempt at scale 32768 and finite
+gradients at 16384. Full-gradient repeatability and consecutive replay gates
+then pass on both GPUs. The original failed integration attempt is retained.
+
+The compiled SmolLM2 reference-plus-learning qualification takes **28.9 s**
+on B570 FP16 and **15.2–15.7 s** on RTX TF32/FP16, separate from compilation,
+replay preparation, warmup and step timing. The primary matrix is still
+**30 pairs per GPU**; no extra mandatory dtype columns were added. These runs
+do not qualify the remaining workloads or remote devices for a new cohort.
+
+Evidence is in `../inferena-results/accelerated-realdata-20261012/`: raw curves,
+phase receipts, watchdog records, `summary.json`/`.csv`, reproduction scripts
+and eight verified source archives. `study-notes.json` identifies the superseded
+scaler attempt. `SHA256SUMS` verifies 68 artifacts. CPU regression tests cover
+state/flag restoration, scaler preparation, independent pre-compilation oracles,
+fixture integrity, missing updates, probe failures and diagnostic exclusion;
+the harness tests and clippy also pass. The frozen v18 evidence is unchanged.
+
 ## Accelerated gap follow-up (October 12, 2026)
 
 The follow-up separates batch diversity from trajectory length and tests

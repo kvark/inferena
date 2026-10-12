@@ -112,6 +112,52 @@ class AmpTest(unittest.TestCase):
         with self.assertRaises(QualificationError):
             compare_tensors(changed, reference)
 
+    def test_benchmark_scaler_settles_before_repeatability_without_parameter_updates(self):
+        policy = AmpPolicy("cpu", "fp16")
+        model = torch.nn.Linear(1, 1, bias=False)
+        with torch.no_grad():
+            model.weight.fill_(1)
+        initial = model.weight.detach().clone()
+        backward = BenchmarkBackward(model, policy)
+        def call():
+            with policy.context():
+                output = model(torch.tensor([[2.0]]))
+                loss = output.float().square().mean()
+            backward.capture_backward(loss)
+            return output, loss
+        report = backward.prepare(call)
+        self.assertEqual(report["status"], "pass")
+        self.assertGreater(len(report["attempts"]), 1)
+        self.assertTrue(report["attempts"][-1]["finite_gradients"])
+        self.assertTrue(all(not attempt["finite_gradients"] for attempt in report["attempts"][:-1]))
+        torch.testing.assert_close(model.weight, initial, rtol=0, atol=0)
+        self.assertIsNone(model.weight.grad)
+
+    def test_real_text_qualification_restores_state_and_uses_diverse_batches(self):
+        from amp import training_plan
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.model = torch.nn.Module()
+                self.model.norm = torch.nn.LayerNorm(576, bias=False)
+                self.seen = set()
+            def forward(self, batch):
+                self.seen.add(tuple(batch["input_ids"].flatten().tolist()))
+                return self.model.norm.weight
+        model = Model()
+        initial = model.model.norm.weight.detach().clone()
+        policy = AmpPolicy("cpu", "")
+        inputs = {"input_ids": torch.arange(128).reshape(1, -1), "labels": torch.arange(1, 129).reshape(1, -1)}
+        plan = training_plan("SmolLM2-135M", inputs, "cpu")
+        rng = torch.get_rng_state().clone()
+        report = qualify(model, model, lambda m, batch: m(batch), lambda output, _: output.square().sum(),
+                         inputs, policy, plan=plan)
+        self.assertEqual(report["training"]["status"], "pass")
+        self.assertEqual(report["training"]["completed_updates"], 256)
+        self.assertGreater(len(model.seen), 185)
+        torch.testing.assert_close(model.model.norm.weight, initial, rtol=0, atol=0)
+        torch.testing.assert_close(torch.get_rng_state(), rng, rtol=0, atol=0)
+
     @unittest.skipUnless(torch.cuda.is_available() or torch.xpu.is_available(), "CUDA/HIP/XPU required")
     def test_compiled_amp_replay_keeps_scaling_live_and_does_not_update_parameters(self):
         from execution import capture_phase, graph_backend, synchronize
@@ -187,11 +233,11 @@ class AmpTest(unittest.TestCase):
                 _bench("test", {"type": "whisper"}, "cpu", None)
             record = json.loads(output.getvalue())
         self.assertEqual(record["status"], "ok")
-        self.assertEqual(record["protocol"]["name"], "inferena-graph-replay-v9")
+        self.assertEqual(record["protocol"]["name"], "inferena-graph-replay-v10")
         self.assertEqual(record["precision"]["comparison_class"], "accelerated")
         self.assertEqual(record["correctness_reference"]["precision"], "strict-f32")
         self.assertIsNotNone(record["correctness_reference"]["outputs"]["grad_norm"])
-        self.assertEqual(record["execution"]["amp_qualification"]["training"]["status"], "pass")
+        self.assertEqual(record["execution"]["precision_qualification"]["training"]["status"], "pass")
         self.assertFalse(record["execution"]["gradient_scaler"]["enabled"])
         import copy
         from pathlib import Path
@@ -200,7 +246,7 @@ class AmpTest(unittest.TestCase):
         from amp_reference import check_record
         check_record(record, "test", "bf16", "eager", "cpu")
         for mutate in (lambda r: r["precision"].update(comparison_class="reduced-input-f32-accumulate"),
-                       lambda r: r["execution"]["amp_qualification"]["training"].update(completed_updates=31),
+                       lambda r: r["execution"]["precision_qualification"]["training"].update(completed_updates=31),
                        lambda r: r["protocol"]["warmup"]["training"].update(seconds=2),
                        lambda r: r["timing_samples_ms"]["inference"].__setitem__(0, float("nan"))):
             changed = copy.deepcopy(record)
@@ -211,12 +257,18 @@ class AmpTest(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "no explicit whole-phase replay API"):
             _bench("test", {"type": "whisper"}, "cpu", None)
 
-        partial = copy.deepcopy(record["execution"]["amp_qualification"])
+        partial = copy.deepcopy(record["execution"]["precision_qualification"])
         partial["status"] = "partial"
-        partial["training"]["status"] = "failed"
+        from training_gate import assess_trajectories
+        curve = partial["training"]
+        curve["losses"] = [x * 1.1 for x in curve["losses"]]
+        for loss, attempts in zip(curve["losses"], curve["scale_attempts"]):
+            attempts[-1]["loss"] = loss
+        assessment = assess_trajectories(curve, curve["reference_trajectory"], curve["workload"])
+        curve.update(assessment["comparisons"]["training"], **assessment)
         with patch.dict(os.environ, env), patch("bench.load_model", return_value=model), \
                 patch("bench.prepare_inputs", return_value={"input_features": torch.ones(1, 4)}), \
-                patch("bench._measure_call", side_effect=measure), patch("bench.qualify_amp", return_value=partial):
+                patch("bench._measure_call", side_effect=measure), patch("bench.qualify_precision", return_value=partial):
             output = io.StringIO()
             with redirect_stdout(output):
                 _bench("test", {"type": "whisper"}, "cpu", None)
@@ -224,6 +276,68 @@ class AmpTest(unittest.TestCase):
         self.assertEqual(check_record(failed_training, "test", "bf16", "eager", "cpu"),
                          {"inference": "pass", "latency": "pass", "training": "failed"})
         self.assertIsNone(failed_training["outputs"]["grad_norm"])
+
+    def test_f32_oracle_disables_tf32_and_restores_requested_flags_on_failure(self):
+        from amp import prepare_reference
+        policy = AmpPolicy("cpu", "")
+        model = torch.nn.Linear(4, 2)
+        previous = (torch.get_float32_matmul_precision(), torch.backends.cudnn.allow_tf32)
+        try:
+            torch.set_float32_matmul_precision("high")
+            torch.backends.cudnn.allow_tf32 = True
+            def forward(current, batch):
+                self.assertEqual(torch.get_float32_matmul_precision(), "highest")
+                self.assertFalse(torch.backends.cuda.matmul.allow_tf32)
+                self.assertFalse(torch.backends.cudnn.allow_tf32)
+                raise RuntimeError("oracle failure")
+            with self.assertRaisesRegex(RuntimeError, "oracle failure"):
+                prepare_reference(model, forward, lambda y, _: y.mean(), torch.ones(1, 4), policy)
+            self.assertEqual(torch.get_float32_matmul_precision(), "high")
+            self.assertTrue(torch.backends.cuda.matmul.allow_tf32)
+            self.assertTrue(torch.backends.cudnn.allow_tf32)
+        finally:
+            torch.set_float32_matmul_precision(previous[0])
+            torch.backends.cudnn.allow_tf32 = previous[1]
+
+    def test_accelerated_off_requires_the_training_gate_and_f32_oracle(self):
+        from contextlib import redirect_stdout
+        import io
+        import json
+        from bench import _bench
+        from precision import check_precision_qualification
+        model = torch.nn.Linear(4, 2)
+        env = {"INFERENA_AUTOCAST": "off", "INFERENA_STRICT": "0", "INFERENA_TORCH_MODE": "eager",
+               "INFERENA_GRAPH_REPLAY": "0"}
+        def measure(fn, *_, before=None):
+            if before is not None:
+                before()
+            return fn(), [1.0] * 20, {"runs": 5, "seconds": 10.0}
+        with patch.dict(os.environ, env), patch("bench.load_model", return_value=model), \
+                patch("bench.prepare_inputs", return_value={"input_features": torch.ones(1, 4)}), \
+                patch("bench._measure_call", side_effect=measure):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                _bench("test", {"type": "whisper"}, "cpu", None)
+            record = json.loads(output.getvalue())
+        self.assertIsNone(record["precision"]["autocast"])
+        self.assertEqual(check_precision_qualification(record)["training"], "pass")
+        del record["execution"]["precision_qualification"]
+        with self.assertRaises(KeyError):
+            check_precision_qualification(record)
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            receipt = Path(directory) / "qualification.json"
+            with patch.dict(os.environ, {**env, "INFERENA_PRECISION_REPORT": str(receipt)}), \
+                    patch("bench.load_model", return_value=model), \
+                    patch("bench.prepare_inputs", return_value={"input_features": torch.ones(1, 4)}), \
+                    patch("bench.qualify_precision", side_effect=QualificationError("forward failure")), \
+                    self.assertRaisesRegex(QualificationError, "forward failure"):
+                _bench("test", {"type": "whisper"}, "cpu", None)
+            failed = json.loads(receipt.read_text())
+            self.assertEqual(failed["status"], "failed")
+            self.assertGreater(failed["reference_preparation_seconds"], 0)
+            self.assertGreaterEqual(failed["elapsed_seconds"], 0)
 
     def test_candidate_compilation_cannot_change_the_f32_oracle(self):
         from contextlib import redirect_stdout
@@ -258,7 +372,7 @@ class AmpTest(unittest.TestCase):
                 _bench("test", {"type": "whisper"}, "cpu", None)
             record = json.loads(output.getvalue())
         self.assertAlmostEqual(record["correctness_reference"]["outputs"]["grad_norm"], math.sqrt(2.5), places=6)
-        self.assertEqual(record["execution"]["amp_qualification"]["training"]["status"], "failed")
+        self.assertEqual(record["execution"]["precision_qualification"]["training"]["status"], "failed")
         self.assertIsNone(record["timings"]["training_ms"])
         self.assertIsNotNone(record["timings"]["inference_ms"])
 

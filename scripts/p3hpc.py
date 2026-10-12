@@ -21,7 +21,8 @@ import time
 import tomllib
 
 from collection import run_recorded, write_json
-from precision import check_amp_qualification
+from precision import check_precision_qualification
+from training_gate import FIXTURE, FIXTURE_SHA256, load_fixture, workload_for
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS = ("SmolLM2-135M", "SmolVLA", "StableDiffusion", "ResNet-50", "Whisper-tiny")
@@ -258,7 +259,7 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
         if record["protocol"]["warmup_runs"] != 5:
             raise ValueError("unexpected warmup count")
         protocol = record["protocol"]
-        expected = "inferena-paper-v5" if engine == "meganeura" else "inferena-graph-replay-v9"
+        expected = "inferena-paper-v5" if engine == "meganeura" else "inferena-graph-replay-v10"
         if protocol.get("name") != expected or protocol.get("warmup_seconds") != WARMUP_SECONDS:
             raise ValueError("runner did not declare the workload warmup policy")
         if protocol.get("synthetic_parameter_init") != SYNTHETIC_PARAMETER_INIT:
@@ -296,10 +297,10 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
         raise ValueError("requested accelerated autocast dtype did not execute")
     if hasattr(args, "autocast_dtype") and pt["precision"].get("autocast_requested") != (args.autocast if precision == "accelerated" else "off"):
         raise ValueError("autocast request differs from the declared policy")
-    if dtype is not None:
-        check_amp_qualification(pt)
+    if pt["precision"]["comparison_class"] == "accelerated":
+        check_precision_qualification(pt)
         if pt["correctness_reference"]["outputs"]["output_shape"] != mg["outputs"]["output_shape"]:
-            raise ValueError("AMP oracle shape differs from the native output")
+            raise ValueError("f32 oracle shape differs from the native output")
     if (mg.get("optimizer", {}).get("measured_construction") is not True
             or mg["optimizer"].get("mode") != "egglog-outlined"):
         raise ValueError("Meganeura calibrated egglog construction must be enabled")
@@ -498,6 +499,9 @@ def validate_replicated_gradients(groups, replicates):
 def input_hashes(models):
     """Refuse unpinned checkpoints, including accidentally mixed base/Instruct files."""
     hashes = {"Cargo.lock": hashlib.sha256((ROOT / "Cargo.lock").read_bytes()).hexdigest()}
+    if "SmolLM2-135M" in models:
+        load_fixture()
+        hashes[str(FIXTURE.relative_to(ROOT))] = FIXTURE_SHA256
     for model in models:
         if model not in SMOLLM2_REVISIONS:
             continue
@@ -585,7 +589,7 @@ def main():
         "INFERENA_MAX_SUBMISSION_CHUNKS",
         "INFERENA_KERNEL_MEMO_DIR",
         "INFERENA_SDPA", "INFERENA_REFERENCE_DIAGNOSTIC",
-        "INFERENA_AUTOCAST", "INFERENA_AMP_REPORT",
+        "INFERENA_AUTOCAST", "INFERENA_PRECISION_REPORT", "INFERENA_TRAINING_GATE",
     )]
     if overrides:
         parser.error(f"remove experimental/profiling overrides: {', '.join(overrides)}")
@@ -655,7 +659,7 @@ def main():
                INFERENA_WARMUP_SECONDS=str(WARMUP_SECONDS))
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v19", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v20", "source": revision,
         "started_at": started_at,
         "host": {"name": socket.gethostname(), "os": platform.system(),
                  "kernel": platform.release(), "platform": platform.platform(), "arch": platform.machine(),
@@ -665,7 +669,8 @@ def main():
             "autocast_requested": args.autocast, "pytorch_autocast": args.autocast_dtype,
             "selection": "capability-based-v1; no timing or numerical fallback",
             "native": "existing qualified reduced-input paths; f32 storage",
-            "correctness_reference": "untimed eager strict f32 when using AMP"}},
+            "correctness_reference": "untimed eager strict f32 for every accelerated arithmetic policy",
+            "pytorch_training_gates": {model: workload_for(model) for model in args.models}}},
         "model_revisions": {name: SMOLLM2_REVISIONS[name] for name in args.models if name in SMOLLM2_REVISIONS},
         "meganeura": dependency, "python": sys.version, "packages": packages,
         "torch": {"version": torch.__version__, "git_version": torch.version.git_version,

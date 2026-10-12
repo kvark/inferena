@@ -123,20 +123,20 @@ the PyTorch choice before collection; the default `auto` selects by capability,
 with no retry in another dtype after a numerical or compilation failure. Strict remains f32. CPU-only
 correctness references remain f32 and supply no GPU comparison timings.
 
-AMP uses f32 losses and full-output/32-update loss-curve gates inside the
-accelerated run. An untimed eager f32 oracle supplies the cross-engine output
-and gradient checks. Graph replay includes forward/loss/scaled backward;
-scaler housekeeping runs after replay and is included in the timing.
-`scripts/amp_reference.py` is an optional dtype diagnostic, not extra required
-benchmark columns.
-`scripts/convergence.py` separately runs 256 real optimizer updates on
-SmolLM2-135M text, with identical batches across engines. See the
-[AMP and convergence protocol](EXPERIMENT.md#amp-reference-and-real-data-convergence).
+Accelerated PyTorch uses a strict-f32 forward oracle and a common training
+gate for TF32, BF16 and FP16. SmolLM2-135M runs 256 matched real-text updates,
+with fixed probe and held-out checks; other models retain the 32-update
+synthetic numerical check. Qualification restores the checkpoint before timing.
+The f32 oracle also supplies cross-engine output and gradient checks.
+Graph replay includes forward/loss/scaled backward; scaler housekeeping runs
+after replay inside the measured step.
 
-The development collection protocol is v19. The completed October 11 v18
-cohort retains its original f32-storage accelerated policy; use its frozen
-source bundle for additional matching machines. Do not mix those records with
-the new AMP-capable profile.
+The development collection protocol is **v20**, still 30 pairs per GPU.
+`scripts/amp_reference.py` provides optional dtype and `--repeated-batch`
+diagnostics; `scripts/convergence.py` separately compares both engines on real
+text. See the [current protocol](EXPERIMENT.md#development-v20-two-profiles).
+The completed October 11 v18 cohort retains its frozen source and arithmetic
+policy. Keep its records separate from the new qualification protocol.
 
 ## Prerequisites
 

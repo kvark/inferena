@@ -2,7 +2,7 @@
 """PyTorch benchmark runner for inferena.
 
 Times forward and forward/loss/backward on a given model and prints a JSON
-result matching BenchResult. AMP optimizer updates belong to untimed qualification.
+result matching BenchResult. Qualification optimizer updates belong to untimed qualification.
 
 Features inspired by meganeura's bench/compare.sh (PR #30):
 - torch.compile with fresh inductor cache for fair compile-time measurement
@@ -30,7 +30,7 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from execution import QualificationError, capture_phase, graph_backend, profile_phase, synchronize, nsys_range
 from budget import compilation_budget, save
-from amp import AmpPolicy, BenchmarkBackward, qualify as qualify_amp, prepare_reference, resolve_autocast
+from amp import AmpPolicy, BenchmarkBackward, qualify as qualify_precision, prepare_reference, resolve_autocast, training_plan
 
 
 # --- Conditioned latent-diffusion U-Net (matches meganeura::models::sd_unet) ---
@@ -1441,7 +1441,7 @@ def attention_context(device, model_type=None):
 
 
 def correctness_snapshot(model_type, model, output, loss, training):
-    """Untimed strict-f32 oracle, kept separate from the measured AMP outputs."""
+    """Untimed strict-f32 oracle, kept separate from the measured accelerated outputs."""
     values = output.detach().float().cpu().flatten()
     count = min(256, values.numel())
     samples = (values.tolist() if count == values.numel() else
@@ -1484,7 +1484,7 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
     requested_autocast = os.environ.get("INFERENA_AUTOCAST", "auto")
     amp = AmpPolicy(dev, resolve_autocast(dev, requested_autocast, strict=strict))
     precision_mode = "strict-f32" if strict else "accelerated"
-    protocol = "inferena-graph-replay-v9"
+    protocol = "inferena-graph-replay-v10"
     warmup_runs = int(os.environ.get("INFERENA_WARMUP_RUNS", "5"))
     measurement_runs = int(os.environ.get("INFERENA_MEASUREMENT_RUNS", "20"))
     if warmup_runs < 0 or measurement_runs < 1:
@@ -1557,20 +1557,26 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
         }
     )
 
+    gate_request = os.environ.get("INFERENA_TRAINING_GATE", "auto")
+    if gate_request not in ("auto", "repeated-synthetic"):
+        raise ValueError("INFERENA_TRAINING_GATE must be auto or repeated-synthetic")
+    gate_plan = (training_plan(model_name, prepare_inputs(model_type, eager_model, dev), dev,
+                               repeated=gate_request == "repeated-synthetic")
+                 if not strict and training_requested else None)
     model = eager_model
-    amp_reference = None
+    precision_reference = None
     oracle_seconds = 0.0
-    if amp.dtype is not None:
+    if not strict:
         started = time.perf_counter()
-        amp_reference = prepare_reference(
+        precision_reference = prepare_reference(
             eager_model,
             lambda current, batch: _benchmark_logits(model_type, _benchmark_forward(model_type, current, batch)),
             lambda output, batch: _benchmark_loss(model_type, output, batch),
             prepare_inputs(model_type, eager_model, dev), amp, training=training_requested,
-            snapshot=lambda *args: correctness_snapshot(model_type, *args),
+            snapshot=lambda *args: correctness_snapshot(model_type, *args), plan=gate_plan,
         )
         oracle_seconds = time.perf_counter() - started
-        amp_reference["correctness_reference"]["prepared_before_amp_compilation"] = True
+        precision_reference["correctness_reference"]["prepared_before_candidate_compilation"] = True
     compile_s = 0.0
     if mode != "eager":
         compile_cache = clear_compile_cache()
@@ -1616,19 +1622,23 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
         execution["compile_skipped"] = "explicit eager mode"
 
     inputs = prepare_inputs(model_type, model, dev)
-    if amp.dtype is not None:
+    if not strict:
         qualification_started = time.perf_counter()
         try:
-            execution["amp_qualification"] = qualify_amp(
-                eager_model, model,
-                lambda current, batch: _benchmark_logits(model_type, _benchmark_forward(model_type, current, batch)),
-                lambda output, batch: _benchmark_loss(model_type, output, batch),
-                inputs, amp, training=training_requested,
-                reference=amp_reference,
-            )
+            # All phase specializations must have been compiled within the
+            # declared budget; varying token values may not trigger more work.
+            with torch.compiler.set_stance("fail_on_recompile") if execution["compiled"] else nullcontext():
+                execution["precision_qualification"] = qualify_precision(
+                    eager_model, model,
+                    lambda current, batch: _benchmark_logits(model_type, _benchmark_forward(model_type, current, batch)),
+                    lambda output, batch: _benchmark_loss(model_type, output, batch),
+                    inputs, amp, training=training_requested,
+                    reference=precision_reference, plan=gate_plan,
+                )
         except QualificationError as error:
             error.details["elapsed_seconds"] = time.perf_counter() - qualification_started
-            if path := os.environ.get("INFERENA_AMP_REPORT"):
+            error.details["reference_preparation_seconds"] = oracle_seconds
+            if path := os.environ.get("INFERENA_PRECISION_REPORT"):
                 save(Path(path), {"status": "failed", **error.details})
             if path := os.environ.get("INFERENA_PREPARATION_REPORT"):
                 path = Path(path)
@@ -1636,15 +1646,14 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
                 preparation["qualification_failure"] = {**error.details, "phase": "inference"}
                 save(path, preparation)
             raise
-        execution["amp_qualification"]["elapsed_seconds"] = time.perf_counter() - qualification_started
-        execution["amp_qualification"]["reference_preparation_seconds"] = oracle_seconds
-        del amp_reference
-        if path := os.environ.get("INFERENA_AMP_REPORT"):
-            save(Path(path), execution["amp_qualification"])
-        if training_requested and execution["amp_qualification"]["training"]["status"] != "pass":
-            execution["amp_training_failure"] = execution["amp_qualification"]["training"]
-        elif training_requested and amp.name == "fp16":
-            backward.scaler.load_state_dict(execution["amp_qualification"]["training"]["scaler_state"])
+        execution["precision_qualification"]["elapsed_seconds"] = time.perf_counter() - qualification_started
+        execution["precision_qualification"]["reference_preparation_seconds"] = oracle_seconds
+        del precision_reference
+        if path := os.environ.get("INFERENA_PRECISION_REPORT"):
+            save(Path(path), execution["precision_qualification"])
+        if training_requested and execution["precision_qualification"]["training"]["status"] != "pass":
+            execution["training_precision_failure"] = execution["precision_qualification"]["training"]
+    del gate_plan
 
     def inference_call():
         with torch.no_grad(), amp.context():
@@ -1655,6 +1664,8 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
             execution["graph_replay"]["phases"][name] = {"status": "not-attempted"}
             return None
         try:
+            if training_model is not None and amp.name == "fp16":
+                execution["benchmark_scaling_preparation"] = backward.prepare(fn)
             fn, report = capture_phase(fn, training_model, stream=stream,
                                        reduced_precision=precision["reduced_precision_allowed"],
                                        device=dev, capture=use_graphs,
@@ -1700,12 +1711,12 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
         return _benchmark_logits(model_type, outputs), step_loss
 
     training_samples = None
-    if "amp_training_failure" in execution:
+    if "training_precision_failure" in execution:
         train_call = None
         execution["graph_replay"]["phases"]["training"] = {
             "status": "failed", "failure": {"kind": "numerical", "phase": "training",
-                "message": "AMP training precision gate failed; checkpoint restored",
-                "gate": execution["amp_training_failure"]},
+                "message": "accelerated training precision gate failed; checkpoint restored",
+                "gate": execution["training_precision_failure"]},
         }
     elif training_requested:
         train_call = prepare_phase("training", train_call, model)
@@ -1746,7 +1757,7 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
     inference_summary = _timing_summary(inference_samples)
     training_summary = _timing_summary(training_samples) if training_samples is not None else None
     latency_summary = _timing_summary(latency_samples) if latency_samples is not None else None
-    if "amp_training_failure" in execution and "failure" not in execution:
+    if "training_precision_failure" in execution and "failure" not in execution:
         execution["failure"] = execution["graph_replay"]["phases"]["training"]["failure"]
     precision["torch_float32_matmul_precision"] = (
         torch.get_float32_matmul_precision()
@@ -1855,7 +1866,7 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
             profiles[name] = profile_phase(fn, path, samples, before, device=dev)
 
     result = {
-        "status": "partial" if "failure" in execution or "amp_training_failure" in execution else "ok",
+        "status": "partial" if "failure" in execution or "training_precision_failure" in execution else "ok",
         "framework": "pytorch",
         "framework_rev": torch.__version__,
         "model": model_name,
@@ -1878,7 +1889,9 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
             "training_scope": (("forward + f32 loss + scaled backward + GradScaler housekeeping; no optimizer update"
                                 if amp.name == "fp16" else "forward + loss + backward; no optimizer update")
                                if training_requested else None),
-            "diagnostic": "INFERENA_NSYS" in os.environ or os.environ.get("INFERENA_REFERENCE_DIAGNOSTIC") == "1",
+            "diagnostic": ("INFERENA_NSYS" in os.environ or os.environ.get("INFERENA_REFERENCE_DIAGNOSTIC") == "1"
+                           or gate_request == "repeated-synthetic"),
+            "training_gate": gate_request,
             "timing_scope": ("synchronized host wall time; resident inputs; no output readback; includes GradScaler finite-check synchronization"
                              if amp.name == "fp16" else "synchronized host wall time; resident inputs; no readback"),
             "gradient_reset": (
@@ -1891,7 +1904,7 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
             ),
         },
         "precision": precision,
-        "correctness_reference": execution.get("amp_qualification", {}).get("correctness_reference"),
+        "correctness_reference": execution.get("precision_qualification", {}).get("correctness_reference"),
         "timings": {
             "compile_s": round(compile_s, 3),
             "inference_ms": round(inference_summary["median"], 3),

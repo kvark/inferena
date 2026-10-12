@@ -1,67 +1,84 @@
 # P3HPC paired collection
 
-The development collector now uses **v19**, with exactly two profiles:
-`strict` and `accelerated` (practical). The existing October 11 cohort described
-below is frozen at **v18** and must still be reproduced from its source bundle.
-An AMP-capable accelerated result is a new protocol, not a relabelled v18 row.
+The development collector uses **v20**, with exactly two profiles: `strict`
+and `accelerated` (practical). The October 11 cohort below remains frozen at
+**v18**. V19 introduced AMP; v20 changes accelerated training qualification and
+must not be combined with either earlier protocol's records.
 
-## Development v19: two profiles
+## Development v20: two profiles
 
-Strict retains the f32 arithmetic and correctness contract. Accelerated permits
-AMP and bf16/fp16 storage and arithmetic alongside existing hardware paths.
-The two engines may use different internal dtypes; receipts record the actual
-storage, arithmetic, loss dtype and scaling policy. Meganeura still uses its
-existing f32-storage implementation, with eligible f16 cooperative inputs;
-this change does not implement native f16 activation storage or training.
-
-The primary command still collects five models × two profiles × three paired
-replicates: **30 pairs per GPU**, with no dtype axis. PyTorch's default
+Strict retains its f32 arithmetic and correctness contract. Accelerated permits
+AMP and bf16/fp16 arithmetic alongside existing hardware paths. PyTorch's
 `--autocast auto` selects native bf16 on CUDA/HIP/XPU when supported and fp16
-otherwise; MPS uses fp16. `--autocast bf16`, `fp16` or `off` fixes an explicit
-policy for accelerated. `off` permits the earlier TF32/backend-high paths.
-Strict and the graphics-only CPU correctness oracle remain f32. The dtype is
-chosen before compilation and timing, recorded in the manifest, and never
-changed in response to a failed gate or a slow result.
+otherwise; MPS uses fp16. `--autocast bf16`, `fp16` or `off` fixes the setting;
+`off` permits TF32/backend-high arithmetic. Selection happens before execution
+and never changes in response to a failed gate or a slow result. Strict and
+the graphics-only CPU oracle remain f32. Receipts record the actual policy.
 
-AMP keeps parameters and loss reductions in f32. Before timing it must pass
-the existing full-output gate against eager strict f32 and, for training, the
-32-update SGD curve gate described below. The same untimed f32 model also
-emits the canonical output/loss/gradient receipt used to validate Meganeura.
-This reference work runs before AMP compilation, with the checkpoint and RNG
-restored afterward, so candidate compilation cannot affect the oracle;
-AMP gradients are not the cross-engine correctness oracle. Native gradient
-bounds and replicated checks remain unchanged. A failed AMP training curve
-leaves training empty while retaining qualified inference and latency.
+Meganeura retains f32 storage with eligible f16 cooperative inputs. Its existing
+full-tensor and cross-engine gradient gates are unchanged; this change does not
+add native f16 activation storage or replace native qualification with a learning
+gate. The separate convergence study still compares both engines on real text.
 
-Compiled AMP uses the same requested CUDA/HIP/XPU replay policy as strict.
-Forward, loss and scaled backward are captured; unscaling, finite checks and
-scale updates run after each replay **inside the measured training step**.
-Parameters are never updated during timing. Capture/compilation failures do
-not substitute an eager run. This follows the
-[PyTorch AMP capture pattern](https://docs.pytorch.org/docs/2.14/notes/cuda.html#usage-with-torch-cuda-amp).
-MPS retains explicitly uncaptured execution. Qualification compares all
-outputs and participating gradients on ordinary calls and consecutive replays.
+Every accelerated PyTorch setting, **including `off`/TF32**, now has the same
+untimed forward and training qualification. The full-output RMS and maximum
+error bounds remain `1e-6 + 0.02 * reference magnitude`. The eager strict-f32
+oracle runs before candidate compilation with TF32 disabled, then restores
+weights, buffers, RNG and arithmetic flags. Its initial output/loss/gradient
+receipt remains the cross-engine correctness reference.
 
-The unchanged 30-second native search, 120-second reference compilation,
-ten-second phase warmup and twenty samples remain in effect. Run count stays
-constant; AMP adds untimed f32-oracle and curve work to the accelerated run.
-The real-data convergence experiment is separate, not multiplied across the
-benchmark matrix. `scripts/amp_reference.py` remains an optional one-replicate
-dtype diagnostic; bf16/fp16 are settings within accelerated, not extra columns.
+For **SmolLM2-135M**, training qualification uses the frozen
+[data/smollm2-real-text-v1.json](data/smollm2-real-text-v1.json) fixture:
 
-V19 requires new backend qualification. In particular, the already recorded
-SmolLM2 synthetic-input AMP failures remain failures under the unchanged gates;
-an available dtype is not a guarantee that every model/phase qualifies.
-The [failure diagnosis](ANALYSIS.md#accelerated-failure-diagnosis-october-12-2026)
-isolates training divergence to rounding updated linear weights and the bf16
-forward failure to activation arithmetic. Repeated real-text batches still fail
-the short training-curve gate. The
-[follow-up](ANALYSIS.md#accelerated-gap-follow-up-october-12-2026) separates batch
-diversity from run length and evaluates explicit rounding corrections. Changing
-text batches passes the training-curve bounds on both local GPUs, but bf16 still
-misses the B570 fixed-probe bound. RTX's `off`/TF32 setting also fails the same
-32-update diagnostic, which the current runner only enforces for AMP. These
-diagnostics do not change the v19 policy.
+- 256 matched SGD updates, learning rate exactly f32(0.001), no momentum,
+  weight decay or clipping; identical varying 128-token batches for both curves.
+- Shakespeare's *A Midsummer Night's Dream*, the same Gutenberg snapshot,
+  tokenizer, seed-17 batch order and 80/20 token split as the earlier study.
+  Tokens and provenance are bundled and hash checked; qualification runs offline.
+- Four fixed training probes and four held-out blocks at updates 0, 64, 128,
+  192 and 256. Training, probe and held-out curves each require relative L2
+  at most 1% and every loss within `1e-6 + 0.02 * abs(reference)`.
+- Both trajectories must reduce mean fixed-probe loss by at least 5%, avoid
+  increasing mean held-out loss by more than 2%, and change a finite norm
+  parameter. The collector recomputes these gates from raw receipts.
+
+Other models retain the 32-update repeated-synthetic numerical gate, now applied
+to TF32 as well as AMP. Receipts explicitly identify it as synthetic; it is not
+real-data convergence evidence. Real datasets for those workloads remain future
+work. The earlier repeated-batch SmolLM2 test remains an optional diagnostic:
+
+```sh
+.venv-p3hpc/bin/python scripts/amp_reference.py --backend cuda --gpu 'RTX 5070' \
+  --models SmolLM2-135M --precisions off fp16 bf16 --mode eager \
+  --repeated-batch --results-dir ../accelerated-repeated-diagnostic
+```
+
+The paired collector rejects the diagnostic override. There are no additional
+required columns. A failed training gate preserves qualified inference and
+latency, records the failed curves, and leaves training timing empty. Bounds
+have not been loosened: the B570 bf16 probe failure and RTX bf16 forward failure
+identified in the [diagnosis](ANALYSIS.md#accelerated-gap-follow-up-october-12-2026)
+remain reasons to reject their respective cells.
+
+Compiled AMP uses the requested CUDA/HIP/XPU replay policy. Forward, loss and
+scaled backward are captured; unscaling, finite checks and scale updates run
+after replay **inside the measured step**. FP16 uses GradScaler and retries the
+same batch after overflow during qualification, up to eight attempts; BF16 does
+not scale. Weights and RNG are restored before timing, which performs no
+optimizer updates. The timing scaler is settled on the restored benchmark input
+before repeatability checks; its finite-gradient attempts are recorded separately
+from the real-text scaler. Qualification rejects unexpected recompilation after the
+compile budget. Failures do not substitute another dtype, compiler or replay mode.
+
+The default matrix remains five models × two profiles × three replicates:
+**30 pairs per GPU**. Native search stays 30 seconds, reference compilation
+120 seconds, phase warmup ten seconds and measurement twenty samples. V20 adds
+256 reference plus 256 candidate SGD updates and 80 total evaluation forwards
+to each accelerated SmolLM2-135M run, replacing its former 64 repeated-batch
+updates. Each other accelerated workload has 32 reference plus 32 candidate
+updates. Qualification times are recorded separately from compilation and step
+timings. `scripts/amp_reference.py` remains an optional dtype diagnostic;
+`scripts/convergence.py` remains the separate cross-engine learning study.
 
 ## Frozen October 11 v18 cohort
 
@@ -819,8 +836,9 @@ the superseded protocol notes and experiment revisions without binary artifacts.
 ## AMP reference and real-data convergence
 
 The October 11 evidence in this section consists of supplementary studies,
-separate from the paired v18 cohort. Development v19 integrates these AMP gates
-into accelerated, as described above; the historical observations are retained.
+separate from the paired v18 cohort. V19 integrated the repeated-input AMP
+gate into accelerated; v20 replaces it for SmolLM2-135M as described above.
+The historical observations below retain their original gates.
 `amp-bf16` and `amp-fp16` keep f32 parameters, use PyTorch autocast for eligible
 operations, and reduce losses in f32. Remaining f32 matmuls use `highest` with
 TF32 disabled. fp16 uses `torch.amp.GradScaler`; bf16 disables scaling.
@@ -838,13 +856,13 @@ same 120 s compilation deadline and five-call/ten-second warmup followed by
 twenty samples. One fresh process per condition is the diagnostic default; dtype
 order alternates. `--mode eager` is a labelled diagnostic. No capture or
 compiler failure substitutes another timing. `columns.csv` names each dtype,
-compiler mode, capture setting and replicate. The v19 paired collector supports
+compiler mode, capture setting and replicate. The development paired collector supports
 AMP replay with scaler bookkeeping outside capture and inside timing. The
 historical v3 AMP diagnostic used entirely uncaptured execution.
 
 Before timing, the requested compiled/eager candidate must match eager strict
 f32 on the entire forward output: per-tensor RMS and maximum error bounded by
-`1e-6 + 0.02 * reference magnitude`. Its training gate performs 32 SGD updates
+`1e-6 + 0.02 * reference magnitude`. The historical training gate performs 32 SGD updates
 at learning rate 0.001 on the fixed benchmark input. Every loss must be finite,
 no update may be skipped, per-step loss error is at most
 `1e-6 + 0.02 * abs(reference)`, and curve relative L2 is at most 0.01.

@@ -4,6 +4,138 @@ The evidence separates inefficient resident kernels from weight-representation
 and memory-placement costs. It does **not** establish a removable barrier-cost percentage.
 No new speed samples were collected during the post-OOM offline analysis.
 
+## Accelerated gap follow-up (October 12, 2026)
+
+The follow-up separates batch diversity from trajectory length and tests
+whether correcting half-precision rounding can satisfy the existing gates.
+It uses source `97a27f1`, the pinned SmolLM2-135M checkpoint and both local GPUs.
+These are supplementary diagnostics, outside the frozen v18 collection.
+
+**Changing batches explains the earlier real-data success.** A controlled
+comparison uses the same public-domain text corpus, SGD rate, token shapes and
+initial checkpoint, with math SDPA on both devices. One schedule repeats the
+first training block; the other consumes the frozen sequence of 256 blocks.
+Both use the existing 2% per-loss and 1% curve-L2 bounds. The 32-step comparison
+is a prefix of each 256-update trajectory.
+
+| GPU | Arithmetic | Repeated batch, 32 / 256 updates | Changing batches, 32 / 256 updates |
+| --- | --- | ---: | ---: |
+| B570 | fp16 | 1.664% / 6.161% | 0.078% / 0.228% |
+| B570 | bf16 | 3.465% / 16.594% | 0.199% / 0.547% |
+| RTX 5070 | fp16 | 1.663% / 6.155% | 0.075% / 0.227% |
+| RTX 5070 | bf16 | 3.444% / 15.316% | 0.196% / 0.562% |
+
+Values are curve L2 errors against the corresponding f32 schedule. All changing-
+batch training curves pass both bounds at both lengths; all repeated-batch
+curves fail. More updates alone do not resolve the discrepancy. Fixed probe and
+held-out evaluations at updates 0, 64, 128, 192 and 256 also pass for fp16 on both
+GPUs. BF16's B570 probe still fails at 1.037% L2; its held-out curve passes at
+0.369%. Both RTX bf16 evaluation curves pass (probe 0.976%, held-out 0.338%).
+Thus the changing-batch training result is not a blanket bf16 qualification.
+This limited corpus and short run do not establish general convergence quality.
+
+**Explicit rounding corrections close the eager arithmetic gap.** Each linear
+weight is split into its half-precision value and the remainder of its f32
+master value. FP16 adds one matrix product using the remainder, with f32 output
+addition. BF16 additionally splits the activation and adds its corresponding
+product; all three BF16 products return f32 tensors. The small remainder-times-
+remainder term is omitted. This decomposition follows the approach described
+by [Henry, Tang and Heinecke](https://arxiv.org/abs/1904.06376), with the exact
+experimental forward and backward definitions retained in `policies.py`.
+
+| GPU | Arithmetic | Ordinary AMP curve L2 | Corrected curve L2 | Corrected forward / curve |
+| --- | --- | ---: | ---: | --- |
+| B570 | fp16 | 5.450% | 0.154% | pass / pass |
+| B570 | bf16 | 13.111% | 0.219% | pass / pass |
+| RTX 5070 | fp16 | 5.412% | 0.186% | pass / pass |
+| RTX 5070 | bf16 | 12.834% | 0.123% | pass / pass |
+
+These use the original repeated synthetic input, 32 updates, and unchanged
+full-forward and training-curve bounds (B570 math SDPA; RTX auto SDPA). Merely
+returning f32 tensors from ordinary half-input linears leaves the training
+failure intact. Adding extra products constitutes a different arithmetic
+algorithm with additional work; these corrections are not ordinary autocast.
+Autograd uses straight-through derivatives for the high components and detaches
+the remainders. The f32-output matrix product requires an explicit backward in
+this pinned PyTorch build;
+the prototype uses half-precision backward products. Compiled two-layer tests
+check every gradient, graph replay, stable gradient-buffer addresses, unchanged
+parameters, and fp16 scale changes on both devices. Full-model compilation and
+capture must qualify independently of these eager results.
+
+**Default compilation erases the correction.** A minimal split reproducer
+returns nonzero eager weight remainders but all-zero compiled remainders for
+both fp16 and bf16 on both GPUs. The pinned Inductor source documents removal
+of intermediate downcast/upcast pairs by default. That transformation is
+incompatible with a decomposition that explicitly needs the rounded value.
+On RTX, `emulate_precision_casts=True` restores both splits exactly. On B570,
+the same setting restores the bf16 split but still returns zero fp16
+remainders; the option alone is not a portable fix. A second B570 reproducer
+returns the remainder in both f32 and fp16 and scales inputs by 1, 100 and
+10,000. Every compiled remainder is zero, including normal-sized f32 values
+whose eager maximum is 0.466. This rules out flushing only small fp16 output
+values. The retained generated Triton contains the explicit casts, narrowing
+the remaining problem to execution/compilation downstream of that code; the
+exact downstream pass is not yet identified.
+`repro_xpu_fp16_roundtrip.py` is a standalone three-value reproducer requiring
+only the tested PyTorch XPU wheel: `w - w.half().float()` for f32 `w=1000.25`
+returns 0.25 eagerly and zero when compiled, even with cast preservation requested.
+
+This explains why the default compiled RTX fp16 prototype passes forward but
+fails training at 5.408% curve L2, despite its eager result. The default bf16
+prototype instead fails forward (maximum error 0.734 versus a 0.727 bound),
+so no training curve or timings qualify. Both B570 prototypes exceed the
+unchanged 120-second cold-compile limit. Fresh strict controls compile in
+84.5 seconds on B570 and 46.8 seconds on RTX and qualify all three captured
+phases. Small relative-error tests on unchanged weights were insufficient to
+detect the removed correction; the targeted split test exposes it directly.
+
+Enabling cast preservation restores full-model qualification on RTX for both
+corrections. FP16's compiled curve error is 0.179%, with an 87.7-second compile;
+bf16's is 0.145%, with a 119.5-second compile, very close to the 120-second limit.
+These are explicit prototype settings, not a dtype or execution fallback.
+
+| RTX arithmetic | Inference | One-token latency | Forward/loss/backward |
+| --- | ---: | ---: | ---: |
+| Strict f32 | 6.064 ms | 1.637 ms | 15.606 ms |
+| Corrected fp16, casts preserved | 4.163 ms | 2.687 ms | 12.950 ms |
+| Corrected bf16, casts preserved | 6.327 ms | 3.554 ms | 19.262 ms |
+
+Each row is one fresh process with an empty compiler cache, qualified explicit
+graph replay, ten-second phase warmups and twenty samples. The fp16 training
+measurement includes scaler housekeeping; timed training uses fixed parameters.
+These diagnostic medians establish costs to investigate, not replicated cohort
+speedups. The bf16 correction costs
+more than strict f32 in every phase; fp16 improves inference/training here but
+increases one-token latency. Together with B570's compilation failures, this
+does not support adopting the prototypes as a common collection policy.
+
+**The older accelerated setting fails the same trajectory criterion on RTX.**
+With autocast off, backend `high` precision, TF32 enabled, and the NVIDIA
+environment override unset, the 32-update synthetic curve differs from eager
+strict f32 by 5.467% in eager execution and 5.432% after compilation. Both
+forward checks pass. B570's eager `high` control passes at 0.029%. The current
+runner only applies this trajectory gate when AMP is active, so selecting
+`--autocast off` bypasses a criterion that the RTX TF32 path would also fail.
+This does not retroactively invalidate the frozen v18 measurements: those
+measure forward/backward at fixed parameters and did not claim this SGD-curve
+qualification. It does mean that the next accelerated training contract should
+apply its learning-quality criterion consistently across arithmetic options.
+
+The next policy step should use changing real training batches and independent
+probes to qualify practical learning, while retaining the repeated-batch curve
+as an arithmetic stress test. BF16's remaining B570 probe failure shows why a
+passing changing-batch training curve alone is insufficient. Such a contract
+must be frozen and requalified before collection; it still needs only the
+existing strict and accelerated profiles.
+
+The diagnostic scripts, source archives, raw trajectories, exact token spec,
+watchdogs, tables and `gap-diagnosis.png`/`.svg` are retained under
+`../inferena-results/accelerated-gap-20261012`; `artifact-index.json` records
+source/checkpoint hashes and retained failed attempts. The correction prototypes
+remain outside the benchmark runtime. No gate, dtype selection or collection
+axis has changed.
+
 ## Accelerated failure diagnosis (October 12, 2026)
 
 The SmolLM2 failures have two distinct numerical causes. The new diagnostics

@@ -55,7 +55,13 @@ an available dtype is not a guarantee that every model/phase qualifies.
 The [failure diagnosis](ANALYSIS.md#accelerated-failure-diagnosis-october-12-2026)
 isolates training divergence to rounding updated linear weights and the bf16
 forward failure to activation arithmetic. Repeated real-text batches still fail
-the short training-curve gate. These diagnostics do not change the v19 policy.
+the short training-curve gate. The
+[follow-up](ANALYSIS.md#accelerated-gap-follow-up-october-12-2026) separates batch
+diversity from run length and evaluates explicit rounding corrections. Changing
+text batches passes the training-curve bounds on both local GPUs, but bf16 still
+misses the B570 fixed-probe bound. RTX's `off`/TF32 setting also fails the same
+32-update diagnostic, which the current runner only enforces for AMP. These
+diagnostics do not change the v19 policy.
 
 ## Frozen October 11 v18 cohort
 

@@ -68,6 +68,7 @@ class ExecutionTests(unittest.TestCase):
                 "INFERENA_TORCH_BACKEND": "cpu", "INFERENA_GRAPH_REPLAY": "0",
                 "INFERENA_WARMUP_RUNS": "0", "INFERENA_MEASUREMENT_RUNS": "1",
             }, clear=True))
+            stack.enter_context(patch.object(bench, "WARMUP_SECONDS", 0))
             stack.enter_context(patch.object(bench, "load_model", return_value=model))
             stack.enter_context(patch.object(bench, "prepare_inputs", return_value={}))
             stack.enter_context(patch.object(bench, "_benchmark_forward",
@@ -102,7 +103,7 @@ class ExecutionTests(unittest.TestCase):
     def test_shared_fixture_and_self_attention_inputs(self):
         weight = torch.empty(2, 3)
         bench._transposed_init(weight, "test.weight")
-        expected = torch.sin(torch.arange(6).float() * 0.01 + bench._name_seed("test.weight")) * 0.02
+        expected = bench._parameter_values("test.weight", 6)
         torch.testing.assert_close(weight.T.flatten(), expected)
         layer = bench.ExpertLayer(4, 4, 8, 2, 1, 2, False)
         inputs = torch.arange(8).float().reshape(1, 2, 4) / 4

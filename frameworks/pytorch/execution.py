@@ -7,6 +7,7 @@ from contextlib import nullcontext
 from pathlib import Path
 
 import torch
+import numpy as np
 
 REPLAY_RTOL = 1e-4
 REPLAY_ATOL = 1e-6
@@ -28,19 +29,23 @@ def compare_tensors(actual, reference, *, gradient=False, reduced_precision=Fals
     actual = actual.detach().cpu()
     if actual.shape != reference.shape or actual.dtype != reference.dtype:
         raise QualificationError("tensor shape or dtype changed")
-    if not torch.isfinite(actual).all() or not torch.isfinite(reference).all():
-        raise QualificationError("non-finite values")
     if not actual.numel():
         raise QualificationError("empty qualification tensor")
+    actual, reference = actual.numpy(), reference.numpy()
+    if not np.isfinite(actual).all() or not np.isfinite(reference).all():
+        raise QualificationError("non-finite values")
     error = actual - reference
     def rms(value):
-        return float(torch.linalg.vector_norm(value, dtype=torch.float64) / math.sqrt(value.numel()))
+        flat = value.ravel(order="K")
+        # Accumulate in f64 without allocating a full f64 copy of the tensor.
+        return math.sqrt(float(np.einsum("i,i->", flat, flat, dtype=np.float64)) / flat.size)
 
+    abs_error, abs_reference = np.abs(error), np.abs(reference)
     report = {
-        "elements": actual.numel(),
-        "max_abs_error": float(error.abs().max()),
+        "elements": actual.size,
+        "max_abs_error": float(abs_error.max()),
         "rms_error": rms(error),
-        "max_abs_reference": float(reference.abs().max()),
+        "max_abs_reference": float(abs_reference.max()),
         "rms_reference": rms(reference),
     }
     report["max_abs_bound"] = REPLAY_ATOL + REPLAY_RTOL * report["max_abs_reference"]
@@ -49,7 +54,7 @@ def compare_tensors(actual, reference, *, gradient=False, reduced_precision=Fals
         raise QualificationError("non-finite error metric")
     if not gradient:
         report["elementwise_mismatches"] = int(
-            (error.abs() > REPLAY_ATOL + REPLAY_RTOL * reference.abs()).sum())
+            (abs_error > REPLAY_ATOL + REPLAY_RTOL * abs_reference).sum())
     # Cancellation affects outputs as well as gradients. Bound sparse error
     # by the tensor maximum and diffuse error by RMS, without fitting either
     # bound to repeats. Every output/loss retains the tight gate in both modes;
@@ -218,8 +223,8 @@ def capture_phase(fn, model=None, stream=None, reduced_precision=False, device="
             synchronize(device)
             validation_start = time.perf_counter()
             if index == 0:
-                expected = tuple(t.detach().cpu().clone() for t in tensors(outputs))
-                gradients = {name: grad.detach().cpu().clone() for name, grad in parameter_gradients().items()}
+                expected = tuple(t.detach().to("cpu", copy=True) for t in tensors(outputs))
+                gradients = {name: grad.detach().to("cpu", copy=True) for name, grad in parameter_gradients().items()}
             else:
                 ordinary.append(check(outputs, f"uncaptured repeat {index}"))
             ordinary_validation_s += time.perf_counter() - validation_start

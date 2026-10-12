@@ -21,6 +21,7 @@ import shutil
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -28,6 +29,7 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from execution import QualificationError, capture_phase, graph_backend, profile_phase, synchronize, nsys_range
+from budget import compilation_budget, save
 
 
 # --- Conditioned latent-diffusion U-Net (matches meganeura::models::sd_unet) ---
@@ -91,7 +93,7 @@ class SpatialTransformerBlock(nn.Module):
         norm = self.norm1(x)
         x = x + self.self_attn(norm, norm)
         x = x + self.cross_attn(self.norm2(x), context)
-        x = x + self.ff.fc2(F.gelu(self.ff.fc1(self.norm3(x)), approximate="tanh"))
+        x = x + self.ff.fc2(F.gelu(self.ff.fc1(self.norm3(x)), approximate="none"))
         return x
 
 
@@ -413,6 +415,98 @@ def _xpu_actually_works() -> bool:
         return False
 
 
+class _IndexAddEmbeddingBackward(torch.autograd.Function):
+    """Dense embedding gradient through a widely supported PyTorch primitive."""
+
+    @staticmethod
+    def forward(ctx, indices, weight):
+        ctx.save_for_backward(indices)
+        ctx.weight_shape = weight.shape
+        return F.embedding(indices, weight)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (indices,) = ctx.saved_tensors
+        grad_weight = grad_output.new_zeros(ctx.weight_shape)
+        grad_weight.index_add_(
+            0,
+            indices.reshape(-1),
+            grad_output.reshape(-1, ctx.weight_shape[1]),
+        )
+        return None, grad_weight
+
+
+def _index_add_embedding_forward(embedding, indices):
+    return _IndexAddEmbeddingBackward.apply(indices, embedding.weight)
+
+
+def qualify_embedding_backward(model, dev: str):
+    """Probe the native dense backward and select an equivalent safe path."""
+    embedding = model.get_input_embeddings()
+    if not isinstance(embedding, nn.Embedding):
+        return {"status": "not-applicable", "reason": "input module is not nn.Embedding"}
+
+    rows = min(128, embedding.num_embeddings)
+    width = embedding.embedding_dim
+
+    def probe(forward):
+        weight = torch.zeros(
+            rows, width, dtype=embedding.weight.dtype, device=dev, requires_grad=True
+        )
+        indices = torch.arange(rows, device=dev)
+        forward(indices, weight).sum().backward()
+        synchronize(dev)
+        grad = weight.grad.detach()
+        matching = int((grad == 1).sum().cpu())
+        finite = bool(torch.isfinite(grad).all().cpu())
+        return matching, finite
+
+    total = rows * width
+    matching, finite = probe(lambda indices, weight: F.embedding(indices, weight))
+    native_matching = matching
+    report = {
+        "probe_shape": [rows, width],
+        "native_dense": {
+            "status": "pass" if matching == total and finite else "fail",
+            "matching_elements": matching,
+            "total_elements": total,
+            "finite": finite,
+        },
+        "selected": "native-dense",
+    }
+    if matching == total and finite:
+        return report
+
+    if (
+        embedding.padding_idx is not None
+        or embedding.max_norm is not None
+        or embedding.scale_grad_by_freq
+        or embedding.sparse
+    ):
+        raise RuntimeError(
+            "native embedding backward failed its probe and the input embedding "
+            "uses options unsupported by the dense index_add workaround"
+        )
+
+    matching, finite = probe(_IndexAddEmbeddingBackward.apply)
+    if matching != total or not finite:
+        raise RuntimeError("both native and index_add embedding backward failed qualification")
+    embedding.forward = _index_add_embedding_forward.__get__(embedding, type(embedding))
+    report["selected"] = "dense-index-add-autograd"
+    report["workaround"] = {
+        "status": "pass",
+        "matching_elements": matching,
+        "total_elements": total,
+        "finite": finite,
+    }
+    print(
+        f"[pytorch] native dense embedding backward matched {native_matching}/{total} "
+        "contract elements; selected qualified dense index_add backward",
+        file=sys.stderr,
+    )
+    return report
+
+
 def detect_device() -> str:
     requested = os.environ.get("INFERENA_TORCH_BACKEND")
     if requested:
@@ -568,17 +662,6 @@ def _load_pretrained(model_type: str, path_or_id: str):
         return AutoModelForCausalLM.from_pretrained(path_or_id, torch_dtype=torch.float32)
 
 
-SYNTHETIC_PARAMETER_INIT = "name-seeded-sine-v1"
-
-
-def _name_seed(name: str) -> float:
-    """Deterministic seed from parameter name — framework-independent init."""
-    h = 0
-    for c in name.encode('ascii'):
-        h = ((h * 31) + c) & 0xFFFFFFFF
-    return float(h % 10000)
-
-
 # Linear weight suffixes that meganeura stores as [in, out] (transposed vs PyTorch [out, in]).
 _TRANSPOSED_SUFFIXES = frozenset([
     'q_proj.weight', 'k_proj.weight', 'v_proj.weight', 'out_proj.weight',
@@ -586,34 +669,35 @@ _TRANSPOSED_SUFFIXES = frozenset([
 ])
 
 
-_INIT_SCALE = 0.02  # Standard transformer init scale (GPT-2/LLaMA convention)
+SYNTHETIC_PARAMETER_INIT = "name-index-uniform-v1"
+# Uniform variance is amplitude²/3; preserve the old 0.02 sinusoid's RMS.
+_INIT_AMPLITUDE = 0.024494898
 
 
-def _name_seeded_init(p, name, scale=_INIT_SCALE):
+def _parameter_values(name, count, amplitude=_INIT_AMPLITUDE):
+    """Match Rust's wrapping u32 hash and exact 24-bit f32 conversion on CPU."""
+    seed = 0
+    for byte in name.encode("utf-8"):
+        seed = (seed * 31 + byte) & 0xFFFFFFFF
+    value = (torch.arange(count, dtype=torch.int64, device="cpu") & 0xFFFFFFFF) ^ seed
+    value = ((value ^ (value >> 16)) * 0x7FEB352D) & 0xFFFFFFFF
+    value = ((value ^ (value >> 15)) * 0x846CA68B) & 0xFFFFFFFF
+    value ^= value >> 16
+    return ((value >> 8).to(torch.float32) * (1.0 / 8388608.0) - 1.0) * amplitude
+
+
+def _name_seeded_init(p, name, amplitude=_INIT_AMPLITUDE):
     """Fill a parameter from its cross-framework canonical name."""
-    seed = _name_seed(name)
-    n = p.numel()
-    p.copy_(
-        torch.sin(
-            torch.arange(n, dtype=torch.float32) * 0.01 + seed
-        ).view_as(p)
-        * scale
-    )
+    p.copy_(_parameter_values(name, p.numel(), amplitude).view_as(p))
 
 
-def _transposed_init(p, name, scale=_INIT_SCALE):
+def _transposed_init(p, name, amplitude=_INIT_AMPLITUDE):
     """Init as [in, out] (meganeura layout), store as [out, in] (PyTorch layout).
 
     Ensures x @ W_torch.T == x @ W_mega for matching forward passes.
     """
-    seed = _name_seed(name)
     out_f, in_f = p.shape
-    w = (
-        torch.sin(
-            torch.arange(in_f * out_f, dtype=torch.float32) * 0.01 + seed
-        ).view(in_f, out_f)
-        * scale
-    )
+    w = _parameter_values(name, p.numel(), amplitude).view(in_f, out_f)
     p.copy_(w.T)
 
 
@@ -691,13 +775,12 @@ def _smolvla_init(model):
 def _resnet_init(model):
     """Deterministic ResNet init matching meganeura's fused-BN approach.
 
-    Folded-BN channel biases → zero; conv/fc → name-seeded sin values.
+    Folded-BN channel biases are zero; conv/fc use name-seeded uniform values.
     FC weight uses transposed init to match meganeura's [in, out] matmul.
 
-    Scale 0.01 (not 0.1) prevents activation explosion through 50+ layers
-    with identity BN while preserving a non-trivial residual path.
+    Half amplitude preserves the lower RMS used with identity BN.
     """
-    scale = 0.01
+    amplitude = _INIT_AMPLITUDE * 0.5
     with torch.no_grad():
         for name, p in model.named_parameters():
             if (
@@ -707,14 +790,9 @@ def _resnet_init(model):
             ):
                 p.zero_()
             elif name == 'fc.weight':
-                seed = _name_seed(name)
-                out_f, in_f = p.shape
-                w = torch.sin(torch.arange(in_f * out_f, dtype=torch.float32) * 0.01 + seed).view(in_f, out_f) * scale
-                p.copy_(w.T)
+                _transposed_init(p, name, amplitude)
             else:
-                seed = _name_seed(name)
-                n = p.numel()
-                p.copy_(torch.sin(torch.arange(n, dtype=torch.float32) * 0.01 + seed).view_as(p) * scale)
+                _name_seeded_init(p, name, amplitude)
     model.eval()
     return model
 
@@ -1295,7 +1373,10 @@ def compiler_options(mode):
 
 
 def attention_policy(device, model_type=None):
-    policy = os.environ.get("INFERENA_SDPA", "auto")
+    # The pinned XPU fused attention waits on an event during graph capture.
+    # Keep one public SDPA policy for both replay and its uncaptured ablation.
+    default = "math" if device.startswith("xpu") else "auto"
+    policy = os.environ.get("INFERENA_SDPA", default)
     if policy not in ("auto", "math", "efficient"):
         raise ValueError("INFERENA_SDPA must be auto, math or efficient")
     return policy
@@ -1354,6 +1435,9 @@ def _bench(model_name, spec, dev, stream):
         "compiled": False,
         "sdpa_policy": attention_policy(dev, model_type),
         "sdpa_compile": "eager" if mode == "eager" else "compiled",
+        "sdpa_enabled_backends": [backend.name for backend in torch.nn.attention._cur_sdpa_kernel_backends()],
+        "compile_budget_seconds": float(os.environ["INFERENA_COMPILE_SECONDS"]) if "INFERENA_COMPILE_SECONDS" in os.environ else None,
+        "compile_budget_enforced": os.environ.get("INFERENA_BUDGET_ENFORCED") == "1",
         "stream_policy": "single dedicated preparation/run stream" if stream is not None else "backend default",
         "determinism": {
             "algorithms": torch.are_deterministic_algorithms_enabled(),
@@ -1365,7 +1449,7 @@ def _bench(model_name, spec, dev, stream):
     }
 
     print(
-        f"[pytorch] inferena-v2: {precision_mode}, at least {warmup_runs} warmups / {WARMUP_SECONDS}s, "
+        f"[pytorch] inferena-v3: {precision_mode}, at least {warmup_runs} warmups / {WARMUP_SECONDS}s, "
         f"{measurement_runs} samples",
         file=sys.stderr,
     )
@@ -1387,37 +1471,48 @@ def _bench(model_name, spec, dev, stream):
     synchronize(dev)
     load_s = time.perf_counter() - load_start
 
+    execution["embedding_backward"] = (
+        qualify_embedding_backward(eager_model, dev)
+        if training_requested and model_type == "causal_lm" and dev.startswith("xpu")
+        else {
+            "status": "not-required"
+            if training_requested and model_type == "causal_lm"
+            else "not-requested"
+        }
+    )
+
     model = eager_model
     compile_s = 0.0
     if mode != "eager":
         compile_start = time.perf_counter()
-        try:
-            execution["compiler_options"] = options
-            candidate = torch.compile(eager_model, options=options)
-            compile_inputs = prepare_inputs(model_type, candidate, dev)
+        with compilation_budget():
+            try:
+                execution["compiler_options"] = options
+                candidate = torch.compile(eager_model, options=options)
+                compile_inputs = prepare_inputs(model_type, candidate, dev)
 
-            if training_requested:
-                candidate.zero_grad(set_to_none=True)
-                train_outputs = _benchmark_forward(model_type, candidate, compile_inputs)
-                _benchmark_loss(model_type, train_outputs, compile_inputs).backward()
+                if training_requested:
+                    candidate.zero_grad(set_to_none=True)
+                    train_outputs = _benchmark_forward(model_type, candidate, compile_inputs)
+                    _benchmark_loss(model_type, train_outputs, compile_inputs).backward()
+                    synchronize(dev)
+                    candidate.zero_grad(set_to_none=True)
+                    del train_outputs
+
+                with torch.no_grad():
+                    _benchmark_forward(model_type, candidate, compile_inputs)
+                    _benchmark_latency_call(
+                        model_type, candidate, compile_inputs, dev
+                    )()
                 synchronize(dev)
-                candidate.zero_grad(set_to_none=True)
-                del train_outputs
-
-            with torch.no_grad():
-                _benchmark_forward(model_type, candidate, compile_inputs)
-                _benchmark_latency_call(
-                    model_type, candidate, compile_inputs, dev
-                )()
-            synchronize(dev)
-            compile_s = time.perf_counter() - compile_start
-            model = candidate
-            execution["compiled"] = True
-            del compile_inputs
-        except Exception as exc:
-            raise RuntimeError(
-                f"requested PyTorch mode {mode!r} failed; no eager timing substituted"
-            ) from exc
+                compile_s = time.perf_counter() - compile_start
+                model = candidate
+                execution["compiled"] = True
+                del compile_inputs
+            except Exception as exc:
+                raise RuntimeError(
+                    f"requested PyTorch mode {mode!r} failed; no eager timing substituted"
+                ) from exc
     else:
         execution["compile_skipped"] = "explicit eager mode"
 
@@ -1440,6 +1535,11 @@ def _bench(model_name, spec, dev, stream):
             execution["failure"] = failure
             report = {"status": "failed", "failure": failure}
             print(f"[pytorch] {name} qualification failed: {failure}", file=sys.stderr)
+            if path := os.environ.get("INFERENA_PREPARATION_REPORT"):
+                path = Path(path)
+                preparation = json.loads(path.read_text()) if path.exists() else {}
+                preparation["qualification_failure"] = failure
+                save(path, preparation)
             if name == "inference":
                 raise
             fn = None
@@ -1589,6 +1689,9 @@ def _bench(model_name, spec, dev, stream):
             "device_total_memory_bytes": properties.total_memory,
             "device_properties": str(properties),
         })
+    if execution["compiled"] and dev.startswith(("cuda", "xpu")):
+        from torch._inductor.utils import is_big_gpu
+        environment["inductor_is_big_gpu"] = is_big_gpu(torch.device(dev))
     profiles = {}
     if profile_dir := os.environ.get("INFERENA_PROFILE_DIR"):
         samples = int(os.environ.get("INFERENA_PROFILE_SAMPLES", "3"))
@@ -1619,7 +1722,7 @@ def _bench(model_name, spec, dev, stream):
         "execution": execution,
         "profile_artifacts": profiles,
         "protocol": {
-            "name": "inferena-v2",
+            "name": "inferena-v3",
             "synthetic_parameter_init": SYNTHETIC_PARAMETER_INIT,
             "warmup_runs": warmup_runs,
             "warmup_seconds": WARMUP_SECONDS,

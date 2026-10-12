@@ -33,38 +33,66 @@ pub fn gradients(session: &Session) -> Result<BTreeMap<String, Vec<f32>>, String
         }
         Ok(())
     };
-    for &(ref name, parameter) in &plan.param_buffers {
-        let Some(&(_, gradient)) = plan
-            .param_grad_pairs
+    let requests: Vec<_> = plan
+        .param_buffers
+        .iter()
+        .filter_map(|(name, parameter)| {
+            plan.param_grad_pairs
+                .iter()
+                .find(|entry| entry.0 == *parameter)
+                .map(|&(_, gradient)| (name, *parameter, gradient))
+        })
+        .collect();
+    let mut pending = requests.as_slice();
+    while !pending.is_empty() {
+        // Batch staging avoids a submission per gradient and repeated mapped-read
+        // probes. Bound temporary storage to 64 MiB or one oversized tensor.
+        let mut bytes = 0;
+        let count = pending
             .iter()
-            .find(|entry| entry.0 == parameter)
-        else {
-            continue;
-        };
-        let mut values = vec![0.0; session.param_size(name).unwrap()];
-        session.read_buffer(gradient, &mut values);
-        if let Some((_, sources, transform)) = plan
-            .derived_params
-            .iter()
-            .find(|entry| entry.0 == parameter)
-        {
-            let width = plan.param_types[&parameter].shape[1];
-            let mut offset = 0;
-            for &(ref source, extent) in sources {
-                let unpacked = match *transform {
-                    ParamTransform::HorizontalConcat => values
-                        .chunks_exact(width)
-                        .flat_map(|row| row[offset..offset + extent].iter().copied())
-                        .collect(),
-                    ParamTransform::VerticalConcat => {
-                        values[offset * width..(offset + extent) * width].to_vec()
-                    }
-                };
-                add(source, unpacked)?;
-                offset += extent;
+            .take_while(|request| {
+                let size = plan.buffers[request.2.0 as usize];
+                if bytes != 0 && bytes + size > 64 * 1024 * 1024 {
+                    return false;
+                }
+                bytes += size;
+                true
+            })
+            .count();
+        let (batch, rest) = pending.split_at(count);
+        pending = rest;
+        let buffers: Vec<_> = batch.iter().map(|request| request.2).collect();
+        for ((name, parameter, _), mut values) in batch.iter().zip(session.read_buffers(&buffers)) {
+            let len = session.param_size(name).unwrap();
+            if values.len() < len {
+                return Err(format!(
+                    "gradient buffer is smaller than its tensor: {name}"
+                ));
             }
-        } else {
-            add(name, values)?;
+            values.truncate(len);
+            if let Some((_, sources, transform)) = plan
+                .derived_params
+                .iter()
+                .find(|entry| entry.0 == *parameter)
+            {
+                let width = plan.param_types[parameter].shape[1];
+                let mut offset = 0;
+                for &(ref source, extent) in sources {
+                    let unpacked = match *transform {
+                        ParamTransform::HorizontalConcat => values
+                            .chunks_exact(width)
+                            .flat_map(|row| row[offset..offset + extent].iter().copied())
+                            .collect(),
+                        ParamTransform::VerticalConcat => {
+                            values[offset * width..(offset + extent) * width].to_vec()
+                        }
+                    };
+                    add(source, unpacked)?;
+                    offset += extent;
+                }
+            } else {
+                add(name, values)?;
+            }
         }
     }
     Ok(gradients)

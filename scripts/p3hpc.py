@@ -21,6 +21,7 @@ import time
 import tomllib
 
 from collection import run_recorded, write_json
+from precision import check_amp_qualification
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS = ("SmolLM2-135M", "SmolVLA", "StableDiffusion", "ResNet-50", "Whisper-tiny")
@@ -257,7 +258,7 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
         if record["protocol"]["warmup_runs"] != 5:
             raise ValueError("unexpected warmup count")
         protocol = record["protocol"]
-        expected = "inferena-paper-v4" if engine == "meganeura" else "inferena-graph-replay-v8"
+        expected = "inferena-paper-v5" if engine == "meganeura" else "inferena-graph-replay-v9"
         if protocol.get("name") != expected or protocol.get("warmup_seconds") != WARMUP_SECONDS:
             raise ValueError("runner did not declare the workload warmup policy")
         if protocol.get("synthetic_parameter_init") != SYNTHETIC_PARAMETER_INIT:
@@ -286,10 +287,19 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
         raise ValueError(f"unexpected Meganeura GPU: {mg['gpu_name']}")
     if args.backend in ("cuda", "rocm", "xpu") and not gpu_matches(args.gpu, pt["gpu_name"]):
         raise ValueError(f"unexpected PyTorch GPU: {pt['gpu_name']}")
-    expected_class = ("strict-f32" if precision == "strict" else "reduced-input-f32-accumulate")
+    expected_class = ("strict-f32" if precision == "strict" else "accelerated")
     if precision is not None and any(record["precision"]["comparison_class"] != expected_class
                                      for record in (mg, pt)):
         raise ValueError("requested arithmetic contract did not execute")
+    dtype = pt["precision"].get("autocast")
+    if hasattr(args, "autocast_dtype") and dtype != (args.autocast_dtype if precision == "accelerated" else None):
+        raise ValueError("requested accelerated autocast dtype did not execute")
+    if hasattr(args, "autocast_dtype") and pt["precision"].get("autocast_requested") != (args.autocast if precision == "accelerated" else "off"):
+        raise ValueError("autocast request differs from the declared policy")
+    if dtype is not None:
+        check_amp_qualification(pt)
+        if pt["correctness_reference"]["outputs"]["output_shape"] != mg["outputs"]["output_shape"]:
+            raise ValueError("AMP oracle shape differs from the native output")
     if (mg.get("optimizer", {}).get("measured_construction") is not True
             or mg["optimizer"].get("mode") != "egglog-outlined"):
         raise ValueError("Meganeura calibrated egglog construction must be enabled")
@@ -341,6 +351,8 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
         expected = "captured-and-validated" if graphs else "validated-uncaptured"
         if report["status"] != expected:
             raise ValueError(f"{phase} did not execute the requested capture mode")
+        if phase == "training" and dtype and report.get("post_execution") != "eager GradScaler housekeeping, included in timing":
+            raise ValueError("AMP training must include scaler housekeeping after each execution")
         if graphs:
             expected_api = "torch.xpu.XPUGraph" if args.backend == "xpu" else "torch.cuda.CUDAGraph"
             if report["api"] != expected_api:
@@ -518,6 +530,8 @@ def create_parser():
     # must not override it. Keep accepting the old opt-in spelling.
     parser.add_argument("--allow-integrated-gpu", action="store_true", default=True, help=argparse.SUPPRESS)
     parser.add_argument("--precisions", nargs="+", choices=("strict", "accelerated"), default=["strict", "accelerated"])
+    parser.add_argument("--autocast", choices=("auto", "off", "bf16", "fp16"), default="auto",
+                        help="accelerated PyTorch dtype; auto uses native bf16, otherwise fp16 on GPUs; strict stays f32")
     parser.add_argument("--replicates", type=int, default=3)
     parser.add_argument("--no-kernel-memo", dest="kernel_memo", action="store_false", default=True,
                         help="repeat private kernel tuning independently in every native process")
@@ -585,14 +599,17 @@ def main():
     except ValueError as error:
         parser.error(str(error))
     probe_env = dict(os.environ)
+    probe_env["INFERENA_AUTOCAST"] = args.autocast
     if args.backend:
         probe_env["INFERENA_TORCH_BACKEND"] = args.backend
     try:
         # Device queries/XPU qualification can create GPU contexts. Let this
         # process exit before collection so the controller holds no GPU memory.
         reference = json.loads(subprocess.check_output([
-            sys.executable, "-c", "import json; from bench import detect_device, device_name, backend_name; "
-            "d = detect_device(); print(json.dumps({'backend': backend_name(d).split()[0].lower(), 'gpu': device_name(d)}))",
+            sys.executable, "-c", "import json, os; from bench import detect_device, device_name, backend_name; "
+            "from amp import resolve_autocast; d = detect_device(); "
+            "print(json.dumps({'backend': backend_name(d).split()[0].lower(), 'gpu': device_name(d), "
+            "'autocast': resolve_autocast(d, os.environ['INFERENA_AUTOCAST']) or None}))",
         ], cwd=ROOT / "frameworks/pytorch", env=probe_env, text=True, encoding="utf-8"))
     except subprocess.CalledProcessError as error:
         parser.error(str(error))
@@ -600,6 +617,9 @@ def main():
     if backend == "cpu" and args.backend != "cpu":
         parser.error("no working GPU backend; fix setup or explicitly request --backend cpu")
     args.backend = backend
+    if backend == "cpu" and args.autocast not in ("auto", "off"):
+        parser.error("the graphics-only CPU correctness oracle requires f32; use --autocast off")
+    args.autocast_dtype = reference["autocast"]
     if backend in ("cuda", "rocm", "xpu"):
         reference_gpu = reference["gpu"]
         args.gpu = args.gpu or reference_gpu
@@ -635,12 +655,17 @@ def main():
                INFERENA_WARMUP_SECONDS=str(WARMUP_SECONDS))
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v18", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v19", "source": revision,
         "started_at": started_at,
         "host": {"name": socket.gethostname(), "os": platform.system(),
                  "kernel": platform.release(), "platform": platform.platform(), "arch": platform.machine(),
                  "cpu_frequency_policies": cpu_frequency_policies()},
         "synthetic_parameter_init": SYNTHETIC_PARAMETER_INIT,
+        "precision_policy": {"strict": "f32", "accelerated": {
+            "autocast_requested": args.autocast, "pytorch_autocast": args.autocast_dtype,
+            "selection": "capability-based-v1; no timing or numerical fallback",
+            "native": "existing qualified reduced-input paths; f32 storage",
+            "correctness_reference": "untimed eager strict f32 when using AMP"}},
         "model_revisions": {name: SMOLLM2_REVISIONS[name] for name in args.models if name in SMOLLM2_REVISIONS},
         "meganeura": dependency, "python": sys.version, "packages": packages,
         "torch": {"version": torch.__version__, "git_version": torch.version.git_version,
@@ -754,6 +779,7 @@ def main():
                             save()
                             print(run["path"], flush=True)
                             run_env = dict(env, INFERENA_TORCH_MODE=mode,
+                                           INFERENA_AUTOCAST=args.autocast if precision == "accelerated" else "off",
                                            INFERENA_SDPA=sdpa[model], INFERENA_GRAPH_REPLAY=str(int(graphs)),
                                            MEGANEURA_TUNE="1", INFERENA_TUNE_SECONDS=str(args.tune_seconds),
                                            INFERENA_MAX_SUBMISSION_CHUNKS=str(args.max_submission_chunks),

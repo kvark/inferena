@@ -4,6 +4,68 @@ The evidence separates inefficient resident kernels from weight-representation
 and memory-placement costs. It does **not** establish a removable barrier-cost percentage.
 No new speed samples were collected during the post-OOM offline analysis.
 
+## Accelerated includes AMP (October 12, 2026)
+
+Development protocol v19 keeps exactly two paired profiles: strict and
+accelerated (practical). Accelerated now permits AMP/bf16/fp16; dtype is a
+recorded setting, not another collection axis. PyTorch selects native bf16
+when available and otherwise fp16 on GPU backends, with an explicit
+`--autocast bf16`, `--autocast fp16` or `--autocast off` override.
+Strict and the graphics-only CPU oracle
+remain f32. Meganeura retains its existing f32 storage and eligible reduced-input
+kernels; this change does not implement native f16 activations. The five-model,
+three-replicate collection still has 30 pairs per GPU.
+
+The AMP run prepares its strict-f32 output/loss/gradient oracle and 32-update
+reference trajectory before candidate compilation, restores weights and RNG,
+then qualifies the requested AMP candidate. Cross-engine gradient checks use
+that oracle, not AMP gradients. fp16 forward/loss/scaled backward can be
+captured; unscaling, finite checks and scale updates run after every replay
+inside timing. Neither engine performs an optimizer update in timed training.
+All prior numerical thresholds are retained. Failed training gates preserve
+qualified inference and latency, with no dtype or execution-mode substitution.
+
+Ten one-process integration cases exercise both local GPUs, both AMP dtypes,
+and strict controls. These are qualification diagnostics with one held-out
+sample per phase, not a replicated performance cohort. Selected dtype checks
+reuse an explicitly identified native result rather than repeat native search.
+
+| GPU | Model | PyTorch arithmetic | Inference / latency | Training |
+| --- | --- | --- | --- | --- |
+| B570 | Whisper-tiny | strict f32, bf16, fp16 | pass | pass |
+| RTX 5070 | Whisper-tiny | strict f32, bf16, fp16 | pass | pass |
+| B570 | SmolLM2-135M | fp16 | pass | curve fails, 5.432% L2 |
+| B570 | SmolLM2-135M | bf16 | pass | curve fails, 12.892% L2 |
+| RTX 5070 | SmolLM2-135M | fp16 | pass | curve fails, 5.406% L2 |
+| RTX 5070 | SmolLM2-135M | bf16 | forward gate fails | not attempted |
+
+RTX SmolLM2 bf16 has maximum forward error 1.031 against a 0.727 bound;
+RMS passes. Training curve L2 must remain at most 1%. These failed cells
+remain failures; no tolerance is widened and no faster dtype is selected
+after observing timings. Availability of a dtype does not qualify every model.
+
+Whisper's added f32-oracle and AMP-curve work totals about 2.5 seconds on B570
+and 0.8–0.9 seconds on RTX 5070 in these diagnostics. SmolLM2's completed gates
+take about 7.1–7.3 and 3.1 seconds respectively. This is preparation overhead,
+not another benchmark process, and is separate from compilation and warmup.
+
+The pre-compilation oracle ordering matters: a B570 pilot that prepared eager
+f32 after AMP compilation produced gradient norm 41.789 instead of 0.003827
+and a non-finite reference trajectory after 16 updates. Preparing f32 first
+restores the independent reference and both compiled AMP Whisper curves pass.
+The underlying PyTorch cause is not established. A regression test makes a
+mock compiler corrupt backward and verifies that it cannot redefine the f32
+oracle or turn the bad AMP trajectory into a passing result.
+
+Python contract/replay tests pass in both pinned GPU environments, including
+live loss-scale changes, stable captured gradients, unchanged parameters,
+state restoration, and partial failures. Harness/native tests and clippy pass.
+Raw records, source snapshots, watchdogs, classifications and test logs are in
+`../inferena-results/accelerated-amp-20261012`; `summary.json`/`summary.csv`
+identify the final ten cases. Superseded pilots and the initial launcher
+argument error are retained separately. The frozen v18 cohort and its handoff
+bundle are unchanged. The remaining models/backends still need v19 qualification.
+
 ## Qualified Systems evidence
 
 Source `experiment/p3hpc-scaling-2026-09-08` (`c7d9e79`), Meganeura `43b606ff`,

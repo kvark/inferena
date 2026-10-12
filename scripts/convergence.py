@@ -121,6 +121,18 @@ def compare_runs(actual, reference):
     return reports
 
 
+def validate_precision(record, name):
+    framework, mode = name.split("-", 1)
+    expected = "strict-f32" if mode == "strict" else "accelerated"
+    if record["precision"] != expected or record["framework"] != framework:
+        raise ValueError("requested engine/precision did not execute")
+    if framework == "pytorch":
+        dtype = None if mode == "strict" else mode
+        if (record["precision_policy"].get("autocast") != dtype
+                or record["gradient_scaler"]["enabled"] != (dtype == "fp16")):
+            raise ValueError("requested autocast dtype/scaling policy did not execute")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", required=True, choices=("cuda", "rocm", "xpu", "mps", "cpu"))
@@ -181,9 +193,7 @@ def main():
             print(name, flush=True)
             record = run_json(command, folder, current, args.run_seconds)
             records[name] = record
-            expected_precision = "strict-f32" if name.endswith("strict") else "amp-" + name.split("-")[1]
-            if record["precision"] != expected_precision or record["framework"] != name.split("-")[0]:
-                raise ValueError("requested engine/precision did not execute")
+            validate_precision(record, name)
             if name.startswith("meganeura"):
                 if record["environment"]["gpu_device_id"] != native["device_id"]:
                     raise ValueError("native device changed")

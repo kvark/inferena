@@ -383,7 +383,7 @@ class CampaignTest(unittest.TestCase):
         # MPS must attempt compilation, not report an eager result with zero
         # compile time. A mock checks routing, not real Metal backend support.
         from bench import _bench
-        with patch.dict(os.environ, {"INFERENA_TORCH_MODE": "default", "INFERENA_GRAPH_REPLAY": "0"}), \
+        with patch.dict(os.environ, {"INFERENA_TORCH_MODE": "default", "INFERENA_GRAPH_REPLAY": "0", "INFERENA_AUTOCAST": "off"}), \
              patch("bench.load_model"), patch("bench.synchronize"), \
              patch("bench.device_name", return_value="test MPS"), \
              patch("torch.compile", side_effect=RuntimeError("compiler failure")) as compile:
@@ -398,7 +398,7 @@ class CampaignTest(unittest.TestCase):
             "status": "ok", "benchmark_rev": "source", "gpu_name": args.gpu, "model": "Whisper-tiny",
             "validation": {"comparison_performed": True, "forward_valid": True,
                            "training_valid": True, "reference_framework": "pytorch"},
-            "protocol": {"name": "inferena-paper-v4", "training_requested": True,
+            "protocol": {"name": "inferena-paper-v5", "training_requested": True,
                          "synthetic_parameter_init": "name-index-uniform-v1",
                          "diagnostic": False, "warmup_runs": 5, "warmup_seconds": 10.0,
                          "warmup": {phase: {"runs": 5, "seconds": 10.1}
@@ -439,7 +439,7 @@ class CampaignTest(unittest.TestCase):
             } for mode in ("Inference", "Training")],
         }}
         pt = {**copy.deepcopy(base), "framework": "pytorch", "backend": "CUDA",
-              "protocol": {**copy.deepcopy(base["protocol"]), "name": "inferena-graph-replay-v8"},
+              "protocol": {**copy.deepcopy(base["protocol"]), "name": "inferena-graph-replay-v9"},
               "torch_version": TORCH_VERSION,
               "environment": {"torch_git_version": TORCH_REVISION, "python_version": PYTHON_VERSION,
                               "triton_backend": "nvidia"},

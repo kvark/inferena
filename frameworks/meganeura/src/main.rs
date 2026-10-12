@@ -486,11 +486,7 @@ fn capture_gap_profile(
         )
     });
     let strict = std::env::var("INFERENA_STRICT").as_deref() == Ok("1");
-    let precision = if strict {
-        "strict-f32"
-    } else {
-        "accelerated-f32"
-    };
+    let precision = if strict { "strict-f32" } else { "accelerated" };
     let slug: String = model
         .chars()
         .map(|character| {
@@ -531,7 +527,7 @@ fn capture_gap_profile(
             "mode": std::env::var("MEGANEURA_OPTIMIZER").unwrap_or_else(|_| "egglog-outlined".to_string()),
             "extraction_cost": std::env::var("MEGANEURA_EGRAPH_COST").unwrap_or_else(|_| "tensor-traffic".to_string()),
         },
-        "benchmark_protocol": "inferena-paper-v4",
+        "benchmark_protocol": "inferena-paper-v5",
         "normal_benchmark": {
             "samples_ms": &benchmark.samples_ms,
             "median_ms": benchmark.median_ms,
@@ -1054,7 +1050,7 @@ fn emit_result(
     let accelerated = !strict;
     let precision = if accelerated {
         serde_json::json!({
-            "comparison_class": "reduced-input-f32-accumulate",
+            "comparison_class": "accelerated",
             "cooperative_matrix_policy": "Auto: protect full-precision derivative regions",
             "tensor_storage": "f32",
             "matmul_inputs": "forward: f16 for eligible cooperative-matrix kernels; f32 otherwise",
@@ -1106,7 +1102,7 @@ fn emit_result(
         "backend": backend,
         "environment": environment,
         "protocol": {
-            "name": "inferena-paper-v4",
+            "name": "inferena-paper-v5",
             "synthetic_parameter_init": initialization::POLICY,
             "warmup_runs": warmup_runs,
             "warmup_seconds": warmup_time().as_secs_f64(),

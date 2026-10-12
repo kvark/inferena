@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Workload/validation contract; the PyTorch execution protocol is versioned separately.
-pub const PAPER_PROTOCOL: &str = "inferena-paper-v4";
+pub const PAPER_PROTOCOL: &str = "inferena-paper-v5";
 
 /// Result produced by each framework benchmark runner.
 /// Every runner must print exactly one JSON object matching this schema to stdout.
@@ -402,16 +402,29 @@ fn precision_contract_error(result: &BenchResult, requested: &str) -> Option<Str
     let text = |key: &str| precision.get(key).and_then(serde_json::Value::as_str);
     let flag = |key: &str| precision.get(key).and_then(serde_json::Value::as_bool);
 
+    let accelerated = requested == "accelerated";
     for key in ["tensor_storage", "accumulation", "output"] {
-        if text(key) != Some("f32") {
+        let permitted = match key {
+            "tensor_storage" => {
+                ["f32", "f16", "bf16", "f32 parameters; autocast activations"].as_slice()
+            }
+            "accumulation" => ["f32", "backend autocast policy"].as_slice(),
+            _ => ["f32", "f16", "bf16", "operator-dependent"].as_slice(),
+        };
+        if !text(key).is_some_and(|value| {
+            if accelerated {
+                permitted.contains(&value)
+            } else {
+                value == "f32"
+            }
+        }) {
             return Some(format!(
-                "precision.{key}={:?}; Inferena requires f32 storage, accumulation, and output",
+                "precision.{key}={:?}; unsupported arithmetic for {requested}",
                 text(key)
             ));
         }
     }
 
-    let accelerated = requested == "accelerated-f32";
     if flag("reduced_precision_allowed") != Some(accelerated) {
         return Some(format!(
             "precision.reduced_precision_allowed={:?}; expected {accelerated}",
@@ -441,7 +454,7 @@ fn precision_contract_error(result: &BenchResult, requested: &str) -> Option<Str
                 ));
             }
         }
-        ("pytorch", "accelerated-f32") if backend.starts_with("CUDA") => {
+        ("pytorch", "accelerated") if backend.starts_with("CUDA") && text("autocast").is_none() => {
             for key in ["cuda_matmul_allow_tf32", "cudnn_allow_tf32"] {
                 if flag(key) != Some(true) {
                     return Some(format!(
@@ -463,9 +476,7 @@ fn precision_contract_error(result: &BenchResult, requested: &str) -> Option<Str
                 flag("f16_cooperative_matrix_permitted")
             ));
         }
-        ("meganeura", "accelerated-f32")
-            if flag("f16_cooperative_matrix_permitted") != Some(true) =>
-        {
+        ("meganeura", "accelerated") if flag("f16_cooperative_matrix_permitted") != Some(true) => {
             return Some(format!(
                 "precision.f16_cooperative_matrix_permitted={:?}; accelerated mode requires true",
                 flag("f16_cooperative_matrix_permitted")
@@ -474,11 +485,65 @@ fn precision_contract_error(result: &BenchResult, requested: &str) -> Option<Str
         _ => {}
     }
 
-    if result.framework == "meganeura" && flag("persistent_f16_tensors") != Some(false) {
+    if !accelerated
+        && result.framework == "meganeura"
+        && flag("persistent_f16_tensors") != Some(false)
+    {
         return Some(format!(
-            "precision.persistent_f16_tensors={:?}; audited workloads require false",
+            "precision.persistent_f16_tensors={:?}; strict mode requires false",
             flag("persistent_f16_tensors")
         ));
+    }
+
+    if result.framework == "pytorch"
+        && let Some(dtype) = text("autocast")
+    {
+        if !accelerated || !matches!(dtype, "bf16" | "fp16") || text("loss") != Some("f32") {
+            return Some("autocast requires the accelerated profile and f32 losses".into());
+        }
+        if backend.starts_with("CUDA")
+            && (flag("cuda_matmul_allow_tf32") != Some(false)
+                || flag("cudnn_allow_tf32") != Some(false))
+        {
+            return Some("AMP's remaining f32 operations require TF32 disabled".into());
+        }
+        let execution = result
+            .extra
+            .get("execution")
+            .unwrap_or(&serde_json::Value::Null);
+        let gate = &execution["amp_qualification"];
+        let training = result
+            .extra
+            .get("protocol")
+            .and_then(|p| p["training_requested"].as_bool())
+            == Some(true);
+        if !matches!(gate["status"].as_str(), Some("pass" | "partial"))
+            || gate["reference"].as_str() != Some("eager strict f32")
+            || execution["gradient_scaler"]["enabled"].as_bool() != Some(dtype == "fp16")
+            || (training && !matches!(gate["training"]["status"].as_str(), Some("pass" | "failed")))
+            || (result.timings.training_ms.is_some()
+                && gate["training"]["status"].as_str() != Some("pass"))
+        {
+            return Some("AMP lacks its output/loss-curve qualification or scaling receipt".into());
+        }
+        let Some(outputs) = oracle_outputs(result) else {
+            return Some("AMP lacks a strict-f32 correctness reference".into());
+        };
+        let oracle = &result.extra["correctness_reference"];
+        if oracle["precision"].as_str() != Some("strict-f32")
+            || oracle["prepared_before_amp_compilation"].as_bool() != Some(true)
+            || oracle["training_requested"].as_bool() != Some(training)
+            || outputs.output_shape != result.outputs.output_shape
+            || outputs.logits_sample.len() != 256
+            || !outputs.loss.is_finite()
+            || outputs.logits_sample.iter().any(|x| !x.is_finite())
+            || (training
+                && (outputs.grad_norm.is_none_or(|x| !x.is_finite())
+                    || outputs.gradient_norms.is_empty()
+                    || outputs.gradient_norms.values().any(|x| !x.is_finite())))
+        {
+            return Some("invalid strict-f32 correctness reference".into());
+        }
     }
 
     None
@@ -499,11 +564,7 @@ fn run_framework(
     profile_dir: Option<&Path>,
     profile_samples: usize,
 ) -> FrameworkOutcome {
-    let precision = if strict {
-        "strict-f32"
-    } else {
-        "accelerated-f32"
-    };
+    let precision = if strict { "strict-f32" } else { "accelerated" };
     let fw_dir = root.join("frameworks").join(framework);
     let run_script = fw_dir.join("run.sh");
 
@@ -531,6 +592,14 @@ fn run_framework(
     };
     cmd.arg(script).arg(model).current_dir(&fw_dir);
     cmd.env("INFERENA_STRICT", if strict { "1" } else { "0" })
+        .env(
+            "INFERENA_AUTOCAST",
+            if strict {
+                "off".into()
+            } else {
+                std::env::var("INFERENA_AUTOCAST").unwrap_or_else(|_| "auto".into())
+            },
+        )
         .env(
             "INFERENA_INFERENCE_ONLY",
             if inference_only { "1" } else { "0" },
@@ -629,7 +698,7 @@ fn run_framework(
                 r.extra.remove("status").as_ref().and_then(|v| v.as_str()) == Some("partial");
             if matches!(framework, "pytorch" | "meganeura") {
                 let expected_protocol = if framework == "pytorch" {
-                    "inferena-graph-replay-v8"
+                    "inferena-graph-replay-v9"
                 } else {
                     PAPER_PROTOCOL
                 };
@@ -641,7 +710,7 @@ fn run_framework(
                 let expected_class = if precision == "strict-f32" {
                     "strict-f32"
                 } else {
-                    "reduced-input-f32-accumulate"
+                    "accelerated"
                 };
                 let reported_class = r
                     .extra
@@ -823,7 +892,27 @@ struct ComparisonMetrics {
     status: &'static str,
 }
 
+fn oracle_outputs(reference: &BenchResult) -> Option<Outputs> {
+    // Old records and ordinary f32 references compare their measured outputs.
+    // AMP's separately qualified f32 oracle prevents rounding from becoming
+    // the ground truth for another engine's gradients.
+    let oracle = reference.extra.get("correctness_reference")?;
+    if reference.extra.get("precision")?["autocast"]
+        .as_str()
+        .is_none()
+        || oracle["precision"].as_str() != Some("strict-f32")
+    {
+        return None;
+    }
+    serde_json::from_value(oracle["outputs"].clone()).ok()
+}
+
 fn compare_result(reference: &BenchResult, other: &BenchResult) -> ComparisonMetrics {
+    let oracle = oracle_outputs(reference).map(|outputs| BenchResult {
+        outputs,
+        ..reference.clone()
+    });
+    let reference = oracle.as_ref().unwrap_or(reference);
     let hash_match = reference.outputs.logits_hash == other.outputs.logits_hash;
     let output_shape_match = reference.outputs.output_shape == other.outputs.output_shape;
     let output_sample_count_match =
@@ -1102,7 +1191,7 @@ fn annotate_validation(outcomes: &mut [FrameworkOutcome], benchmark_revision: &s
                 serde_json::json!(benchmark_revision),
             );
         }
-        let validation = match &reference {
+        let mut validation = match &reference {
             None => serde_json::json!({
                 "comparison_performed": false,
                 "reference_framework": null,
@@ -1146,6 +1235,14 @@ fn annotate_validation(outcomes: &mut [FrameworkOutcome], benchmark_revision: &s
                 })
             }
         };
+        if let Some(reference) = &reference {
+            validation["reference_precision"] =
+                serde_json::json!(if oracle_outputs(reference).is_some() {
+                    "untimed strict-f32 oracle"
+                } else {
+                    "measured reference"
+                });
+        }
         result.extra.insert("validation".to_string(), validation);
     }
 }
@@ -1671,6 +1768,53 @@ mod tests {
     fn relative_loss_error_is_not_diluted_for_small_losses() {
         assert!((relative_scalar_error(0.0003, 0.0006) - 0.5).abs() < 1e-12);
         assert_eq!(relative_scalar_error(0.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn amp_comparison_uses_the_f32_oracle_and_rejects_missing_evidence() {
+        let mut reference = result(vec![1, 256], true);
+        reference.framework = "pytorch".into();
+        let original = reference.outputs.clone();
+        reference.outputs.grad_norm = Some(2.0);
+        reference
+            .outputs
+            .gradient_norms
+            .insert("weight".into(), 2.0);
+        reference.outputs.logits_sample.fill(1.1);
+        reference.extra.insert("precision".into(), serde_json::json!({
+            "autocast": "fp16", "comparison_class": "accelerated", "loss": "f32",
+            "tensor_storage": "f32 parameters; autocast activations", "accumulation": "backend autocast policy",
+            "output": "operator-dependent", "reduced_precision_allowed": true,
+        }));
+        reference.extra.insert(
+            "protocol".into(),
+            serde_json::json!({"training_requested": true}),
+        );
+        reference.extra.insert("execution".into(), serde_json::json!({
+            "gradient_scaler": {"enabled": true},
+            "amp_qualification": {"status": "pass", "reference": "eager strict f32", "training": {"status": "pass"}},
+        }));
+        reference.extra.insert(
+            "correctness_reference".into(),
+            serde_json::json!({
+                "precision": "strict-f32", "training_requested": true, "outputs": original,
+                "prepared_before_amp_compilation": true,
+            }),
+        );
+        assert_eq!(precision_contract_error(&reference, "accelerated"), None);
+        let native = result(vec![1, 256], true);
+        let comparison = compare_result(&reference, &native);
+        assert!(comparison.forward_valid && comparison.training_valid);
+        let mut wrong_native = native.clone();
+        wrong_native
+            .outputs
+            .gradient_norms
+            .insert("weight".into(), 1.2);
+        assert!(!compare_result(&reference, &wrong_native).training_valid);
+        assert!(precision_contract_error(&reference, "strict-f32").is_some());
+        reference.extra.remove("correctness_reference");
+        assert!(precision_contract_error(&reference, "accelerated").is_some());
+        assert!(!compare_result(&reference, &native).training_valid);
     }
 
     #[test]

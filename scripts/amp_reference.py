@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect labelled AMP columns, with a per-model loss-curve gate; no native substitution."""
+"""Optional dtype diagnostics for the accelerated profile, outside paired collection."""
 
 import argparse
 import csv
@@ -12,6 +12,7 @@ from collection import write_json
 from p3hpc import (SUPPORTED_MODELS, check_torch_identity, gpu_matches, input_hashes, positive_seconds,
                   cpu_frequency_policies, reference_sdpa_policy, PYTHON_VERSION)
 from study import ROOT, begin, environment, run_json
+from precision import check_amp_qualification
 
 
 def check_record(record, model, precision, mode, gpu, *, sdpa=None):
@@ -20,7 +21,7 @@ def check_record(record, model, precision, mode, gpu, *, sdpa=None):
         raise ValueError("requested attention policy did not execute")
     if record["model"] != model or record["status"] not in ("ok", "partial") or not gpu_matches(gpu, record["gpu_name"]):
         raise ValueError("unexpected model/device or incomplete AMP result")
-    if record["precision"]["comparison_class"] != f"amp-{precision}" or protocol["name"] != "inferena-amp-v3":
+    if record["precision"]["comparison_class"] != "accelerated" or protocol["name"] != "inferena-graph-replay-v9":
         raise ValueError("requested AMP arithmetic did not execute")
     if (record["precision"]["autocast"] != precision
             or record["precision"]["torch_float32_matmul_precision"] != "highest"
@@ -30,9 +31,8 @@ def check_record(record, model, precision, mode, gpu, *, sdpa=None):
     if (execution["requested_mode"] != mode or execution["compiled"] != (mode != "eager")
             or execution["graph_replay"]["requested"] or not execution["compile_budget_enforced"]):
         raise ValueError("requested uncaptured compiler policy did not execute")
+    check_amp_qualification(record)
     gate = execution["amp_qualification"]
-    if gate["status"] not in ("pass", "partial") or gate["training"]["status"] not in ("pass", "failed"):
-        raise ValueError("AMP precision qualification is incomplete")
     training_valid = gate["training"]["status"] == "pass"
     if training_valid and (gate["training"]["steps"] != 32
             or gate["training"]["completed_updates"] != 32 or gate["training"]["skipped_steps"]
@@ -65,7 +65,7 @@ def main():
     parser.add_argument("--mode", choices=("default", "eager"), default="default")
     parser.add_argument("--sdpa", choices=("auto", "math", "efficient"),
                         help="cohort default: math on XPU, auto elsewhere")
-    parser.add_argument("--replicates", type=int, default=3)
+    parser.add_argument("--replicates", type=int, default=1)
     parser.add_argument("--compile-seconds", type=positive_seconds, default=120)
     parser.add_argument("--run-seconds", type=positive_seconds, default=1200)
     parser.add_argument("--results-dir", type=Path, required=True)
@@ -79,7 +79,7 @@ def main():
     check_torch_identity(torch.__version__, torch.version.git_version, torch.__version__)
     hashes = input_hashes(args.models)
     destination = args.results_dir.resolve()
-    manifest = begin(destination, "amp-reference-v3", args)
+    manifest = begin(destination, "accelerated-dtype-diagnostic-v1", args)
     manifest.update(input_sha256=hashes, cpu_frequency_policies=cpu_frequency_policies(),
                     reference_sdpa_policy={model: reference_sdpa_policy(args, model) for model in args.models},
                     timing_class="supplementary AMP, compiled uncaptured" if args.mode == "default" else "supplementary AMP, eager uncaptured",

@@ -6,19 +6,34 @@ from unittest.mock import patch
 
 import torch
 
-from amp import AmpPolicy, BenchmarkBackward, compare_loss_curves, qualify, optimizer_update
+from amp import AmpPolicy, BenchmarkBackward, compare_loss_curves, qualify, optimizer_update, resolve_autocast
 from execution import QualificationError, compare_tensors
 
 
 class AmpTest(unittest.TestCase):
     def test_classes_are_explicit(self):
         with patch.dict(os.environ, {"INFERENA_STRICT": "0"}):
-            self.assertEqual(AmpPolicy("cpu", "bf16").metadata()["comparison_class"], "amp-bf16")
+            self.assertEqual(AmpPolicy("cpu", "bf16").metadata()["comparison_class"], "accelerated")
             with self.assertRaises(ValueError):
                 AmpPolicy("cpu", "f16")
         with patch.dict(os.environ, {"INFERENA_STRICT": "1"}):
-            with self.assertRaisesRegex(ValueError, "separate reference"):
+            with self.assertRaisesRegex(ValueError, "strict mode forbids"):
                 AmpPolicy("cpu", "fp16")
+
+    def test_capability_policy_and_strict_boundary(self):
+        from contextlib import nullcontext
+        for backend in ("cuda", "xpu"):
+            for supported in (False, True):
+                with patch.object(getattr(torch, backend), "device", return_value=nullcontext()), \
+                        patch.object(getattr(torch, backend), "is_bf16_supported", return_value=supported) as probe:
+                    self.assertEqual(resolve_autocast(backend), "bf16" if supported else "fp16")
+                    probe.assert_called_once_with(including_emulation=False)
+        self.assertEqual(resolve_autocast("cpu"), "")
+        self.assertEqual(resolve_autocast("mps"), "fp16")
+        self.assertEqual(resolve_autocast("cuda", strict=True), "")
+        self.assertEqual(resolve_autocast("cuda", "off"), "")
+        with self.assertRaisesRegex(ValueError, "strict"):
+            resolve_autocast("cuda", "bf16", strict=True)
 
     def test_scaled_backward_recovers_small_gradients_without_updating_weights(self):
         with patch.dict(os.environ, {"INFERENA_STRICT": "0"}):
@@ -74,6 +89,21 @@ class AmpTest(unittest.TestCase):
         for key, value in model.state_dict().items():
             torch.testing.assert_close(value, state[key], rtol=0, atol=0)
 
+    def test_nonfinite_training_retains_forward_and_restores_state(self):
+        with patch.dict(os.environ, {"INFERENA_STRICT": "0"}):
+            policy = AmpPolicy("cpu", "bf16")
+        model = torch.nn.Linear(4, 2)
+        state = {name: value.detach().clone() for name, value in model.state_dict().items()}
+        inputs = torch.ones(2, 4)
+        with patch("amp.optimizer_update", side_effect=QualificationError("non-finite loss")):
+            report = qualify(model, model, lambda m, x: m(x), lambda y, _: y.float().square().mean(), inputs, policy)
+        self.assertEqual(report["status"], "partial")
+        self.assertEqual(report["training"]["failure"]["trajectory"]["arithmetic"], "strict-f32")
+        self.assertEqual(report["training"]["failure"]["trajectory"]["completed_updates"], 0)
+        for name, value in model.state_dict().items():
+            torch.testing.assert_close(value, state[name], rtol=0, atol=0)
+        self.assertTrue(all(p.grad is None for p in model.parameters()))
+
     def test_bfloat16_repeatability_checks_all_elements(self):
         reference = torch.ones(16, dtype=torch.bfloat16)
         self.assertEqual(compare_tensors(reference, reference)["elements"], 16)
@@ -82,7 +112,59 @@ class AmpTest(unittest.TestCase):
         with self.assertRaises(QualificationError):
             compare_tensors(changed, reference)
 
-    def test_benchmark_emits_a_separate_amp_record(self):
+    @unittest.skipUnless(torch.cuda.is_available() or torch.xpu.is_available(), "CUDA/HIP/XPU required")
+    def test_compiled_amp_replay_keeps_scaling_live_and_does_not_update_parameters(self):
+        from execution import capture_phase, graph_backend, synchronize
+        from bench import select_compiler_backend
+        device = "cuda" if torch.cuda.is_available() else "xpu"
+        select_compiler_backend(device)
+        api = graph_backend(device)
+        for dtype in ("bf16", "fp16"):
+            with self.subTest(dtype=dtype), patch.dict(os.environ, {"INFERENA_STRICT": "0"}):
+                torch.manual_seed(19)
+                model = torch.nn.Linear(32, 16).to(device)
+                inputs = torch.full((8, 32), 0.001, device=device)
+                with torch.no_grad():
+                    model.weight.fill_(0.01)
+                    model.bias.zero_()
+                initial = [p.detach().clone() for p in model.parameters()]
+                policy = AmpPolicy(device, dtype)
+                backward = BenchmarkBackward(model, policy)
+                compiled = torch.compile(model, options={"triton.cudagraphs": False})
+                stream = api.Stream(device=device)
+                stream.wait_stream(api.current_stream(device))
+
+                def training():
+                    with policy.context():
+                        output = compiled(inputs)
+                        loss = output.float().square().mean()
+                    backward.capture_backward(loss)
+                    return output, loss
+
+                with api.stream(stream):
+                    replay, report = capture_phase(training, compiled, stream=stream, device=device,
+                                                   reduced_precision=True, after=backward.finish)
+                    self.assertEqual(report["status"], "captured-and-validated")
+                    stable = [p.grad for p in model.parameters()]
+                    expected = [g.detach().clone() for g in stable]
+                    calls = backward.sink.calls
+                    if dtype == "fp16":
+                        state = backward.scaler.state_dict()
+                        state.update(growth_interval=2, _growth_tracker=0)
+                        backward.scaler.load_state_dict(state)
+                        before_scale = backward.scaler.get_scale()
+                    for _ in range(4):
+                        replay()
+                        synchronize(device)
+                        for parameter, storage, gradient, value in zip(model.parameters(), stable, expected, initial):
+                            self.assertIs(parameter.grad, storage)
+                            torch.testing.assert_close(parameter.grad, gradient, rtol=0.001, atol=1e-8)
+                            torch.testing.assert_close(parameter, value, rtol=0, atol=0)
+                    self.assertEqual(backward.sink.calls, calls + 4)
+                    if dtype == "fp16":
+                        self.assertGreater(backward.scaler.get_scale(), before_scale)
+
+    def test_accelerated_amp_record_carries_a_separate_f32_oracle(self):
         from contextlib import redirect_stdout
         import io
         import json
@@ -105,8 +187,10 @@ class AmpTest(unittest.TestCase):
                 _bench("test", {"type": "whisper"}, "cpu", None)
             record = json.loads(output.getvalue())
         self.assertEqual(record["status"], "ok")
-        self.assertEqual(record["protocol"]["name"], "inferena-amp-v3")
-        self.assertEqual(record["precision"]["comparison_class"], "amp-bf16")
+        self.assertEqual(record["protocol"]["name"], "inferena-graph-replay-v9")
+        self.assertEqual(record["precision"]["comparison_class"], "accelerated")
+        self.assertEqual(record["correctness_reference"]["precision"], "strict-f32")
+        self.assertIsNotNone(record["correctness_reference"]["outputs"]["grad_norm"])
         self.assertEqual(record["execution"]["amp_qualification"]["training"]["status"], "pass")
         self.assertFalse(record["execution"]["gradient_scaler"]["enabled"])
         import copy
@@ -124,7 +208,7 @@ class AmpTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 check_record(changed, "test", "bf16", "eager", "cpu")
         with patch.dict(os.environ, dict(env, INFERENA_GRAPH_REPLAY="1")), \
-                self.assertRaisesRegex(ValueError, "GradScaler bookkeeping is uncaptured"):
+                self.assertRaisesRegex(ValueError, "no explicit whole-phase replay API"):
             _bench("test", {"type": "whisper"}, "cpu", None)
 
         partial = copy.deepcopy(record["execution"]["amp_qualification"])
@@ -140,6 +224,62 @@ class AmpTest(unittest.TestCase):
         self.assertEqual(check_record(failed_training, "test", "bf16", "eager", "cpu"),
                          {"inference": "pass", "latency": "pass", "training": "failed"})
         self.assertIsNone(failed_training["outputs"]["grad_norm"])
+
+    def test_candidate_compilation_cannot_change_the_f32_oracle(self):
+        from contextlib import redirect_stdout
+        import io
+        import json
+        import math
+        from bench import _bench
+        model = torch.nn.Linear(4, 2)
+        with torch.no_grad():
+            model.weight.fill_(0.125)
+            model.bias.zero_()
+
+        def broken_compile(current, **_):
+            # Model an incorrect compiler backward that also affects subsequent
+            # eager uses of the same parameters. It must not redefine the oracle.
+            for parameter in current.parameters():
+                parameter.register_hook(lambda grad: grad * 2)
+            return current
+
+        def measure(fn, *_, before=None):
+            if before is not None:
+                before()
+            return fn(), [1.0] * 20, {"runs": 5, "seconds": 10.0}
+
+        env = {"INFERENA_AUTOCAST": "bf16", "INFERENA_STRICT": "0",
+               "INFERENA_TORCH_MODE": "default", "INFERENA_GRAPH_REPLAY": "0"}
+        with patch.dict(os.environ, env), patch("bench.load_model", return_value=model), \
+                patch("bench.prepare_inputs", return_value={"input_features": torch.ones(1, 4)}), \
+                patch("torch.compile", side_effect=broken_compile), patch("bench._measure_call", side_effect=measure):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                _bench("test", {"type": "whisper"}, "cpu", None)
+            record = json.loads(output.getvalue())
+        self.assertAlmostEqual(record["correctness_reference"]["outputs"]["grad_norm"], math.sqrt(2.5), places=6)
+        self.assertEqual(record["execution"]["amp_qualification"]["training"]["status"], "failed")
+        self.assertIsNone(record["timings"]["training_ms"])
+        self.assertIsNotNone(record["timings"]["inference_ms"])
+
+    def test_convergence_validates_dtype_within_accelerated(self):
+        from pathlib import Path
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+        from convergence import validate_precision
+        from bench import _configure_benchmark_precision
+
+        for mode in ("strict", "bf16", "fp16"):
+            with self.subTest(mode=mode), patch.dict(os.environ, {"INFERENA_STRICT": "0"}):
+                policy = AmpPolicy("cpu", "" if mode == "strict" else mode)
+                precision = _configure_benchmark_precision("cpu", mode == "strict", policy)
+                record = {"framework": "pytorch", "precision": precision["comparison_class"],
+                          "precision_policy": precision, "gradient_scaler": {"enabled": mode == "fp16"}}
+                validate_precision(record, f"pytorch-{mode}")
+                record["precision_policy"]["autocast"] = "fp16" if mode != "fp16" else "bf16"
+                with self.assertRaisesRegex(ValueError, "dtype/scaling"):
+                    validate_precision(record, f"pytorch-{mode}")
+        validate_precision({"framework": "meganeura", "precision": "strict-f32"}, "meganeura-strict")
 
     def test_real_data_gate_rejects_skips_stale_weights_and_missing_checkpoints(self):
         import copy

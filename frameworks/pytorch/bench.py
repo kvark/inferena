@@ -30,7 +30,7 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from execution import QualificationError, capture_phase, graph_backend, profile_phase, synchronize, nsys_range
 from budget import compilation_budget, save
-from amp import AmpPolicy, BenchmarkBackward, qualify as qualify_amp
+from amp import AmpPolicy, BenchmarkBackward, qualify as qualify_amp, prepare_reference, resolve_autocast
 
 
 # --- Conditioned latent-diffusion U-Net (matches meganeura::models::sd_unet) ---
@@ -1398,14 +1398,15 @@ def _configure_benchmark_precision(dev: str, strict: bool, amp=None):
             "output": "f32",
             "reduced_precision_allowed": False,
         }
-    torch.set_float32_matmul_precision("high")
+    torch.set_float32_matmul_precision("highest" if dev.startswith("cpu") else "high")
     if dev.startswith("cuda"):
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
     return {
-        "comparison_class": "reduced-input-f32-accumulate",
+        "comparison_class": "accelerated",
+        "autocast": None,
         "tensor_storage": "f32",
-        "matmul_inputs": "TF32 or backend high-precision algorithm",
+        "matmul_inputs": "f32 CPU correctness oracle" if dev.startswith("cpu") else "TF32 or backend high-precision algorithm",
         "convolution_inputs": "TF32 when supported",
         "accumulation": "f32",
         "output": "f32",
@@ -1439,6 +1440,22 @@ def attention_context(device, model_type=None):
     return sdpa_kernel(backend) if backend is not None else nullcontext()
 
 
+def correctness_snapshot(model_type, model, output, loss, training):
+    """Untimed strict-f32 oracle, kept separate from the measured AMP outputs."""
+    values = output.detach().float().cpu().flatten()
+    count = min(256, values.numel())
+    samples = (values.tolist() if count == values.numel() else
+               [values[i * (values.numel() - 1) // (count - 1)].item() for i in range(count)])
+    norms = {_gradient_parameter_name(model_type, name): float(parameter.grad.detach().float().square().sum()) ** 0.5
+             for name, parameter in model.named_parameters() if training and parameter.grad is not None}
+    return {"precision": "strict-f32", "scope": "untimed eager forward/loss/backward at the initial checkpoint",
+            "training_requested": training,
+            "outputs": {"logits_hash": sha256_f32_tensor(output), "output_shape": list(output.shape),
+                        "logits_sample": [round(v, 6) for v in samples], "loss": round(float(loss.detach()), 6),
+                        "grad_norm": round(math.sqrt(sum(v * v for v in norms.values())), 6) if training else None,
+                        "gradient_norms": {name: round(value, 9) for name, value in sorted(norms.items())}}}
+
+
 def bench(model_name: str, spec: dict):
     """Matched benchmark: symmetric samples and full forward/loss/backward."""
     dev = detect_device()
@@ -1464,26 +1481,28 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
     if not training_requested and model_type != "causal_lm":
         raise ValueError("inference-only currently supports SmolLM2 workloads")
     strict = os.environ.get("INFERENA_STRICT", "0") == "1"
-    amp = AmpPolicy(dev)
-    precision_mode = f"amp-{amp.name}" if amp.dtype is not None else "strict-f32" if strict else "accelerated-f32"
-    protocol = "inferena-amp-v3" if amp.dtype is not None else "inferena-graph-replay-v8"
+    requested_autocast = os.environ.get("INFERENA_AUTOCAST", "auto")
+    amp = AmpPolicy(dev, resolve_autocast(dev, requested_autocast, strict=strict))
+    precision_mode = "strict-f32" if strict else "accelerated"
+    protocol = "inferena-graph-replay-v9"
     warmup_runs = int(os.environ.get("INFERENA_WARMUP_RUNS", "5"))
     measurement_runs = int(os.environ.get("INFERENA_MEASUREMENT_RUNS", "20"))
     if warmup_runs < 0 or measurement_runs < 1:
         raise ValueError("warmups must be >= 0 and measurement runs must be >= 1")
     precision = _configure_benchmark_precision(dev, strict, amp)
+    precision["autocast_requested"] = requested_autocast
+    precision.setdefault("autocast", None)
+    precision["autocast_selection"] = "capability-based-v1; no timing or numerical fallback"
     mode = os.environ.get("INFERENA_TORCH_MODE", "default")
     modes = torch._inductor.list_mode_options()
     if mode != "eager" and mode not in modes:
         raise ValueError(f"unknown INFERENA_TORCH_MODE: {mode}")
     graph_capable = torch.device(dev).type in ("cuda", "xpu")
     graph_setting = os.environ.get("INFERENA_GRAPH_REPLAY", os.environ.get(
-        "INFERENA_CUDA_GRAPHS", "1" if graph_capable and amp.dtype is None else "0"))
+        "INFERENA_CUDA_GRAPHS", "1" if graph_capable else "0"))
     if graph_setting not in ("0", "1"):
         raise ValueError("INFERENA_GRAPH_REPLAY must be 0 or 1")
     use_graphs = graph_setting == "1"
-    if use_graphs and amp.dtype is not None:
-        raise ValueError("AMP reference requires INFERENA_GRAPH_REPLAY=0; GradScaler bookkeeping is uncaptured")
     if use_graphs and not graph_capable:
         raise ValueError(f"no explicit whole-phase replay API for {dev}; no fallback")
     execution = {
@@ -1539,6 +1558,19 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
     )
 
     model = eager_model
+    amp_reference = None
+    oracle_seconds = 0.0
+    if amp.dtype is not None:
+        started = time.perf_counter()
+        amp_reference = prepare_reference(
+            eager_model,
+            lambda current, batch: _benchmark_logits(model_type, _benchmark_forward(model_type, current, batch)),
+            lambda output, batch: _benchmark_loss(model_type, output, batch),
+            prepare_inputs(model_type, eager_model, dev), amp, training=training_requested,
+            snapshot=lambda *args: correctness_snapshot(model_type, *args),
+        )
+        oracle_seconds = time.perf_counter() - started
+        amp_reference["correctness_reference"]["prepared_before_amp_compilation"] = True
     compile_s = 0.0
     if mode != "eager":
         compile_cache = clear_compile_cache()
@@ -1592,13 +1624,21 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
                 lambda current, batch: _benchmark_logits(model_type, _benchmark_forward(model_type, current, batch)),
                 lambda output, batch: _benchmark_loss(model_type, output, batch),
                 inputs, amp, training=training_requested,
+                reference=amp_reference,
             )
         except QualificationError as error:
             error.details["elapsed_seconds"] = time.perf_counter() - qualification_started
             if path := os.environ.get("INFERENA_AMP_REPORT"):
                 save(Path(path), {"status": "failed", **error.details})
+            if path := os.environ.get("INFERENA_PREPARATION_REPORT"):
+                path = Path(path)
+                preparation = json.loads(path.read_text()) if path.exists() else {}
+                preparation["qualification_failure"] = {**error.details, "phase": "inference"}
+                save(path, preparation)
             raise
         execution["amp_qualification"]["elapsed_seconds"] = time.perf_counter() - qualification_started
+        execution["amp_qualification"]["reference_preparation_seconds"] = oracle_seconds
+        del amp_reference
         if path := os.environ.get("INFERENA_AMP_REPORT"):
             save(Path(path), execution["amp_qualification"])
         if training_requested and execution["amp_qualification"]["training"]["status"] != "pass":
@@ -1617,7 +1657,8 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
         try:
             fn, report = capture_phase(fn, training_model, stream=stream,
                                        reduced_precision=precision["reduced_precision_allowed"],
-                                       device=dev, capture=use_graphs)
+                                       device=dev, capture=use_graphs,
+                                       after=backward.finish if training_model is not None and amp.dtype is not None else None)
         except QualificationError as error:
             failure = {**error.details, "phase": name}
             execution["failure"] = failure
@@ -1652,14 +1693,19 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
         with amp.context():
             outputs = _benchmark_forward(model_type, model, inputs)
             step_loss = _benchmark_loss(model_type, outputs, inputs)
-        backward(step_loss)
+        if amp.dtype is not None:
+            backward.capture_backward(step_loss)
+        else:
+            backward(step_loss)
         return _benchmark_logits(model_type, outputs), step_loss
 
     training_samples = None
     if "amp_training_failure" in execution:
         train_call = None
         execution["graph_replay"]["phases"]["training"] = {
-            "status": "not-attempted", "reason": "AMP training precision gate failed; checkpoint restored",
+            "status": "failed", "failure": {"kind": "numerical", "phase": "training",
+                "message": "AMP training precision gate failed; checkpoint restored",
+                "gate": execution["amp_training_failure"]},
         }
     elif training_requested:
         train_call = prepare_phase("training", train_call, model)
@@ -1700,6 +1746,8 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
     inference_summary = _timing_summary(inference_samples)
     training_summary = _timing_summary(training_samples) if training_samples is not None else None
     latency_summary = _timing_summary(latency_samples) if latency_samples is not None else None
+    if "amp_training_failure" in execution and "failure" not in execution:
+        execution["failure"] = execution["graph_replay"]["phases"]["training"]["failure"]
     precision["torch_float32_matmul_precision"] = (
         torch.get_float32_matmul_precision()
     )
@@ -1843,6 +1891,7 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
             ),
         },
         "precision": precision,
+        "correctness_reference": execution.get("amp_qualification", {}).get("correctness_reference"),
         "timings": {
             "compile_s": round(compile_s, 3),
             "inference_ms": round(inference_summary["median"], 3),

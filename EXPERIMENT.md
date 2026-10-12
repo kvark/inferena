@@ -1,5 +1,60 @@
 # P3HPC paired collection
 
+The development collector now uses **v19**, with exactly two profiles:
+`strict` and `accelerated` (practical). The existing October 11 cohort described
+below is frozen at **v18** and must still be reproduced from its source bundle.
+An AMP-capable accelerated result is a new protocol, not a relabelled v18 row.
+
+## Development v19: two profiles
+
+Strict retains the f32 arithmetic and correctness contract. Accelerated permits
+AMP and bf16/fp16 storage and arithmetic alongside existing hardware paths.
+The two engines may use different internal dtypes; receipts record the actual
+storage, arithmetic, loss dtype and scaling policy. Meganeura still uses its
+existing f32-storage implementation, with eligible f16 cooperative inputs;
+this change does not implement native f16 activation storage or training.
+
+The primary command still collects five models × two profiles × three paired
+replicates: **30 pairs per GPU**, with no dtype axis. PyTorch's default
+`--autocast auto` selects native bf16 on CUDA/HIP/XPU when supported and fp16
+otherwise; MPS uses fp16. `--autocast bf16`, `fp16` or `off` fixes an explicit
+policy for accelerated. `off` permits the earlier TF32/backend-high paths.
+Strict and the graphics-only CPU correctness oracle remain f32. The dtype is
+chosen before compilation and timing, recorded in the manifest, and never
+changed in response to a failed gate or a slow result.
+
+AMP keeps parameters and loss reductions in f32. Before timing it must pass
+the existing full-output gate against eager strict f32 and, for training, the
+32-update SGD curve gate described below. The same untimed f32 model also
+emits the canonical output/loss/gradient receipt used to validate Meganeura.
+This reference work runs before AMP compilation, with the checkpoint and RNG
+restored afterward, so candidate compilation cannot affect the oracle;
+AMP gradients are not the cross-engine correctness oracle. Native gradient
+bounds and replicated checks remain unchanged. A failed AMP training curve
+leaves training empty while retaining qualified inference and latency.
+
+Compiled AMP uses the same requested CUDA/HIP/XPU replay policy as strict.
+Forward, loss and scaled backward are captured; unscaling, finite checks and
+scale updates run after each replay **inside the measured training step**.
+Parameters are never updated during timing. Capture/compilation failures do
+not substitute an eager run. This follows the
+[PyTorch AMP capture pattern](https://docs.pytorch.org/docs/2.14/notes/cuda.html#usage-with-torch-cuda-amp).
+MPS retains explicitly uncaptured execution. Qualification compares all
+outputs and participating gradients on ordinary calls and consecutive replays.
+
+The unchanged 30-second native search, 120-second reference compilation,
+ten-second phase warmup and twenty samples remain in effect. Run count stays
+constant; AMP adds untimed f32-oracle and curve work to the accelerated run.
+The real-data convergence experiment is separate, not multiplied across the
+benchmark matrix. `scripts/amp_reference.py` remains an optional one-replicate
+dtype diagnostic; bf16/fp16 are settings within accelerated, not extra columns.
+
+V19 requires new backend qualification. In particular, the already recorded
+SmolLM2 synthetic-input AMP failures remain failures under the unchanged gates;
+an available dtype is not a guarantee that every model/phase qualifies.
+
+## Frozen October 11 v18 cohort
+
 The October 11 cohort freezes Inferena source
 `0a718b6fb9d6c990410dc274618978ad4988a36d` on branch
 `experiment/p3hpc-cuda-graphs`. Use that frozen checkout for additional cohort
@@ -753,7 +808,9 @@ the superseded protocol notes and experiment revisions without binary artifacts.
 
 ## AMP reference and real-data convergence
 
-These are supplementary studies, separate from the paired v18 cohort.
+The October 11 evidence in this section consists of supplementary studies,
+separate from the paired v18 cohort. Development v19 integrates these AMP gates
+into accelerated, as described above; the historical observations are retained.
 `amp-bf16` and `amp-fp16` keep f32 parameters, use PyTorch autocast for eligible
 operations, and reduce losses in f32. Remaining f32 matmuls use `highest` with
 TF32 disabled. fp16 uses `torch.amp.GradScaler`; bf16 disables scaling.
@@ -765,14 +822,15 @@ Native f16 activation storage is not required to collect these reference columns
   --results-dir ../amp-b570
 ```
 
-The default reference is compiled, explicitly uncaptured, and uses the cohort's
+The optional dtype diagnostic is compiled, explicitly uncaptured, and uses the cohort's
 attention policy (math on XPU, auto elsewhere). It retains the
 same 120 s compilation deadline and five-call/ten-second warmup followed by
-twenty samples. Three fresh processes per condition are the default; dtype
+twenty samples. One fresh process per condition is the diagnostic default; dtype
 order alternates. `--mode eager` is a labelled diagnostic. No capture or
 compiler failure substitutes another timing. `columns.csv` names each dtype,
-compiler mode, capture setting and replicate. Graph replay is rejected for
-this AMP version because scaling bookkeeping runs outside capture.
+compiler mode, capture setting and replicate. The v19 paired collector supports
+AMP replay with scaler bookkeeping outside capture and inside timing. The
+historical v3 AMP diagnostic used entirely uncaptured execution.
 
 Before timing, the requested compiled/eager candidate must match eager strict
 f32 on the entire forward output: per-tensor RMS and maximum error bounded by

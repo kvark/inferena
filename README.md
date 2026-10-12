@@ -107,23 +107,36 @@ a result, and inference and training validity are recorded independently.
 
 Precision is part of every result:
 
-- The default is the practical accelerated configuration. It keeps f32
-  storage/output but permits documented reduced-input, f32-accumulate hardware
-  paths. PyTorch may use TF32; Meganeura may use f16 cooperative-matrix
-  inputs.
+- The default is the practical **accelerated** configuration. It permits AMP,
+  bf16/fp16 storage and arithmetic, and hardware acceleration, subject to the
+  recorded numerical gates. PyTorch selects native bf16 when supported and
+  otherwise fp16 on GPU backends (fp16 training uses gradient scaling).
+  Meganeura currently keeps f32 storage and permits eligible f16 cooperative
+  inputs. Every result records the arithmetic actually used.
 - `--strict` disables those paths for an f32 control run. PyTorch TF32 and
   Meganeura f16 cooperative-matrix paths are disabled.
 
-The two configurations are separate comparison classes because TF32 and f16
-are not numerically equivalent.
+These are the only two collection profiles. Accelerated permits each engine's
+available optimizations; it does not require identical internal dtypes.
+The collector's `--autocast bf16`, `--autocast fp16` or `--autocast off` fixes
+the PyTorch choice before collection; the default `auto` selects by capability,
+with no retry in another dtype after a numerical or compilation failure. Strict remains f32. CPU-only
+correctness references remain f32 and supply no GPU comparison timings.
 
-Supplementary `amp-bf16` and `amp-fp16` PyTorch columns use autocast with f32
-losses and fp16 gradient scaling. They have their own full-output and
-32-step loss-curve gates; they do not change the paired f32 classes.
-`scripts/amp_reference.py` writes qualified timing records and `columns.csv`.
+AMP uses f32 losses and full-output/32-update loss-curve gates inside the
+accelerated run. An untimed eager f32 oracle supplies the cross-engine output
+and gradient checks. Graph replay includes forward/loss/scaled backward;
+scaler housekeeping runs after replay and is included in the timing.
+`scripts/amp_reference.py` is an optional dtype diagnostic, not extra required
+benchmark columns.
 `scripts/convergence.py` separately runs 256 real optimizer updates on
 SmolLM2-135M text, with identical batches across engines. See the
 [AMP and convergence protocol](EXPERIMENT.md#amp-reference-and-real-data-convergence).
+
+The development collection protocol is v19. The completed October 11 v18
+cohort retains its original f32-storage accelerated policy; use its frozen
+source bundle for additional matching machines. Do not mix those records with
+the new AMP-capable profile.
 
 ## Prerequisites
 

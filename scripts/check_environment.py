@@ -8,10 +8,18 @@ from pathlib import Path
 import platform
 import sys
 
+# Supervise before importing torch, only when a deadline was requested.
+if (__name__ == "__main__" and "INFERENA_COMPILE_SECONDS" in os.environ
+        and os.environ.get("INFERENA_BUDGET_ENFORCED") != "1"):
+    import subprocess
+    budget = Path(__file__).resolve().parents[1] / "frameworks/pytorch/budget.py"
+    raise SystemExit(subprocess.call([sys.executable, str(budget), *sys.argv]))
+
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "frameworks/pytorch"))
-from bench import clear_compile_cache, compiler_options, detect_device, device_name, select_compiler_backend
+from bench import attention_context, clear_compile_cache, compiler_options, detect_device, device_name, select_compiler_backend
+from budget import compilation_budget
 from execution import capture_phase, compare_tensors, graph_backend, synchronize
 
 
@@ -25,15 +33,15 @@ def check_backend(backend, mode, replay=None):
     inputs = torch.ones(8, 16, device=device)
     expected = model(inputs)
     gradients = torch.autograd.grad(expected.square().mean(), tuple(model.parameters()))
-    expected = expected.detach().cpu()
-    gradients = [gradient.cpu() for gradient in gradients]
+    expected = expected.detach().to("cpu", copy=True)
+    gradients = [gradient.to("cpu", copy=True) for gradient in gradients]
     api = graph_backend(device) if backend in ("cuda", "rocm", "xpu") else None
     stream = api.Stream(device=device) if api is not None else None
     if stream is not None:
         stream.wait_stream(api.current_stream(device))
     options = compiler_options(mode)
     capture = api is not None if replay is None else replay
-    with clear_compile_cache(), api.stream(stream) if stream is not None else nullcontext():
+    with clear_compile_cache(), attention_context(device), api.stream(stream) if stream is not None else nullcontext():
         candidate = model if options is None else torch.compile(model, options=options)
 
         def training():
@@ -42,6 +50,10 @@ def check_backend(backend, mode, replay=None):
             loss.backward()
             return output, loss
 
+        with compilation_budget():
+            training()
+            synchronize(device)
+        model.zero_grad(set_to_none=True)
         call, _ = capture_phase(training, model, stream=stream, device=device, capture=capture)
         model.zero_grad(set_to_none=not capture)
         output, _ = call()

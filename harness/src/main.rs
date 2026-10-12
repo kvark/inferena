@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Workload and validation contract used by the paired runners.
-pub const BENCHMARK_PROTOCOL: &str = "inferena-v2";
+pub const BENCHMARK_PROTOCOL: &str = "inferena-v3";
 
 /// Result produced by each framework benchmark runner.
 /// Every runner must print exactly one JSON object matching this schema to stdout.
@@ -166,6 +166,10 @@ struct Cli {
     /// Directory for per-framework JSON artifacts.
     #[arg(long)]
     results_dir: Option<PathBuf>,
+
+    /// Compare two preserved result files without executing either engine.
+    #[arg(long, num_args = 2)]
+    compare_results: Vec<PathBuf>,
 
     /// Dry-run: validate framework+model support without running benchmarks.
     #[arg(long)]
@@ -1366,6 +1370,20 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
 
 fn main() {
     let cli = Cli::parse();
+    if !cli.compare_results.is_empty() {
+        let mut outcomes: Vec<FrameworkOutcome> = cli
+            .compare_results
+            .iter()
+            .map(|path| {
+                serde_json::from_slice(&std::fs::read(path).expect("read preserved result"))
+                    .expect("parse preserved result")
+            })
+            .collect();
+        // Preserve source identities; only replace the derived comparison.
+        annotate_validation(&mut outcomes, "");
+        println!("{}", serde_json::to_string_pretty(&outcomes).unwrap());
+        return;
+    }
     if cli.measurement_runs == 0 {
         eprintln!("--measurement-runs must be at least 1");
         std::process::exit(2);
@@ -1497,7 +1515,7 @@ fn main() {
     }
 
     // Save results even when everything fails — the per-framework JSON captures
-    // the full traceback, which is often the only record of what went wrong.
+    // the stderr excerpt, which is often the only record of what went wrong.
     save_results(&results_dir, &cli.model, &outcomes);
 
     if successes.is_empty() {

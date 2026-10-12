@@ -75,7 +75,7 @@ For each instrumented framework and model, Inferena records:
 
 1. **Compile** — Graph/compiler specialization and executable preparation
    (seconds). The JSON describes the scope: Meganeura includes parameter/input
-   upload and optional kernel tuning; PyTorch includes first specializations
+   upload and optional qualified graph/kernel/submission search; PyTorch includes first specializations
    of the requested phases. PyTorch reports capture and validation separately.
 2. **Inference** — A no-gradient full forward pass with fixed deterministic
    input (milliseconds). For decoder LLMs this is explicitly the 128-token
@@ -125,11 +125,25 @@ INFERENA_TORCH_MODE=eager INFERENA_GRAPH_REPLAY=0 INFERENA_REFERENCE_DIAGNOSTIC=
 ```
 
 `INFERENA_TORCH_MODE=max-autotune` opts into PyTorch's longer search.
-`MEGANEURA_TUNE=1` opts into Meganeura's bounded kernel tuner.
-Both choices are recorded. Main does not impose the paper's tuning deadlines,
-multi-plan measured search, campaign replication or vendor-specific workarounds.
-`INFERENA_SDPA=math|efficient|auto` is an explicit diagnostic choice, not a
-hidden per-device default.
+`MEGANEURA_TUNE=1` opts into Meganeura's measured graph/kernel/submission search.
+Each candidate must pass full-tensor checks against the first checked program;
+this construction check is separate from cross-engine validation. Search defaults
+to a 30-second budget per session, configurable with `INFERENA_TUNE_SECONDS`.
+`INFERENA_MAX_SUBMISSION_CHUNKS` sets the upper submission count (1–64).
+Set `INFERENA_KERNEL_MEMO_DIR` to reuse kernel decisions for the same dependency,
+device, driver and tuning configuration; fresh program measurements and
+qualification still run. These choices and search receipts are recorded.
+
+PyTorch compilation has no deadline by default. Set `INFERENA_COMPILE_SECONDS`
+to enable a watchdog that terminates the compiler process tree on expiry.
+`INFERENA_PREPARATION_REPORT` optionally preserves compilation and qualification
+failure details. A timeout produces an error, never a substituted eager timing.
+
+`INFERENA_SDPA=math|efficient|auto` overrides the recorded attention policy.
+XPU defaults to math attention because the pinned fused implementation can hang
+during graph capture. For XPU language-model training, the runner probes dense
+embedding backward and uses a separately qualified `index_add` implementation
+only if the native operation fails that probe.
 
 ## Prerequisites
 
@@ -303,15 +317,63 @@ Or generate random-init weights locally (no network needed):
 python3 models/generate_weights.py SmolLM2-135M
 ```
 
-Synthetic SmolVLA, diffusion, ResNet and Whisper parameters keep main's
-`name-seeded-sine-v1` initializer across adapters. They do not use the paper
-branch's different uniform fixture. Reproduce the paper with the
-`paper-p3hpc-2026-final` tag, not main.
+The paired Meganeura/PyTorch runners use `name-index-uniform-v1` synthetic
+parameters for SmolVLA, diffusion, ResNet and Whisper. This avoids the low-rank
+sine fixture while matching parameter bits and native matrix layouts. Diffusion
+uses exact GELU, and native SmolLM2/ResNet training uses indexed labels instead
+of allocating one-hot targets. These changes advance the paired result contract
+to `inferena-v3`; do not combine earlier fixture results with new measurements.
+
+### Full-tensor correctness checks
+
+Set `INFERENA_TENSOR_EXPORT` to a fresh directory named after the model to save
+Meganeura's inputs, source parameters, outputs, loss and canonical gradients
+outside the timed regions. Check those tensors against a fresh CPU float64 run:
+
+```bash
+INFERENA_TENSOR_EXPORT=../captures/Whisper-tiny \
+  ./run.sh -m Whisper-tiny -f meganeura --strict --results-dir ../tensor-check
+python scripts/compare_tensors.py ../captures/Whisper-tiny
+```
+
+The comparator checks all three phases with fixed maximum and RMS error bounds,
+saves per-tensor findings, and returns failure when a bound is exceeded. For
+SmolLM2 it reads the local model config, or accepts `--config`. It requires strict
+arithmetic when cooperative matrices are used; these bounds do not certify a
+reduced-input cooperative run. Exported timing records remain ordinary runner
+results; numerical agreement is reported separately by the comparator.
+
+The same native runner builds for Quest 3S with Android NDK r27 and Rust target
+`aarch64-linux-android`. Set `CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER` and
+`CC_aarch64_linux_android` to the NDK's `aarch64-linux-android29-clang` executable
+(`.cmd` on Windows), and `AR_aarch64_linux_android` to its `llvm-ar` executable:
+
+```bash
+rustup target add aarch64-linux-android
+cargo build --locked --release --target aarch64-linux-android -p inferena-meganeura
+adb shell mkdir -p /data/local/tmp/inferena
+adb push target/aarch64-linux-android/release/inferena-meganeura /data/local/tmp/inferena/runner
+adb shell chmod +x /data/local/tmp/inferena/runner
+adb shell 'cd /data/local/tmp/inferena && INFERENA_STRICT=1 INFERENA_TENSOR_EXPORT=Whisper-tiny ./runner Whisper-tiny' > quest-whisper.json
+mkdir -p ../captures
+adb pull /data/local/tmp/inferena/Whisper-tiny ../captures/
+python scripts/compare_tensors.py ../captures/Whisper-tiny
+```
+
+The pinned Blade includes the Qualcomm pipeline compiler serialization fix.
+On Android without Vulkan memory-budget reporting, tuning bounds logical plans
+using available system memory capped at 3 GiB. Device deployment and collection
+are manual here; cohort scheduling, replicate policies and battery management
+remain on the experiment branch.
+
+Saved JSON results can also be compared with `inferena --compare-results a.json
+b.json`. For Nsight SQLite exports, `python scripts/nsys_report.py capture.sqlite`
+reports measured GPU intervals; `--launches` separates CUDA graph nodes.
 
 ### Fast regression checks
 
 ```bash
-cargo test --locked -p inferena-harness
+cargo test --locked -p inferena-harness -p inferena-meganeura
 python -m unittest discover -s frameworks/pytorch -p 'test_*.py'
 python scripts/check_environment.py --backend cpu
 ```

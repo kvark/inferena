@@ -17,10 +17,18 @@ thread_local! {
 
 mod export;
 mod initialization;
+mod parameters;
 mod qualification;
 mod search_cache;
 
-const WARMUP_TIME: Duration = Duration::from_secs(2);
+fn warmup_time() -> Duration {
+    let seconds = std::env::var("INFERENA_WARMUP_SECONDS")
+        .unwrap_or_else(|_| "2".to_owned())
+        .parse::<f64>()
+        .expect("INFERENA_WARMUP_SECONDS must be a non-negative number");
+    assert!(seconds.is_finite() && seconds >= 0.0);
+    Duration::from_secs_f64(seconds)
+}
 
 fn build_session(
     graph: &Graph,
@@ -456,9 +464,10 @@ fn bench_session(
     let mut exported = export::before(session, phase);
     let (warmups, samples) = benchmark_counts();
     let warmup_range = nsys_range(&format!("meganeura/{phase}/warmup"));
+    let warmup_time = warmup_time();
     let warmup_start = Instant::now();
     let mut warmup_runs = 0;
-    while warmup_runs < warmups || warmup_start.elapsed() < WARMUP_TIME {
+    while warmup_runs < warmups || warmup_start.elapsed() < warmup_time {
         set_inputs(session);
         session.step();
         session.wait();
@@ -1067,6 +1076,16 @@ fn emit_result(
     environment: &serde_json::Value,
 ) {
     assert_eq!(output_shape.iter().product::<usize>(), output.len());
+    assert!(
+        loss.is_finite() && output.iter().all(|value| value.is_finite()),
+        "non-finite forward result"
+    );
+    if training.is_some() {
+        assert!(
+            grad_norm.is_finite() && gradient_norms.values().all(|norm| norm.is_finite()),
+            "non-finite gradient result"
+        );
+    }
     let hash = sha256_f32(output);
     let sample = validation_sample(output, 256);
     let backend = detect_backend();
@@ -1130,7 +1149,7 @@ fn emit_result(
             "name": "inferena-paper-v3",
             "synthetic_parameter_init": initialization::POLICY,
             "warmup_runs": warmup_runs,
-            "warmup_seconds": WARMUP_TIME.as_secs_f64(),
+            "warmup_seconds": warmup_time().as_secs_f64(),
             "warmup": {
                 "inference": forward.warmup,
                 "latency": latency.warmup,
@@ -1192,8 +1211,8 @@ fn emit_result(
             "logits_hash": hash,
             "output_shape": output_shape,
             "logits_sample": sample,
-            "loss": if loss.is_nan() { -1.0 } else { (loss * 1_000_000.0).round() / 1_000_000.0 },
-            "grad_norm": training.map(|_| if grad_norm.is_nan() { -1.0 } else { (grad_norm * 1_000_000.0).round() / 1_000_000.0 }),
+            "loss": (loss * 1_000_000.0).round() / 1_000_000.0,
+            "grad_norm": training.map(|_| (grad_norm * 1_000_000.0).round() / 1_000_000.0),
             "gradient_norms": gradient_norms,
         },
     });

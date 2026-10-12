@@ -667,8 +667,18 @@ fn run_framework(
                         error: format!("precision contract failed: {error}"),
                     };
                 }
-                if r.outputs.output_shape.is_empty()
+                if r.framework != framework
+                    || r.model != model
+                    || r.outputs.output_shape.is_empty()
                     || r.outputs.logits_sample.len() != 256
+                    || !r.timings.compile_s.is_finite()
+                    || r.timings.compile_s < 0.0
+                    || !r.timings.inference_ms.is_finite()
+                    || r.timings.inference_ms < 0.0
+                    || [r.timings.latency_ms, r.timings.training_ms]
+                        .into_iter()
+                        .flatten()
+                        .any(|ms| !ms.is_finite() || ms < 0.0)
                     || !r.outputs.loss.is_finite()
                     || r.outputs
                         .logits_sample
@@ -677,7 +687,15 @@ fn run_framework(
                     || r.extra["protocol"]["training_requested"].as_bool() != Some(!inference_only)
                     || (!partial && r.timings.training_ms.is_some() == inference_only)
                     || (r.timings.training_ms.is_some()
-                        && (r.outputs.grad_norm.is_none() || r.outputs.gradient_norms.is_empty()))
+                        && (r
+                            .outputs
+                            .grad_norm
+                            .is_none_or(|norm| !norm.is_finite() || norm < 0.0)
+                            || r.outputs.gradient_norms.is_empty()
+                            || r.outputs
+                                .gradient_norms
+                                .values()
+                                .any(|norm| !norm.is_finite() || *norm < 0.0)))
                     || (inference_only
                         && (r.outputs.grad_norm.is_some() || !r.outputs.gradient_norms.is_empty()))
                 {
@@ -868,8 +886,16 @@ fn compare_result(reference: &BenchResult, other: &BenchResult) -> ComparisonMet
     } else if training_valid {
         "PASS (<1% forward, <5% gradient)"
     } else if forward_valid
-        && reference.timings.training_ms.is_none()
-        && other.timings.training_ms.is_none()
+        && reference
+            .extra
+            .get("protocol")
+            .and_then(|p| p.get("training_requested"))
+            == Some(&serde_json::Value::Bool(false))
+        && other
+            .extra
+            .get("protocol")
+            .and_then(|p| p.get("training_requested"))
+            == Some(&serde_json::Value::Bool(false))
     {
         "INFERENCE PASS; TRAINING NOT REQUESTED"
     } else if forward_valid {
@@ -1302,7 +1328,11 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
                 );
                 let training = r.timings.training_ms.map_or_else(
                     || {
-                        if r.extra["protocol"]["training_requested"] == true {
+                        if r.extra
+                            .get("protocol")
+                            .and_then(|p| p.get("training_requested"))
+                            == Some(&serde_json::Value::Bool(true))
+                        {
                             "failed / unavailable".to_string()
                         } else {
                             "not requested".to_string()

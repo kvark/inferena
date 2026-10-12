@@ -1,10 +1,10 @@
 # P3HPC paired collection
 
 Use branch `experiment/p3hpc-cuda-graphs`. Meganeura is pinned to
-`5b4745cf88eaa18a4c507a10705d666d75da8fe7` (Quest Vulkan fixes, causal
-SmolVLA training, bounded long-product accumulation, and serialized Adreno
-driver pipeline compilation), with Blade
-`56f05651cca73659130e924e497dda633f839d40`. Protocol
+`eb8c90fceb2f065bed98c2d1c6cc4e419923e11d` (Quest Vulkan fixes, causal
+SmolVLA training, and bounded long-product accumulation), with Blade
+`7909fc17392f803b02be001041695127426e0fa3` providing the shared Qualcomm
+Android pipeline compiler workaround. Protocol
 `p3hpc-paired-campaign-v18` retains the merged joint graph/schedule search:
 up to 16 graph/implementation forms, interleaved physical-plan choices, and
 at least two warmup pairs and 250 ms before comparing whole programs, within

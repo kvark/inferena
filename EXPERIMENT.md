@@ -52,6 +52,10 @@ dtype diagnostic; bf16/fp16 are settings within accelerated, not extra columns.
 V19 requires new backend qualification. In particular, the already recorded
 SmolLM2 synthetic-input AMP failures remain failures under the unchanged gates;
 an available dtype is not a guarantee that every model/phase qualifies.
+The [failure diagnosis](ANALYSIS.md#accelerated-failure-diagnosis-october-12-2026)
+isolates training divergence to rounding updated linear weights and the bf16
+forward failure to activation arithmetic. Repeated real-text batches still fail
+the short training-curve gate. These diagnostics do not change the v19 policy.
 
 ## Frozen October 11 v18 cohort
 

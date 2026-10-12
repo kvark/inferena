@@ -4,6 +4,77 @@ The evidence separates inefficient resident kernels from weight-representation
 and memory-placement costs. It does **not** establish a removable barrier-cost percentage.
 No new speed samples were collected during the post-OOM offline analysis.
 
+## Accelerated failure diagnosis (October 12, 2026)
+
+The SmolLM2 failures have two distinct numerical causes. The new diagnostics
+use source `9998622`, the same checkpoint, inputs, SGD rate and 32-update gate,
+with eager execution on B570 (math SDPA) and RTX 5070 (auto SDPA). They extend
+the earlier eager/compiler controls; no benchmark settings or gates change.
+
+**Training: rounding the updated weights explains almost all the divergence.**
+An ablation casts only linear weights to bf16/fp16 and back to f32 on every
+forward, while keeping activations, matrix arithmetic, gradients and SGD in
+f32. A straight-through derivative isolates forward weight quantization from
+gradient rounding. The original checkpoint contains 272 BF16 tensors; rounding
+its initial linear weights to bf16 changes neither logits nor the first
+gradient materially. Subsequent f32 master-weight updates are nevertheless
+rounded away when constructing the next forward's weights.
+
+| GPU | Dtype | Full AMP curve L2 error | Rounded weights, f32 computation |
+| --- | --- | ---: | ---: |
+| B570 | fp16 | 5.447% | 5.458% |
+| B570 | bf16 | 13.029% | 12.910% |
+| RTX 5070 | fp16 | 5.412% | 5.417% |
+| RTX 5070 | bf16 | 12.834% | 12.838% |
+
+After the first f32 SGD update on B570, 108,375,146 linear-weight elements
+change. Of those changes, 98.95% are invisible after an fp16 cast and 99.86%
+after a bf16 cast. They remain stored in the f32 master weights and can become
+visible after later updates accumulate. The same updated f32 weights give
+loss 5.110976, versus 5.176702 with fp16-rounded weights and 5.234647 with
+bf16-rounded weights (initial loss 6.009892). The weight-only ablation needs
+neither autocast nor a scaler. This isolates the dominant cause from gradient
+underflow, skipped steps, graph replay and compiler behavior.
+
+**BF16 forward: activation arithmetic is the limiting factor.** Initial
+bf16-rounded weights alone produce exactly the f32 logits, but full AMP has
+maximum logit error 1.078 on B570 and 0.913 on RTX 5070 against a 0.727 bound.
+Both RMS checks pass. The layer trace exposes large MLP activations and
+residual cancellation, especially around layers 11 and 28. Keeping all MLPs
+in f32 lowers maximum error to 0.642/0.533 and passes both GPUs. Keeping only
+the output head in f32 does not resolve the B570 failure. A single-layer
+exemption is insufficient across devices: layer 28 in f32 passes B570 but
+still fails RTX 5070. These are diagnostic ablations, not adopted policies;
+MLP-only protection also leaves the B570 training curves outside their bounds.
+The f32 regions use PyTorch's documented
+[autocast-disabled subregions](https://docs.pytorch.org/docs/2.14/amp.html#torch.autocast).
+
+Changing synthetic input to text does not by itself solve the short-curve
+failure. Three blocks were selected before execution from the frozen corpus
+(first train, probe and held-out source blocks), each used as a repeated
+training batch for this diagnostic. All six fp16 curves fail at 1.67–2.93%
+L2; all six bf16 curves fail at 3.38–5.74%. All fp16 full-forward gates pass,
+while all bf16 maximum-error gates fail. Initial cross-entropy changes by
+less than 0.17% in every case. These runs are not held-out generalization
+evaluations. The prior 256-update study on changing real-text batches remains
+separate: fp16 passed on both GPUs; bf16 missed the B570 fixed-probe bound.
+
+The evidence supports revisiting the accelerated training criterion around
+real-data learning quality before another cohort, with the short repeated-batch
+curve retained as an arithmetic diagnostic. It does not justify silently
+widening the current limits, switching dtype after a failure or promoting a
+device-specific f32 exemption. Strict/accelerated remain the only two profiles,
+and every existing failed cell retains its status.
+
+`../inferena-results/accelerated-failures-20261012` retains the scripts, source
+archives, 36 complete diagnostic trajectories, per-layer/parameter comparisons,
+update-visibility counts, raw losses, watchdogs, summary JSON/CSV and
+`weight-rounding.png`/`.svg`. A first text-probe attempt is retained separately:
+a repeated native XPU embedding probe raised an invalid-SymInt exception.
+The completed rerun reused the already selected dense index-add fallback and
+verified all gradient elements for each text batch. No runtime code changes
+or new performance measurements are included in this investigation.
+
 ## Accelerated includes AMP (October 12, 2026)
 
 Development protocol v19 keeps exactly two paired profiles: strict and

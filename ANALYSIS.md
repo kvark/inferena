@@ -1,8 +1,127 @@
-# Native gap analysis — September 9
+# Inferena experiment analysis
 
-The evidence separates inefficient resident kernels from weight-representation
-and memory-placement costs. It does **not** establish a removable barrier-cost percentage.
-No new speed samples were collected during the post-OOM offline analysis.
+Results retain their experiment's revision, protocol and limitations. The earlier
+post-OOM offline analysis separates inefficient resident kernels from
+weight-representation and memory-placement costs; it does not establish a
+removable barrier-cost percentage or contain new speed measurements.
+
+## V22 full local collection (October 14, 2026)
+
+The agreed acceptance changes are implemented in `p3hpc-paired-campaign-v22`:
+pretrained language-model logits use full distribution and labelled-loss checks,
+and training retains the per-loss 2% bound without the additional 1% curve-L2
+veto. Strict checks, native full-gradient checks and execution repeatability are
+unchanged. There are still exactly two profiles, `strict` and `accelerated`.
+
+Both full collections use **Inferena `1ed4df7`**, merged Meganeura `99e3de2`,
+Blade `96c1dc7`, Naga `a97559b6`, and PyTorch 2.13.0 vendor wheels from the same
+PyTorch commit. Each GPU runs five models × two profiles × three fresh processes:
+SmolLM2-135M, SmolVLA, StableDiffusion, ResNet-50 and Whisper-tiny. B570 runs first;
+GPU jobs are serial. The source stays clean and frozen across both collections.
+
+| GPU | Strict phases | Accelerated phases | Replicated-gradient groups | Wall time |
+| --- | ---: | ---: | ---: | ---: |
+| B570 | 45/45 | 42/45 | 10/10 pass | 106.9 min |
+| RTX 5070 | 45/45 | 42/45 | 10/10 pass | 80.0 min |
+
+All 60 paired runs finish within their watchdogs. All inference and training
+phases qualify. The six failed observations are the three accelerated SmolLM2
+one-token latency repeats on each GPU. Their PyTorch timings remain absent;
+eager diagnostic timings never replace them. The paired report contains **58/60
+qualified model/profile/phase cells**, requiring all three replicates for each
+cell. Both campaigns correctly finish `complete-with-failures`.
+
+Search remains 30 seconds per native session, reference compilation 120 seconds,
+warmup at least ten seconds and five calls per phase, and measurement twenty
+samples. Each campaign starts with empty kernel memos; each records ten misses
+and 74 later hits. Driver shader-cache contents are separately labelled
+uncontrolled. Native F32-reference preparation is included in preparation cost:
+115.8 seconds total on B570 and 38.8 seconds on RTX. Wall times above include the
+failed-setting eager diagnostics. Mesa is `26.0.3-1ubuntu1`, NVIDIA's driver is
+`595.91.07`, and the host kernel is `7.0.0-38-generic`.
+
+### Remaining one-token precision exclusion
+
+PyTorch's compiled BF16 prefill now passes the distribution/loss contract, and
+all six 256-update real-text training/probe/held-out qualifications pass. The
+latency failure is repeatable:
+
+| GPU | Prefill mean KL | One-token KL, all three repeats | One-token limit |
+| --- | ---: | ---: | ---: |
+| B570 | 0.001547–0.001608 | 0.012834 | ln(1.01) = 0.009950 |
+| RTX 5070 | 0.001806 | 0.013273 | ln(1.01) = 0.009950 |
+
+The compiled one-token labelled-loss check passes; mean KL fails. With one token,
+the mean budget is also a per-token budget. The first prefill token also exceeds
+that mean limit individually, while the entire sequence passes. Eager BF16 fails
+one-token qualification too, including its labelled loss, so graph replay alone
+does not explain the exclusion.
+
+An untimed follow-up checks the benchmark token plus the first token/target pair
+from each of the eight frozen probe/held-out blocks, without a KV cache. Compiled
+BF16 passes only **2/9 cases on B570 and 3/9 on RTX**. Pooling those nine cases
+still fails the unchanged mean-KL limit: 0.021741 and 0.028905. Keeping the final
+projection in F32 does not fix it. This is broader than a single unlucky
+benchmark token; hardware BF16 support is not an accuracy guarantee.
+
+FP16 passes the benchmark token on both GPUs and has much smaller pooled KL
+(0.000424 / 0.000569). It passes 8/9 individual compiled cases; one labelled-loss
+bound still fails, despite passing KL. These are forward-only, uncaptured
+diagnostics, not replacement cohort results or a new training qualification.
+The earlier FP16 256-update study remains separate evidence under its recorded
+revision. No dtype or threshold was changed in response to these results.
+
+### Collection and regression evidence
+
+The implementation also fixes three issues exposed by preflight collection:
+latency qualification must not discard valid prefill/training; a qualified
+untuned initial program may legitimately win calibrated search; and JSON must
+preserve floating-point evidence across the Rust harness. Derived receipt
+metrics tolerate serialization-scale roundoff, while acceptance is recomputed
+from raw curves with unchanged bounds. Failed phases cannot carry timings.
+Earlier preflights and stopped attempts remain archived and are excluded from
+the full collection.
+
+The historical native comparison flags B570 diffusion inference/latency about
+28–35% slower than the October 11 cohort, Whisper about 11–12% slower on B570 and
+5–7% on RTX, and isolated B570 latency differences in ResNet and SmolVLA. These
+comparisons span library and protocol changes. B570 ResNet's accelerated process
+medians also overlap substantially: 5.232–6.171 ms before and 5.101–6.368 ms now.
+The historical flags alone cannot identify a regression caused by this patch.
+
+A matched supplementary study compares pre-change Inferena `1288461` with
+`1ed4df7`, both using the same merged Meganeura revision. Each variant has three
+fresh processes, alternating order, strict arithmetic, the same 30-second search,
+ten-second warmup and twenty samples. Kernel memos start empty per variant/model;
+driver cache directories start empty per process. Every process also passes the
+preserved same-input PyTorch strict output/loss/gradient checks. The predeclared
+material-slowdown limit is 5% for each phase's median of process medians.
+
+| GPU | Model | Inference change | Latency change | Training change |
+| --- | --- | ---: | ---: | ---: |
+| B570 | StableDiffusion | +2.19% | +0.27% | +0.25% |
+| B570 | Whisper-tiny | −1.38% | −0.89% | −0.48% |
+| RTX 5070 | Whisper-tiny | +0.06% | +0.06% | +1.11% |
+
+All nine comparisons pass that limit, and all 18 supplementary processes pass
+correctness. B570 diffusion's pre-change latency itself ranges from 4.749 to
+5.629 ms; the current range is 5.576–5.789 ms. Clock traces record substantial
+changes during both variants' B570 runs. The large historical diffusion/Whisper
+gaps therefore do not reproduce when changing only the acceptance implementation.
+This does not establish that every intervening library/protocol change is
+performance-neutral. Raw controls, ranges and B570 clock samples are retained in
+`matched-native-b570` and `matched-native-rtx5070`.
+
+Rust and Python unit suites, Clippy, and compiled AMP/live-input replay checks
+on both GPUs pass. Full results, raw failure receipts, source archives, scripts,
+and the 60-cell table are in `../inferena-results/accelerated-v22-20261014/`;
+the final campaign directories are `b570-full-r3` and `rtx5070-full`.
+
+**The default accelerated policy is not ready for a fully populated cohort.**
+Strict is locally qualified, and failed accelerated phases are correctly
+excluded. Before a publication freeze, explicitly choose and qualify the
+SmolLM2 precision policy rather than treating capability-based `auto` as an
+accuracy guarantee. Retain the two profiles and all failed evidence.
 
 ## Acceptance threshold audit (October 14, 2026)
 

@@ -140,6 +140,22 @@ updates. Qualification times are recorded separately from compilation and step
 timings. `scripts/amp_reference.py` remains an optional dtype diagnostic;
 `scripts/convergence.py` remains the separate cross-engine learning study.
 
+### October 14 local readiness run
+
+The complete B570 and RTX 5070 matrices use frozen Inferena `1ed4df7` with the
+pins and budgets above. Both execute all 30 pairs. Each GPU passes 45/45 strict
+phases, 42/45 accelerated phases, and all ten replicated-gradient groups. The
+three repeated exclusions on each GPU are SmolLM2-135M BF16 one-token latency;
+inference and training remain qualified. Failed latency has no timing or
+substituted dtype. The common-revision report has 58/60 qualified phase cells.
+
+These are readiness results, not a fully qualified default-`auto` publication
+cohort. Before collecting other devices, freeze an explicitly qualified
+SmolLM2 precision policy. Do not raise the bounds or substitute FP16 results into
+these BF16 records. See the [full run and follow-up evidence](ANALYSIS.md#v22-full-local-collection-october-14-2026).
+The result directories are
+`../inferena-results/accelerated-v22-20261014/{b570-full-r3,rtx5070-full}`.
+
 ## Frozen October 11 v18 cohort
 
 The October 11 cohort freezes Inferena source
@@ -162,10 +178,11 @@ local qualification and replicated collection; other backends still need
 qualification. The final library commit only corrects a wall-clock test's assumed
 trial count, with no change to search behavior.
 
-The development checkout now pins upstream Meganeura
+After that cohort, development updated to upstream Meganeura
 `d7a7293378db1b0e8ee3b94a1e6d73ef14a1a32c`, including the subsequent Vulkan
 correctness, scalar-product splitting and convolution indexing changes. This
-is a different library tree from the frozen cohort. The intermediate merged
+is a different library tree from the frozen cohort; the current development pin
+is recorded above. The intermediate merged
 revision `430f14b` had the same tree as the cohort's `5b37124`; neither its
 records nor the frozen source bundle are relabelled for the new pin.
 

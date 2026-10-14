@@ -10,7 +10,7 @@ import sys
 
 from collection import write_json
 from p3hpc import (SUPPORTED_MODELS, check_torch_identity, gpu_matches, input_hashes, positive_seconds,
-                  cpu_frequency_policies, reference_sdpa_policy, PYTHON_VERSION)
+                  cpu_frequency_policies, reference_sdpa_policy, PYTHON_VERSION, PYTORCH_PROTOCOL)
 from study import ROOT, begin, environment, run_json
 from precision import check_precision_qualification
 
@@ -21,7 +21,7 @@ def check_record(record, model, precision, mode, gpu, *, sdpa=None, diagnostic=F
         raise ValueError("requested attention policy did not execute")
     if record["model"] != model or record["status"] not in ("ok", "partial") or not gpu_matches(gpu, record["gpu_name"]):
         raise ValueError("unexpected model/device or incomplete accelerated result")
-    if record["precision"]["comparison_class"] != "accelerated" or protocol["name"] != "inferena-graph-replay-v13":
+    if record["precision"]["comparison_class"] != "accelerated" or protocol["name"] != PYTORCH_PROTOCOL:
         raise ValueError("requested accelerated arithmetic did not execute")
     if record["precision"].get("autocast") != (None if precision == "off" else precision):
         raise ValueError("requested accelerated arithmetic did not execute")

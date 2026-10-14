@@ -27,6 +27,7 @@ from quality import LM_POLICY, MEAN_KL_LIMIT, TOKEN_KL_LIMIT, check_language_mod
 from training_gate import CURVE_POLICY, FIXTURE, FIXTURE_SHA256, load_fixture, workload_for
 
 ROOT = Path(__file__).resolve().parents[1]
+PYTORCH_PROTOCOL = (ROOT / "frameworks/pytorch/PROTOCOL").read_text().strip()
 MODELS = ("SmolLM2-135M", "SmolVLA", "StableDiffusion", "ResNet-50", "Whisper-tiny")
 SMOLLM2_PINS = json.loads((ROOT / "models/smollm2-revisions.json").read_text())
 SMOLLM2_REVISIONS = {name: pin["revision"] for name, pin in SMOLLM2_PINS.items()}
@@ -333,7 +334,7 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
         if record["protocol"]["warmup_runs"] != 5:
             raise ValueError("unexpected warmup count")
         protocol = record["protocol"]
-        expected = "inferena-paper-v6" if engine == "meganeura" else "inferena-graph-replay-v13"
+        expected = "inferena-paper-v6" if engine == "meganeura" else PYTORCH_PROTOCOL
         if protocol.get("name") != expected or protocol.get("warmup_seconds") != WARMUP_SECONDS:
             raise ValueError("runner did not declare the workload warmup policy")
         if protocol.get("synthetic_parameter_init") != SYNTHETIC_PARAMETER_INIT:

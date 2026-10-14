@@ -743,7 +743,7 @@ fn run_framework(
                 r.extra.remove("status").as_ref().and_then(|v| v.as_str()) == Some("partial");
             if matches!(framework, "pytorch" | "meganeura") {
                 let expected_protocol = if framework == "pytorch" {
-                    "inferena-graph-replay-v11"
+                    include_str!("../../frameworks/pytorch/PROTOCOL").trim()
                 } else {
                     PAPER_PROTOCOL
                 };
@@ -1851,6 +1851,66 @@ mod tests {
     fn relative_loss_error_is_not_diluted_for_small_losses() {
         assert!((relative_scalar_error(0.0003, 0.0006) - 0.5).abs() < 1e-12);
         assert_eq!(relative_scalar_error(0.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn runner_accepts_current_pytorch_protocol_and_rejects_stale_records() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("frameworks/pytorch");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("run.sh"),
+            "#!/usr/bin/env bash\ncat record.json\n",
+        )
+        .unwrap();
+        let mut record = result(vec![1, 256], true);
+        record.framework = "pytorch".into();
+        record.extra.insert(
+            "precision".into(),
+            serde_json::json!({
+                "comparison_class": "strict-f32", "tensor_storage": "f32",
+                "accumulation": "f32", "output": "f32", "reduced_precision_allowed": false,
+            }),
+        );
+        let current = include_str!("../../frameworks/pytorch/PROTOCOL").trim();
+        for protocol in [current, "inferena-graph-replay-v11"] {
+            record.extra.insert(
+                "protocol".into(),
+                serde_json::json!({
+                    "name": protocol, "training_requested": true,
+                }),
+            );
+            std::fs::write(
+                directory.join("record.json"),
+                serde_json::to_string(&record).unwrap(),
+            )
+            .unwrap();
+            let outcome = super::run_framework(
+                root.path(),
+                "pytorch",
+                "model",
+                false,
+                false,
+                None,
+                true,
+                false,
+                5,
+                20,
+                None,
+                3,
+            );
+            if protocol == current {
+                assert!(
+                    matches!(outcome, FrameworkOutcome::Ok(_)),
+                    "{}",
+                    serde_json::to_string(&outcome).unwrap()
+                );
+            } else {
+                assert!(
+                    matches!(outcome, FrameworkOutcome::Error { ref error, .. } if error.contains("runner reported protocol"))
+                );
+            }
+        }
     }
 
     #[test]

@@ -33,6 +33,8 @@ from budget import compilation_budget, save
 from amp import AmpPolicy, BenchmarkBackward, qualify as qualify_precision, prepare_reference, precision_policy, training_plan
 from model_precision import apply_model_guard
 
+PROTOCOL = Path(__file__).with_name("PROTOCOL").read_text().strip()
+
 
 # --- Conditioned latent-diffusion U-Net (matches meganeura::models::sd_unet) ---
 
@@ -1459,7 +1461,7 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
     amp = AmpPolicy(dev, declared_policy["autocast"] or "")
     latency_amp = AmpPolicy(dev, declared_policy["phase_autocast"]["latency"] or "")
     precision_mode = "strict-f32" if strict else "accelerated"
-    protocol = "inferena-graph-replay-v13"
+    protocol = PROTOCOL
     warmup_runs = int(os.environ.get("INFERENA_WARMUP_RUNS", "5"))
     measurement_runs = int(os.environ.get("INFERENA_MEASUREMENT_RUNS", "20"))
     if warmup_runs < 0 or measurement_runs < 1:

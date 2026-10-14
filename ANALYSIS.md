@@ -34,6 +34,9 @@ search budget. All 20 search tests pass on B570 and RTX 5070, and all-target,
 all-feature Clippy passes.
 The changes are published for review in
 [Meganeura PR #260](https://github.com/kvark/meganeura/pull/260).
+The dispatch-only shortcut was introduced by `07445e8` after the frozen October
+11 pin; its removal has a failing-before/passing-after GPU regression test.
+PR #260's GitHub CI also passes.
 
 A cold B570 control and fixed run use fresh driver caches, no native memo,
 30-second search, 40-second traced warmup and 20 held-out samples. Both pass the
@@ -139,7 +142,18 @@ of the prior BF16 cohort medians (12.607 / 8.857 ms), avoiding the full-model FP
 prototype's 16.722 / 10.119 ms cost. These remain single-process preflights;
 all phase metadata and raw gates are retained in `qualify-phase-{xpu,cuda}`.
 The Python runner suite passes 39 tests on each GPU, and all 26 collector tests
-pass. The native pin and Rust binaries are unchanged from the tested search fix.
+pass. The native pin and Meganeura binary are unchanged from the tested search fix.
+
+The first v24 paired attempt at `bd69a08` caught a consumer-version bug: the
+Rust harness still expected PyTorch v11 and rejected the v13 result. The attempt
+was stopped and retained in `../inferena-results/accelerated-v24-20261014/`, with
+no promoted timings. The runner, collector and Rust harness now read one shared
+`frameworks/pytorch/PROTOCOL` file. A subprocess regression test reproduces the
+rejection before the fix, accepts the current protocol after it, and continues
+to reject stale records. Fresh collection requires the corrected common revision;
+this integration fix does not change arithmetic or quality thresholds. Both real
+GPU preflight receipts also fail through the preserved old harness and pass
+through the rebuilt one (`protocol-receipt-replay/verification.json`).
 
 ## V22 full local collection (October 14, 2026)
 

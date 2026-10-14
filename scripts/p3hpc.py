@@ -23,7 +23,8 @@ import tomllib
 
 from collection import run_recorded, write_json
 from precision import check_precision_qualification
-from training_gate import FIXTURE, FIXTURE_SHA256, load_fixture, workload_for
+from quality import LM_POLICY, MEAN_KL_LIMIT, TOKEN_KL_LIMIT, check_language_model_report
+from training_gate import CURVE_POLICY, FIXTURE, FIXTURE_SHA256, load_fixture, workload_for
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS = ("SmolLM2-135M", "SmolVLA", "StableDiffusion", "ResNet-50", "Whisper-tiny")
@@ -163,7 +164,8 @@ def duration_seconds(duration):
     return duration["secs"] + duration["nanos"] / 1e9
 
 
-def check_native_search(session, seconds, max_submission_chunks, kernel_memo=False, android=False):
+def check_native_search(session, seconds, max_submission_chunks, kernel_memo=False, android=False,
+                        language_model=False, output_shape=None):
     search = session.get("search")
     if not search:
         raise ValueError("native session did not use calibrated construction")
@@ -224,11 +226,13 @@ def check_native_search(session, seconds, max_submission_chunks, kernel_memo=Fal
         raise ValueError("native construction lacks full-output/gradient qualification")
     arithmetic = qualification.get("arithmetic_reference", {})
     strict = session["cooperative_matrix_policy"] == "NativeF32"
-    if (arithmetic.get("policy") != "native-f32-full-tensor-v1"
+    semantic = language_model and not strict and session["mode"] == "Inference"
+    if (arithmetic.get("policy") != "native-f32-full-tensor-v2"
             or arithmetic.get("status") != "pass"
             or arithmetic.get("reference") != "original graph; untuned native strict-f32"
             or arithmetic.get("prepared_before_precision_conversion") is not True
-            or arithmetic.get("output_rtol") != (1e-4 if strict else 0.02)
+            or arithmetic.get("output_policy") != (LM_POLICY if semantic else "tensor-fidelity-v1")
+            or arithmetic.get("output_rtol") != (None if semantic else 1e-4 if strict else 0.02)
             or arithmetic.get("gradient_rtol") != (1e-4 if strict else 0.01)
             or arithmetic.get("atol") != 1e-6
             or arithmetic.get("checked_calls") != qualification["qualified_calls"]
@@ -236,6 +240,19 @@ def check_native_search(session, seconds, max_submission_chunks, kernel_memo=Fal
             or arithmetic["preparation_seconds"] <= 0
             or session.get("search_input_policy") != "refresh before each step, outside timing"):
         raise ValueError("native construction lacks an original-graph F32 arithmetic check or matched inputs")
+    if semantic:
+        report = check_language_model_report(arithmetic["language_model"])
+        if (report["tokens"] * report["vocabulary"] != qualification["output_elements"]
+                or output_shape is not None and (report["tokens"] != math.prod(output_shape[:-1])
+                                                 or report["vocabulary"] != output_shape[-1])):
+            raise ValueError("native language-model quality covers the wrong output")
+        raw = arithmetic["raw_logits"]
+        if (raw["role"] != "diagnostic" or raw["elements"] != qualification["output_elements"]
+                or any(not math.isfinite(raw[key]) or raw[key] < 0 for key in (
+                    "max_abs_error", "max_abs_reference", "rms_error", "rms_reference"))):
+            raise ValueError("invalid native raw-logit diagnostics")
+    elif arithmetic.get("language_model") is not None:
+        raise ValueError("unexpected language-model quality policy")
     memo = session["kernel_memo"]
     reports = [trial["kernel_tuning"] for trial in trials if trial["kernel_tuning"] is not None]
     # TuneReport uses serde's skip_serializing_if for an empty reuse list.
@@ -254,6 +271,29 @@ def check_native_search(session, seconds, max_submission_chunks, kernel_memo=Fal
             raise ValueError("native kernel memo was not saved")
     elif memo["key"] is not None or memo["saved_classes"] is not None:
         raise ValueError("disabled native kernel memo has persistent state")
+
+
+def check_native_reference(record):
+    """Tie the cross-engine oracle to the snapshots used by native qualification."""
+    sessions = record["optimizer"]["sessions"]
+    inference = next(s for s in sessions if s["mode"] == "Inference")
+    expected = dict(inference["qualification"]["arithmetic_reference"]["reference_outputs"],
+                    output_shape=record["outputs"]["output_shape"])
+    training = record["protocol"]["training_requested"]
+    if training:
+        session = next(s for s in sessions if s["mode"] == "Training")
+        source = session["qualification"]["arithmetic_reference"]["reference_outputs"]
+        expected.update({key: source[key] for key in ("loss", "grad_norm", "gradient_norms")})
+    oracle = record["correctness_reference"]
+    if (oracle.get("precision") != "strict-f32" or oracle.get("training_requested") is not training
+            or oracle.get("prepared_before_candidate_compilation") is not True
+            or oracle.get("outputs") != expected
+            or not math.isfinite(expected["loss"])
+            or len(expected["logits_sample"]) != len(record["outputs"]["logits_sample"])
+            or any(not math.isfinite(x) for x in expected["logits_sample"])
+            or training and (not expected["gradient_norms"] or not math.isfinite(expected["grad_norm"])
+                or any(not math.isfinite(x) for x in expected["gradient_norms"].values()))):
+        raise ValueError("native F32 correctness reference differs from its qualification snapshots")
 
 
 def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
@@ -287,7 +327,7 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
         if record["protocol"]["warmup_runs"] != 5:
             raise ValueError("unexpected warmup count")
         protocol = record["protocol"]
-        expected = "inferena-paper-v5" if engine == "meganeura" else "inferena-graph-replay-v10"
+        expected = "inferena-paper-v6" if engine == "meganeura" else "inferena-graph-replay-v11"
         if protocol.get("name") != expected or protocol.get("warmup_seconds") != WARMUP_SECONDS:
             raise ValueError("runner did not declare the workload warmup policy")
         if protocol.get("synthetic_parameter_init") != SYNTHETIC_PARAMETER_INIT:
@@ -342,12 +382,21 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
     if (modes.count("Training") != int(not args.inference_only) or modes.count("Inference") not in (1, 2)
             or set(modes) - {"Training", "Inference"}):
         raise ValueError("missing native session preparation evidence")
+    language_model = mg["model"].startswith("SmolLM2-")
+    if language_model and modes.count("Inference") != 2:
+        raise ValueError("language-model prefill and latency both require qualification")
+    inference_index = 0
     for session in sessions:
         if session["cooperative_matrix_policy"] != ("NativeF32" if strict else "Auto"):
             raise ValueError("native session used the wrong cooperative policy")
         check_native_search(session, getattr(args, "tune_seconds", TUNE_SECONDS),
                             getattr(args, "max_submission_chunks", MAX_SUBMISSION_CHUNKS),
-                            getattr(args, "kernel_memo", False))
+                            getattr(args, "kernel_memo", False), language_model=language_model,
+                            output_shape=(mg["outputs"]["output_shape"] if inference_index == 0
+                            else [1, 1, mg["outputs"]["output_shape"][-1]]) if language_model else None)
+        inference_index += session["mode"] == "Inference"
+    if not strict:
+        check_native_reference(mg)
     execution = pt["execution"]
     sdpa = "math" if oracle else reference_sdpa_policy(args, pt["model"])
     if execution["sdpa_policy"] != sdpa:
@@ -697,7 +746,7 @@ def main():
                INFERENA_WARMUP_SECONDS=str(WARMUP_SECONDS))
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v21", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v22", "source": revision,
         "started_at": started_at,
         "host": {"name": socket.gethostname(), "os": platform.system(),
                  "kernel": platform.release(), "platform": platform.platform(), "arch": platform.machine(),
@@ -713,7 +762,12 @@ def main():
             "autocast_requested": args.autocast, "pytorch_autocast": args.autocast_dtype,
             "selection": "capability-based-v1; no timing or numerical fallback",
             "native": "existing qualified reduced-input paths; f32 storage",
-            "correctness_reference": "untimed eager strict f32 for every accelerated arithmetic policy",
+            "correctness_reference": "compare both original F32 references; independently qualify each accelerated output",
+            "language_model_forward": {"policy": LM_POLICY, "mean_kl_limit": MEAN_KL_LIMIT,
+                                       "token_kl_limit": TOKEN_KL_LIMIT, "loss_rtol": 0.02, "loss_atol": 1e-6,
+                                       "raw_logits": "diagnostic", "phases": ["prefill", "latency"]},
+            "training_curve": {"policy": CURVE_POLICY, "per_loss_rtol": 0.02, "atol": 1e-6,
+                               "relative_l2": "diagnostic"},
             "pytorch_training_gates": {model: workload_for(model) for model in args.models}}},
         "model_revisions": {name: SMOLLM2_REVISIONS[name] for name in args.models if name in SMOLLM2_REVISIONS},
         "meganeura": dependency, "python": sys.version, "packages": packages,
@@ -732,7 +786,7 @@ def main():
                                           "scope": "campaign/model/precision", "selected_program_reuse": False},
                           "warmup_pairs": 2, "warmup_seconds": 0.25,
                           "qualification": "fixed-full-tensor-v4",
-                          "arithmetic_reference": "native-f32-full-tensor-v1; preparation included in compile_s, outside search budget",
+                          "arithmetic_reference": "native-f32-full-tensor-v2; preparation included in compile_s, outside search budget",
                           "search_input_policy": "refresh before each step, outside timing",
                           "search_seconds_per_session": args.tune_seconds, "strict_coop": "NativeF32"},
         "reference_compile_seconds": args.compile_seconds,

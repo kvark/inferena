@@ -21,6 +21,7 @@ mod initialization;
 mod parameters;
 mod precision;
 mod qualification;
+mod quality;
 mod search_cache;
 
 fn warmup_time() -> Duration {
@@ -40,6 +41,16 @@ fn build_session(
     mode: Mode,
     initialize_parameters: impl Fn(&mut Session),
     initialize_inputs: impl Fn(&mut Session),
+) -> Session {
+    build_session_with_quality(graph, mode, initialize_parameters, initialize_inputs, None)
+}
+
+fn build_session_with_quality(
+    graph: &Graph,
+    mode: Mode,
+    initialize_parameters: impl Fn(&mut Session),
+    initialize_inputs: impl Fn(&mut Session),
+    language_model: Option<(usize, &[u32])>,
 ) -> Session {
     export::set_graph(graph);
     let mut config = session_config();
@@ -89,6 +100,11 @@ fn build_session(
     let mut qualification = qualification::Qualification::new(graph, mode, &reference)
         .expect("invalid strict-f32 arithmetic reference");
     drop(reference);
+    if let Some((vocabulary, targets)) = language_model {
+        qualification
+            .set_language_model(vocabulary, targets)
+            .expect("invalid language-model reference");
+    }
     qualification.set_reference_seconds(reference_start.elapsed().as_secs_f64());
     let reduced_graph = arithmetic.graph(graph);
     let graph = reduced_graph.as_ref().unwrap_or(graph);
@@ -639,7 +655,7 @@ fn capture_gap_profile(
             "mode": std::env::var("MEGANEURA_OPTIMIZER").unwrap_or_else(|_| "egglog-outlined".to_string()),
             "extraction_cost": std::env::var("MEGANEURA_EGRAPH_COST").unwrap_or_else(|_| "tensor-traffic".to_string()),
         },
-        "benchmark_protocol": "inferena-paper-v5",
+        "benchmark_protocol": "inferena-paper-v6",
         "normal_benchmark": {
             "samples_ms": &benchmark.samples_ms,
             "median_ms": benchmark.median_ms,
@@ -723,13 +739,14 @@ fn bench_smollm2(model_name: &str) {
     let labels: Vec<u32> = (0..seq_len as u32)
         .map(|i| (i + 1) % vocab as u32)
         .collect();
-    let mut session = build_session(
+    let mut session = build_session_with_quality(
         &g,
         Mode::Inference,
         |session| load_weights(session, &model, &transposed_set),
         |session| {
             session.set_input_u32("token_ids", &input_ids);
         },
+        Some((vocab, &labels)),
     );
     let mut compile_s = compile_start.elapsed().as_secs_f64();
     eprintln!("[meganeura] ready (compile: {compile_s:.2}s)");
@@ -776,13 +793,14 @@ fn bench_smollm2(model_name: &str) {
     let mut lat_g = Graph::new();
     let lat_logits = smollm2::build_graph(&mut lat_g, &config, 1);
     lat_g.set_outputs(vec![lat_logits]);
-    let mut lat_session = build_session(
+    let mut lat_session = build_session_with_quality(
         &lat_g,
         Mode::Inference,
         |session| load_weights(session, &model, &transposed_set),
         |session| {
             session.set_input_u32("token_ids", &[0u32]);
         },
+        Some((vocab, &[1u32])),
     );
     compile_s += lat_compile_start.elapsed().as_secs_f64();
     let latency = bench_session("latency", &mut lat_session, &|s| {
@@ -1171,6 +1189,24 @@ fn emit_result(
     let backend = detect_backend();
     let (warmup_runs, measurement_runs) = benchmark_counts();
     let precision = precision::Policy::from_env().metadata();
+    let correctness_reference = (!precision::strict()).then(|| SESSION_PREPARATION.with_borrow(|sessions| {
+        let first = sessions.iter().find(|s| s["mode"] == "Inference").expect("inference reference");
+        let mut outputs = first["qualification"]["arithmetic_reference"]["reference_outputs"].clone();
+        outputs["output_shape"] = serde_json::json!(output_shape);
+        if training.is_some() {
+            let trained = sessions.iter().find(|s| s["mode"] == "Training").expect("training reference");
+            let reference = &trained["qualification"]["arithmetic_reference"]["reference_outputs"];
+            for field in ["loss", "grad_norm", "gradient_norms"] {
+                outputs[field] = reference[field].clone();
+            }
+        }
+        assert!(outputs["loss"].as_f64().is_some_and(f64::is_finite), "missing reference loss");
+        serde_json::json!({
+            "precision": "strict-f32", "reference": "untuned native strict f32",
+            "prepared_before_candidate_compilation": true, "training_requested": training.is_some(),
+            "outputs": outputs,
+        })
+    }));
 
     let rev = std::env::var("FRAMEWORK_REV").unwrap_or_default();
     let workload_metrics = model.starts_with("SmolLM").then(|| {
@@ -1192,7 +1228,7 @@ fn emit_result(
         "backend": backend,
         "environment": environment,
         "protocol": {
-            "name": "inferena-paper-v5",
+            "name": "inferena-paper-v6",
             "synthetic_parameter_init": initialization::POLICY,
             "warmup_runs": warmup_runs,
             "warmup_seconds": warmup_time().as_secs_f64(),
@@ -1210,6 +1246,7 @@ fn emit_result(
             "context_lifetime": "owned per session; destroyed after use",
         },
         "precision": precision,
+        "correctness_reference": correctness_reference,
         "optimizer": {
             "mode": std::env::var("MEGANEURA_OPTIMIZER").unwrap_or_else(|_| "egglog-outlined".to_string()),
             "extraction_cost": std::env::var("MEGANEURA_EGRAPH_COST").unwrap_or_else(|_| "tensor-traffic".to_string()),

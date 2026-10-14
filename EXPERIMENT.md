@@ -1,12 +1,13 @@
 # P3HPC paired collection
 
-The development collector uses **v21**, with exactly two profiles: `strict`
+The development collector uses **v22**, with exactly two profiles: `strict`
 and `accelerated` (practical). The October 11 cohort below remains frozen at
 **v18**. V19 introduced AMP; v20 changed accelerated training qualification.
 V21 adds a native F32 arithmetic reference and refreshes search inputs to match
-measurement. Keep these protocols' records separate.
+measurement. V22 applies language-model distribution/loss gates and removes the
+additional curve-L2 veto. Keep these protocols' records separate.
 
-## Development v21: two profiles
+## Development v22: two profiles
 
 The current native pin is merged Meganeura `99e3de2` ([rectangular BF16 support](https://github.com/kvark/meganeura/pull/259)),
 with Blade `96c1dc7` and Naga `a97559b6`. BF16
@@ -29,17 +30,32 @@ Meganeura retains f32 storage with eligible f16 cooperative inputs. Each native
 session now first builds the **original, unconverted graph in untuned strict F32**,
 using the same checkpoint and inputs in a separate context on the selected GPU.
 The reference context is dropped before candidate construction. Every candidate,
-including the first and memoized candidates, must pass full-output maximum/RMS bounds of
-`1e-6 + 0.02 * reference magnitude` and aggregate full-gradient bounds of
+including the first and memoized candidates, must pass full-output quality checks
+and aggregate full-gradient maximum/RMS bounds of
 `1e-6 + 0.01 * reference magnitude` in accelerated mode. Strict uses `rtol=1e-4`.
+For pretrained SmolLM2 prefill and one-token latency, output quality means:
+
+- Mean `KL(reference || candidate) <= ln(1.01)` over all token distributions.
+- Maximum per-token KL `<= ln(1.10)`, so averaging cannot hide one bad token.
+- Mean labelled cross-entropy within `1e-6 + 0.02 * abs(reference)`.
+
+Both engines compute these metrics over every logit in F64 on the CPU and retain
+per-token evidence. Raw-logit errors are diagnostic; a constant logit offset
+preserves the distribution and must not fail accelerated quality. These explicit
+budgets limit distribution/loss drift on the tested inputs; they do not establish
+identical generation or universal task accuracy. Non-language outputs and
+training scalar losses retain the full-tensor maximum/RMS bounds of
+`1e-6 + 0.02 * reference magnitude`.
 The existing, tighter within-search anchor check also remains. This catches
 precision errors that would be shared by the first reduced-precision program.
 Both the searched path and graph1 diagnostics enforce it before benchmark timing.
-The collector requires `native-f32-full-tensor-v1` evidence for every session.
+The collector requires `native-f32-full-tensor-v2` evidence for every session.
 
 This is an arithmetic control in the native engine, not a second independent
-implementation. The PyTorch cross-engine check still compares sampled outputs
-and canonical per-parameter gradient norms. It cannot detect every directional
+implementation. The cross-engine check compares the two original F32 references'
+sampled outputs, loss and canonical per-parameter gradient norms. Native reference
+receipts must match the snapshots used in full-output/gradient qualification;
+the measured accelerated output cannot supply its own F32 reference. It cannot detect every directional
 gradient error shared by both native F32 and reduced implementations. The new
 gate also does not replace a learning gate: the separate convergence study
 compares both engines on real text.
@@ -54,8 +70,9 @@ collection stops with the failure retained. It never promotes that run's timings
 or changes precision.
 
 Every accelerated PyTorch setting, **including `off`/TF32**, now has the same
-untimed forward and training qualification. The full-output RMS and maximum
-error bounds remain `1e-6 + 0.02 * reference magnitude`. The eager strict-f32
+untimed forward and training qualification. SmolLM2 uses the distribution/loss
+contract above for both prefill and one-token latency; other outputs retain their
+full-tensor bounds. The eager strict-f32
 oracle runs before candidate compilation with TF32 disabled, then restores
 weights, buffers, RNG and arithmetic flags. Its initial output/loss/gradient
 receipt remains the cross-engine correctness reference.
@@ -68,9 +85,12 @@ For **SmolLM2-135M**, training qualification uses the frozen
 - Shakespeare's *A Midsummer Night's Dream*, the same Gutenberg snapshot,
   tokenizer, seed-17 batch order and 80/20 token split as the earlier study.
   Tokens and provenance are bundled and hash checked; qualification runs offline.
+  The immutable fixture's embedded gate describes its original study; active
+  acceptance is versioned separately in the campaign and qualification receipts.
 - Four fixed training probes and four held-out blocks at updates 0, 64, 128,
-  192 and 256. Training, probe and held-out curves each require relative L2
-  at most 1% and every loss within `1e-6 + 0.02 * abs(reference)`.
+  192 and 256. Every training, probe and held-out loss must be within
+  `1e-6 + 0.02 * abs(reference)`. Curve relative L2 is retained as a diagnostic,
+  without the additional 1% veto (`loss-curve-v2`).
 - Both trajectories must reduce mean fixed-probe loss by at least 5%, avoid
   increasing mean held-out loss by more than 2%, and change a finite norm
   parameter. The collector recomputes these gates from raw receipts.
@@ -88,17 +108,12 @@ work. The earlier repeated-batch SmolLM2 test remains an optional diagnostic:
 
 The paired collector rejects the diagnostic override. There are no additional
 required columns. A failed training gate preserves qualified inference and
-latency, records the failed curves, and leaves training timing empty. Bounds
-have not been loosened: the B570 bf16 probe failure and RTX bf16 forward failure
-identified in the [diagnosis](ANALYSIS.md#accelerated-gap-follow-up-october-12-2026)
-remain reasons to reject their respective cells.
-
-These are v21 acceptance decisions, not proof that ordinary BF16 is unusable.
-The [acceptance audit](ANALYSIS.md#acceptance-threshold-audit-october-14-2026)
-finds that raw-logit bounds and the additional 1% curve-L2 veto can reject
-small task-quality differences. It proposes distribution/loss criteria for the
-next protocol; the current collector and frozen results retain their declared
-thresholds.
+latency, records the failed curves, and leaves training timing empty. V22 implements
+the [acceptance audit](ANALYSIS.md#acceptance-threshold-audit-october-14-2026)
+proposal. It changes the acceptance policy, not the historical evidence: earlier
+raw-logit and curve-L2 failures remain failures under their original protocol.
+The native full-gradient guard, strict arithmetic checks and same-policy
+execution/replay repeatability checks are unchanged.
 
 Compiled AMP uses the requested CUDA/HIP/XPU replay policy. Forward, loss and
 scaled backward are captured; unscaling, finite checks and scale updates run
@@ -454,9 +469,10 @@ the final incumbent is checked again if another challenger has run since its
 last check. A memo hit never bypasses qualification. Packed gradients are
 unpacked into the original checkpoint coordinates. Outputs use staged batch
 readback, avoiding repeated mapped-read calibration for short-lived candidates.
-The fixed maximum/RMS gates match the
-replay policy below; only
-accelerated gradients have the separate 1% whole-gradient tolerance. The outer
+The within-search maximum/RMS gates match the replay policy below;
+accelerated gradients retain the separate 1% whole-gradient tolerance.
+V22 changes only the accelerated language-model comparison to original F32
+into the distribution/loss check above. The outer
 PyTorch comparison remains an independent gate. No optimizer update is part of
 these workloads. Construction measurements are not publication samples; the
 selected session is warmed up and measured again afterwards.

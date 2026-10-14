@@ -19,7 +19,7 @@ from p3hpc import (ROOT, MODELS, PHASES, SMOLLM2_PINS, SYNTHETIC_PARAMETER_INIT,
                   archive_results, check_native_search, gpu_matches, input_hashes,
                   select_native_device)
 
-PROTOCOL = "p3hpc-android-campaign-v2"
+PROTOCOL = "p3hpc-android-campaign-v3"
 TARGET = "aarch64-linux-android"
 
 
@@ -124,7 +124,7 @@ def check_native(record, args, model, precision, count, dependency, native):
             or record["model"] != model or record["gpu_name"] != native["name"]):
         raise ValueError("native identity differs from the campaign")
     protocol = record["protocol"]
-    if (protocol["name"] != "inferena-paper-v5" or protocol["diagnostic"]
+    if (protocol["name"] != "inferena-paper-v6" or protocol["diagnostic"]
             or protocol["synthetic_parameter_init"] != SYNTHETIC_PARAMETER_INIT
             or protocol["warmup_runs"] != 5 or protocol["warmup_seconds"] != 2
             or protocol["measurement_runs"] != count or protocol["training_requested"] is not True):
@@ -146,11 +146,16 @@ def check_native(record, args, model, precision, count, dependency, native):
     if (optimizer["measured_construction"] is not True or optimizer["mode"] != "egglog-outlined"
             or sorted(s["mode"] for s in sessions) != expected_modes):
         raise ValueError("missing calibrated sessions")
+    inference_index = 0
     for session in sessions:
         if (session["cooperative_matrix_policy"] != ("NativeF32" if precision == "strict" else "Auto")
                 or session["cooperative_dispatches"] != 0):
             raise ValueError("Quest f32/no-cooperative-matrix contract changed")
-        check_native_search(session, args.tune_seconds, args.max_submission_chunks, args.kernel_memo, android=True)
+        shape = record["outputs"]["output_shape"] if model.startswith("SmolLM2-") else None
+        check_native_search(session, args.tune_seconds, args.max_submission_chunks, args.kernel_memo, android=True,
+                            language_model=model.startswith("SmolLM2-"),
+                            output_shape=shape if inference_index == 0 or shape is None else [1, 1, shape[-1]])
+        inference_index += session["mode"] == "Inference"
 
 
 def validate_oracle(folder, report, precision):
@@ -224,7 +229,7 @@ def collect(args, parser, packages, started_at, started):
     remote = f"/data/local/tmp/inferena-{stamp}-{revision[:8]}"
     executable = remote + "/inferena-meganeura"
     import torch
-    manifest = dict(protocol=PROTOCOL, paired_protocol="p3hpc-paired-campaign-v21", source=revision,
+    manifest = dict(protocol=PROTOCOL, paired_protocol="p3hpc-paired-campaign-v22", source=revision,
                     started_at=started_at, platform="Quest 3S", backend="android-vulkan",
                     meganeura=dependency, python=sys.version, packages=packages,
                     torch=dict(version=torch.__version__, git_version=torch.version.git_version,

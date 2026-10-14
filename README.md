@@ -133,11 +133,15 @@ Accelerated PyTorch uses a strict-f32 forward oracle and a common training
 gate for TF32, BF16 and FP16. SmolLM2-135M runs 256 matched real-text updates,
 with fixed probe and held-out checks; other models retain the 32-update
 synthetic numerical check. Qualification restores the checkpoint before timing.
-The f32 oracle also supplies cross-engine output and gradient checks.
+Each engine's original f32 oracle supplies the cross-engine output and gradient
+checks. Accelerated pretrained language-model outputs must preserve the full
+probability distribution and labelled loss against that oracle; raw-logit error
+is diagnostic. Every training/probe/held-out loss must meet the 2% bound;
+curve L2 is diagnostic. Non-language outputs retain the tensor-fidelity gate.
 Graph replay includes forward/loss/scaled backward; scaler housekeeping runs
 after replay inside the measured step.
 
-The development collection protocol is **v21**, still 30 pairs per GPU.
+The development collection protocol is **v22**, still 30 pairs per GPU.
 Native candidates also pass a full-output/gradient check against the original
 graph in F32, including the first candidate and cached decisions. This adds
 reference preparation time, recorded in `compile_s`, before the 30-second search.

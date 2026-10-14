@@ -152,6 +152,9 @@ pub struct Qualification {
     f32: Snapshot,
     reference_seconds: f64,
     anchor: Option<Snapshot>,
+    language_model: Option<crate::quality::LanguageModel>,
+    last_quality: Option<serde_json::Value>,
+    last_raw_logits: Option<serde_json::Value>,
     calls: usize,
     rejected_calls: usize,
 }
@@ -174,6 +177,9 @@ impl Qualification {
             f32,
             reference_seconds: 0.0,
             anchor: None,
+            language_model: None,
+            last_quality: None,
+            last_raw_logits: None,
             calls: 0,
             rejected_calls: 0,
         })
@@ -183,20 +189,59 @@ impl Qualification {
         self.reference_seconds = seconds;
     }
 
+    pub fn set_language_model(&mut self, vocabulary: usize, targets: &[u32]) -> Result<(), String> {
+        if self.mode != Mode::Inference || self.f32.outputs.len() != 1 {
+            return Err("language-model quality requires one inference output".into());
+        }
+        if self.accelerated {
+            self.language_model = Some(crate::quality::LanguageModel::new(
+                &self.f32.outputs[0],
+                vocabulary,
+                targets,
+            )?);
+        }
+        Ok(())
+    }
+
     pub fn check(&mut self, session: &Session) -> Result<(), String> {
         self.check_snapshot(Snapshot::read(session, &self.output_lengths, self.mode)?)
     }
 
     fn check_snapshot(&mut self, actual: Snapshot) -> Result<(), String> {
         let result = (|| {
-            actual
-                .compare(
-                    &self.f32,
-                    self.mode,
-                    if self.accelerated { 0.02 } else { 1e-4 },
-                    self.accelerated,
-                )
-                .map_err(|error| format!("strict-f32 reference: {error}"))?;
+            let mut raw_logits = None;
+            let quality = if let Some(language_model) = &self.language_model {
+                if actual.outputs.len() != 1 {
+                    return Err("language-model output inventory changed".into());
+                }
+                let report = language_model.evaluate(&actual.outputs[0])?;
+                if report["status"] != "pass" {
+                    return Err(format!(
+                        "language-model quality: mean KL={}, max KL={}, loss error={}",
+                        report["mean_kl"], report["max_kl"], report["loss_error"]
+                    ));
+                }
+                let mut error = Error::default();
+                error.include(&actual.outputs[0], &self.f32.outputs[0])?;
+                raw_logits = Some(serde_json::json!({
+                    "role": "diagnostic", "elements": error.elements,
+                    "max_abs_error": error.max_error,
+                    "max_abs_reference": error.max_reference,
+                    "rms_error": (error.square_error / error.elements as f64).sqrt(),
+                    "rms_reference": (error.square_reference / error.elements as f64).sqrt(),
+                }));
+                Some(report)
+            } else {
+                actual
+                    .compare(
+                        &self.f32,
+                        self.mode,
+                        if self.accelerated { 0.02 } else { 1e-4 },
+                        self.accelerated,
+                    )
+                    .map_err(|error| format!("strict-f32 reference: {error}"))?;
+                None
+            };
             // Preserve the tighter within-search repeatability check as well.
             actual
                 .compare(
@@ -209,6 +254,8 @@ impl Qualification {
             if self.anchor.is_none() {
                 self.anchor = Some(actual);
             }
+            self.last_quality = quality;
+            self.last_raw_logits = raw_logits;
             Ok(())
         })();
         if let Err(error) = &result {
@@ -225,6 +272,29 @@ impl Qualification {
 
     pub fn report(&self) -> serde_json::Value {
         assert!(self.anchor.is_some(), "qualified anchor");
+        let gradients: BTreeMap<_, _> = self
+            .f32
+            .gradients
+            .iter()
+            .map(|(name, values)| {
+                (
+                    name,
+                    values
+                        .iter()
+                        .map(|&x| f64::from(x).powi(2))
+                        .sum::<f64>()
+                        .sqrt(),
+                )
+            })
+            .collect();
+        let output = &self.f32.outputs[0];
+        let reference_loss = if let Some(language_model) = &self.language_model {
+            Some(language_model.reference_loss())
+        } else if self.mode == Mode::Training && output.len() == 1 {
+            Some(f64::from(output[0]))
+        } else {
+            None
+        };
         serde_json::json!({
             "policy": "fixed-full-tensor-v4", "reference": "first checked program",
             "rtol": 1e-4, "atol": 1e-6, "accelerated_gradient_rtol": 0.01,
@@ -234,13 +304,22 @@ impl Qualification {
             "gradient_tensors": self.f32.gradients.len(),
             "gradient_elements": self.f32.gradients.values().map(Vec::len).sum::<usize>(),
             "arithmetic_reference": {
-                "policy": "native-f32-full-tensor-v1", "status": "pass",
+                "policy": "native-f32-full-tensor-v2", "status": "pass",
                 "reference": "original graph; untuned native strict-f32",
                 "prepared_before_precision_conversion": true,
-                "output_rtol": if self.accelerated { 0.02 } else { 1e-4 },
+                "output_policy": if self.language_model.is_some() { crate::quality::POLICY } else { "tensor-fidelity-v1" },
+                "output_rtol": if self.language_model.is_some() { None } else { Some(if self.accelerated { 0.02 } else { 1e-4 }) },
+                "language_model": self.last_quality,
+                "raw_logits": self.last_raw_logits,
                 "gradient_rtol": if self.accelerated { 0.01 } else { 1e-4 },
                 "atol": 1e-6, "preparation_seconds": self.reference_seconds,
                 "checked_calls": self.calls, "rejected_calls": self.rejected_calls,
+                "reference_outputs": {
+                    "logits_hash": crate::sha256_f32(output), "logits_sample": crate::validation_sample(output, 256),
+                    "loss": reference_loss,
+                    "grad_norm": if self.mode == Mode::Training { Some(gradients.values().map(|x| x*x).sum::<f64>().sqrt()) } else { None },
+                    "gradient_norms": gradients,
+                },
             },
         })
     }
@@ -264,6 +343,9 @@ mod tests {
             f32: snapshot(vec![0.25, -0.5]),
             reference_seconds: 0.01,
             anchor: None,
+            language_model: None,
+            last_quality: None,
+            last_raw_logits: None,
             calls: 0,
             rejected_calls: 0,
         };

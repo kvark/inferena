@@ -4,6 +4,7 @@ import copy
 import unittest
 from unittest.mock import patch
 
+from quality import language_model_report
 from training_gate import assess_trajectories, load_fixture, workload_for
 
 
@@ -33,7 +34,7 @@ class TrainingGateTest(unittest.TestCase):
         self.assertEqual(assess_trajectories(self.reference, self.reference, self.workload)["status"], "pass")
         candidate = copy.deepcopy(self.reference)
         for row in candidate["checkpoints"]:
-            row["probe_losses"] = [x * 1.015 for x in row["probe_losses"]]
+            row["probe_losses"] = [x * 1.03 for x in row["probe_losses"]]
         report = assess_trajectories(candidate, self.reference, self.workload)
         self.assertEqual(report["comparisons"]["training"]["status"], "pass")
         self.assertEqual(report["comparisons"]["probe_losses"]["status"], "failed")
@@ -44,6 +45,16 @@ class TrainingGateTest(unittest.TestCase):
         candidate = copy.deepcopy(self.reference)
         candidate["parameter_check"].update(changed=False, final=[1.0] * 576)
         self.assertEqual(assess_trajectories(candidate, candidate, self.workload)["status"], "failed")
+
+    def test_l2_is_diagnostic_when_every_loss_meets_the_bound(self):
+        candidate = copy.deepcopy(self.reference)
+        for row in candidate["checkpoints"]:
+            row["probe_losses"] = [x * 1.015 for x in row["probe_losses"]]
+        report = assess_trajectories(candidate, self.reference, self.workload)
+        self.assertGreater(report["comparisons"]["probe_losses"]["relative_l2"], 0.01)
+        self.assertEqual(report["status"], "pass")
+        candidate["checkpoints"][2]["probe_losses"][3] *= 1.02
+        self.assertEqual(assess_trajectories(candidate, self.reference, self.workload)["status"], "failed")
 
     def test_incomplete_or_invalid_evidence_is_rejected(self):
         for mutate in (lambda r: r.update(skipped_steps=1), lambda r: r["checkpoints"].pop(1),
@@ -61,7 +72,7 @@ class TrainingGateTest(unittest.TestCase):
         curve = {**copy.deepcopy(self.reference), **assessment["comparisons"]["training"], **assessment,
                  "reference_trajectory": copy.deepcopy(self.reference), "reference_losses": [1.0] * 256,
                  "workload": self.workload}
-        outputs = {"loss": 1.0, "output_shape": [1], "logits_sample": [1.0],
+        outputs = {"loss": 1.0, "output_shape": [1, 1, 2], "logits_sample": [1.0],
                    "grad_norm": 1.0, "gradient_norms": {"weight": 1.0}}
         record = {"model": "SmolLM2-135M", "status": "ok", "backend": "CUDA",
                   "protocol": {"training_requested": True, "training_gate": "auto", "diagnostic": False},
@@ -72,11 +83,14 @@ class TrainingGateTest(unittest.TestCase):
                          "training_requested": True, "prepared_before_candidate_compilation": True},
                   "timings": {"training_ms": 1.0}, "timing_samples_ms": {"training": [1.0] * 20},
                   "execution": {"precision_qualification": {"status": "pass", "reference": "eager strict f32",
-                         "forward": {"rtol": 0.02, "atol": 1e-6, "elements": 1, "rms_error": 0.0,
+                         "forward": {"rtol": 0.02, "atol": 1e-6, "elements": 2, "raw_logits_role": "diagnostic",
+                                     "language_model": language_model_report([0.0], [1.0], [1.0], 2), "rms_error": 0.0,
                                      "rms_bound": 0.02, "max_abs_error": 0.0, "max_abs_bound": 0.02}, "training": curve}}}
+        gate = record["execution"]["precision_qualification"]
+        gate["latency_forward"] = copy.deepcopy(gate["forward"])
         self.assertEqual(check_precision_qualification(record)["training"], "pass")
         for row in curve["checkpoints"]:
-            row["probe_losses"] = [x * 1.015 for x in row["probe_losses"]]
+            row["probe_losses"] = [x * 1.03 for x in row["probe_losses"]]
         with self.assertRaisesRegex(ValueError, "disagrees"):
             check_precision_qualification(record)
         assessment = assess_trajectories(curve, curve["reference_trajectory"], self.workload)

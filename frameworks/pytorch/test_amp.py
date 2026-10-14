@@ -11,6 +11,27 @@ from execution import QualificationError, compare_tensors
 
 
 class AmpTest(unittest.TestCase):
+    def test_language_model_gate_is_shift_invariant_and_checks_each_token(self):
+        from amp import forward_quality
+        reference = torch.tensor([0.9, 0.1]).log().repeat(1, 512, 1)
+        labels = torch.zeros((1, 512), dtype=torch.int64)
+        report = forward_quality(reference + 1.0, reference, labels)
+        self.assertEqual(report["language_model"]["status"], "pass")
+        self.assertGreater(report["max_abs_error"], report["max_abs_bound"])
+        with self.assertRaises(QualificationError):
+            forward_quality(reference + 1.0, reference)
+        for candidate in (torch.zeros_like(reference), -reference, reference.flip(-1)):
+            with self.assertRaises(QualificationError):
+                forward_quality(candidate, reference, labels)
+        sparse = reference.clone()
+        sparse[0, 17] = 0
+        with self.assertRaises(QualificationError) as error:
+            forward_quality(sparse, reference, labels)
+        quality = error.exception.details["metrics"]["language_model"]
+        self.assertLess(quality["mean_kl"], quality["mean_kl_limit"])
+        self.assertLess(quality["loss_error"], quality["loss_bound"])
+        self.assertGreater(quality["max_kl"], quality["token_kl_limit"])
+
     def test_classes_are_explicit(self):
         with patch.dict(os.environ, {"INFERENA_STRICT": "0"}):
             self.assertEqual(AmpPolicy("cpu", "bf16").metadata()["comparison_class"], "accelerated")
@@ -233,7 +254,7 @@ class AmpTest(unittest.TestCase):
                 _bench("test", {"type": "whisper"}, "cpu", None)
             record = json.loads(output.getvalue())
         self.assertEqual(record["status"], "ok")
-        self.assertEqual(record["protocol"]["name"], "inferena-graph-replay-v10")
+        self.assertEqual(record["protocol"]["name"], "inferena-graph-replay-v11")
         self.assertEqual(record["precision"]["comparison_class"], "accelerated")
         self.assertEqual(record["correctness_reference"]["precision"], "strict-f32")
         self.assertIsNotNone(record["correctness_reference"]["outputs"]["grad_norm"])

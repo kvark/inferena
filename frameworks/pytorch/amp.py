@@ -13,6 +13,7 @@ from execution import QualificationError
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from training_gate import (REAL_TEXT, CURVE_POLICY, CURVE_ATOL,
                            assess_trajectories, curve_metrics, load_fixture, workload_for)
+from quality import language_model_report
 
 FORWARD_RTOL = 0.02
 MAX_SCALE_ATTEMPTS = 8
@@ -271,7 +272,8 @@ def trajectory(model, forward, loss_fn, inputs, policy, *, autocast, plan=None):
     return record
 
 
-def prepare_reference(model, forward, loss_fn, inputs, policy, *, training=True, snapshot=None, plan=None):
+def prepare_reference(model, forward, loss_fn, inputs, policy, *, training=True, snapshot=None, plan=None,
+                      latency_inputs=None):
     """Compute the f32 oracle before any candidate compilation/execution can affect it.
 
     Reuse the parameters and restore them in place; do not require a second
@@ -289,6 +291,9 @@ def prepare_reference(model, forward, loss_fn, inputs, policy, *, training=True,
                     loss.backward()
                 reference["correctness_reference"] = snapshot(model, output, loss, training)
         del output, loss
+        if latency_inputs is not None:
+            with torch.no_grad():
+                reference["latency_output"] = forward(model, latency_inputs).detach().float().cpu().clone()
         if training:
             try:
                 reference["trajectory"] = trajectory(model, forward, loss_fn, inputs, policy, autocast=False, plan=plan)
@@ -297,33 +302,68 @@ def prepare_reference(model, forward, loss_fn, inputs, policy, *, training=True,
     return reference
 
 
-def qualify(model, candidate, forward, loss_fn, inputs, policy, *, training=True, snapshot=None, reference=None, plan=None):
+def forward_quality(actual, reference, labels=None):
+    """Full numerical diagnostics, with a task-quality gate for LM logits."""
+    actual, reference = actual.detach().float().cpu(), reference.detach().float().cpu()
+    if actual.shape != reference.shape or not actual.numel() or not torch.isfinite(actual).all() or not torch.isfinite(reference).all():
+        raise QualificationError("accelerated forward shape/non-finite failure")
+    # NumPy avoids a large multithreaded CPU pool for these untimed readbacks.
+    import numpy as np
+    a, r = actual.numpy(), reference.numpy()
+    error = a.astype(np.float64) - r
+    report = {"elements": actual.numel(), "rtol": FORWARD_RTOL, "atol": CURVE_ATOL,
+              "rms_error": float(np.sqrt(np.mean(error * error))),
+              "rms_bound": CURVE_ATOL + FORWARD_RTOL * float(np.sqrt(np.mean(np.square(r, dtype=np.float64)))),
+              "max_abs_error": float(np.abs(error).max()),
+              "max_abs_bound": CURVE_ATOL + FORWARD_RTOL * float(np.abs(r).max())}
+    if labels is None:
+        if report["rms_error"] > report["rms_bound"] or report["max_abs_error"] > report["max_abs_bound"]:
+            raise QualificationError("accelerated forward exceeds fixed bounds", metrics=report)
+        return report
+    if actual.ndim < 2 or actual.shape[:-1] != labels.shape:
+        raise QualificationError("language-model target shape changed")
+    targets = labels.detach().cpu().numpy().reshape(-1)
+    vocabulary = actual.shape[-1]
+    if vocabulary < 2 or np.any(targets < 0) or np.any(targets >= vocabulary):
+        raise QualificationError("language-model targets are out of range")
+    kl, losses, reference_losses = [], [], []
+    for av, rv, target in zip(a.reshape(-1, vocabulary), r.reshape(-1, vocabulary), targets, strict=True):
+        av, rv = av.astype(np.float64), rv.astype(np.float64)
+        av -= av.max()
+        rv -= rv.max()
+        al, rl = av - np.log(np.exp(av).sum()), rv - np.log(np.exp(rv).sum())
+        kl.append(max(0., float(np.sum(np.exp(rl) * (rl - al)))))
+        losses.append(float(-al[target]))
+        reference_losses.append(float(-rl[target]))
+    quality = language_model_report(kl, losses, reference_losses, vocabulary)
+    report.update(raw_logits_role="diagnostic", language_model=quality)
+    if quality["status"] != "pass":
+        raise QualificationError("language-model forward exceeds fixed quality bounds", metrics=report)
+    return report
+
+
+def qualify(model, candidate, forward, loss_fn, inputs, policy, *, training=True, snapshot=None, reference=None, plan=None,
+            language_model=False, latency_inputs=None):
     """Qualify the requested candidate and restore parameters, buffers and RNG."""
     if reference is None:
-        reference = prepare_reference(model, forward, loss_fn, inputs, policy, training=training, snapshot=snapshot, plan=plan)
+        reference = prepare_reference(model, forward, loss_fn, inputs, policy, training=training, snapshot=snapshot, plan=plan,
+                                      latency_inputs=latency_inputs)
     plan = plan or training_plan("", inputs, policy.device)
     prepared = reference
     reference = prepared["output"]
     with preserved_state(model, policy):
         with torch.no_grad(), policy.context():
             actual = forward(candidate, inputs).detach().float().cpu()
-        if actual.shape != reference.shape or not torch.isfinite(actual).all() or not torch.isfinite(reference).all():
-            raise QualificationError("accelerated forward shape/non-finite failure")
-        error = (actual - reference).double()
-        reference = reference.double()
-        forward_report = {
-            "elements": actual.numel(), "rtol": FORWARD_RTOL, "atol": CURVE_ATOL,
-            "rms_error": float(error.square().mean().sqrt()),
-            "rms_bound": CURVE_ATOL + FORWARD_RTOL * float(reference.square().mean().sqrt()),
-            "max_abs_error": float(error.abs().max()),
-            "max_abs_bound": CURVE_ATOL + FORWARD_RTOL * float(reference.abs().max()),
-        }
-        if (forward_report["rms_error"] > forward_report["rms_bound"]
-                or forward_report["max_abs_error"] > forward_report["max_abs_bound"]):
-            raise QualificationError("accelerated forward exceeds fixed bounds", metrics=forward_report)
+        forward_report = forward_quality(actual, reference, inputs["labels"] if language_model else None)
         report = {"status": "pass", "forward": forward_report, "training": None,
                   "reference": "eager strict f32", "candidate": "requested execution mode",
                   "scope": "untimed full-output and declared SGD workload; state restored"}
+        if language_model:
+            if latency_inputs is None or "latency_output" not in prepared:
+                raise QualificationError("missing language-model latency reference")
+            with torch.no_grad(), policy.context():
+                actual_latency = forward(candidate, latency_inputs)
+            report["latency_forward"] = forward_quality(actual_latency, prepared["latency_output"], latency_inputs["labels"])
         if "correctness_reference" in prepared:
             report["correctness_reference"] = prepared["correctness_reference"]
         if training:

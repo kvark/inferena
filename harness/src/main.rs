@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Workload/validation contract; the PyTorch execution protocol is versioned separately.
-pub const PAPER_PROTOCOL: &str = "inferena-paper-v5";
+pub const PAPER_PROTOCOL: &str = "inferena-paper-v6";
 
 /// Result produced by each framework benchmark runner.
 /// Every runner must print exactly one JSON object matching this schema to stdout.
@@ -564,6 +564,13 @@ fn precision_contract_error(result: &BenchResult, requested: &str) -> Option<Str
                     .into(),
             );
         }
+    }
+    if accelerated && matches!(result.framework.as_str(), "pytorch" | "meganeura") {
+        let training = result
+            .extra
+            .get("protocol")
+            .and_then(|p| p["training_requested"].as_bool())
+            == Some(true);
         let Some(outputs) = oracle_outputs(result) else {
             return Some("accelerated reference lacks a strict-f32 correctness reference".into());
         };
@@ -736,7 +743,7 @@ fn run_framework(
                 r.extra.remove("status").as_ref().and_then(|v| v.as_str()) == Some("partial");
             if matches!(framework, "pytorch" | "meganeura") {
                 let expected_protocol = if framework == "pytorch" {
-                    "inferena-graph-replay-v10"
+                    "inferena-graph-replay-v11"
                 } else {
                     PAPER_PROTOCOL
                 };
@@ -966,6 +973,11 @@ fn compare_result(reference: &BenchResult, other: &BenchResult) -> ComparisonMet
         ..reference.clone()
     });
     let reference = oracle.as_ref().unwrap_or(reference);
+    let other_oracle = oracle_outputs(other).map(|outputs| BenchResult {
+        outputs,
+        ..other.clone()
+    });
+    let other = other_oracle.as_ref().unwrap_or(other);
     let hash_match = reference.outputs.logits_hash == other.outputs.logits_hash;
     let output_shape_match = reference.outputs.output_shape == other.outputs.output_shape;
     let output_sample_count_match =
@@ -1302,6 +1314,12 @@ fn annotate_validation(outcomes: &mut [FrameworkOutcome], benchmark_revision: &s
                     "untimed strict-f32 oracle"
                 } else {
                     "measured reference"
+                });
+            validation["candidate_precision"] =
+                serde_json::json!(if oracle_outputs(result).is_some() {
+                    "untimed strict-f32 oracle"
+                } else {
+                    "measured candidate"
                 });
         }
         result.extra.insert("validation".to_string(), validation);
@@ -1984,9 +2002,21 @@ mod tests {
         let mut candidate = result(vec![1, 256], true);
         candidate.framework = "meganeura".into();
         candidate.extra.insert(
+            "protocol".into(),
+            serde_json::json!({"training_requested": true}),
+        );
+        candidate.extra.insert(
+            "correctness_reference".into(),
+            serde_json::json!({
+                "precision": "strict-f32", "training_requested": true,
+                "prepared_before_candidate_compilation": true, "outputs": candidate.outputs,
+            }),
+        );
+        candidate.extra.insert(
             "precision".into(),
             serde_json::json!({
                 "tensor_storage": "mixed", "storage_dtypes": ["f32", "bf16"],
+                "comparison_class": "accelerated",
                 "accumulation": "f32", "output": "f32",
                 "reduced_precision_allowed": true, "bf16_permitted": true,
                 "f16_cooperative_matrix_permitted": false,
@@ -1994,6 +2024,14 @@ mod tests {
             }),
         );
         assert_eq!(precision_contract_error(&candidate, "accelerated"), None);
+        let reference = candidate.clone();
+        candidate.outputs.logits_sample.fill(100.0);
+        // Cross-engine agreement checks the independent F32 references. The
+        // engines' full-output quality gates validate the accelerated outputs.
+        assert!(compare_result(&reference, &candidate).forward_valid);
+        let mut missing = candidate.clone();
+        missing.extra.remove("correctness_reference");
+        assert!(precision_contract_error(&missing, "accelerated").is_some());
         assert!(precision_contract_error(&candidate, "strict-f32").is_some());
         for types in [
             serde_json::Value::Null,

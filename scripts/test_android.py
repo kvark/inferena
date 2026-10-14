@@ -32,9 +32,9 @@ class AndroidContract(unittest.TestCase):
                                source="android-memavailable-capped-3gib", system_available_bytes=4 * 1024**3,
                                available_bytes=3 * 1024**3, plan_fraction_of_available=0.75),
             qualification=dict(policy="fixed-full-tensor-v4", reference="first checked program", rtol=1e-4,
-                               arithmetic_reference=dict(policy="native-f32-full-tensor-v1", status="pass",
+                               arithmetic_reference=dict(policy="native-f32-full-tensor-v2", status="pass",
                                    reference="original graph; untuned native strict-f32", prepared_before_precision_conversion=True,
-                                   output_rtol=1e-4, gradient_rtol=1e-4, atol=1e-6, preparation_seconds=0.1,
+                                   output_policy="tensor-fidelity-v1", output_rtol=1e-4, gradient_rtol=1e-4, atol=1e-6, preparation_seconds=0.1,
                                    checked_calls=1, rejected_calls=0),
                                atol=1e-6, accelerated_gradient_rtol=0.01, qualified_calls=1,
                                output_elements=1, gradient_elements=1),
@@ -60,7 +60,7 @@ class AndroidContract(unittest.TestCase):
     def test_native_phase_order_and_measurement_gate(self):
         args = create_parser().parse_args([])
         record = dict(framework="meganeura", framework_rev="revision", model="SmolVLA", gpu_name="Adreno",
-            protocol=dict(name="inferena-paper-v5", diagnostic=False, synthetic_parameter_init="name-index-uniform-v1",
+            protocol=dict(name="inferena-paper-v6", diagnostic=False, synthetic_parameter_init="name-index-uniform-v1",
                           warmup_runs=5, warmup_seconds=2, measurement_runs=20, training_requested=True,
                           warmup={p: dict(runs=5, seconds=2.1) for p in ("inference", "latency", "training")}),
             timing_samples_ms={p: [1.] * 20 for p in ("inference", "latency", "training")},

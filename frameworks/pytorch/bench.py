@@ -1456,7 +1456,7 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
     requested_autocast = os.environ.get("INFERENA_AUTOCAST", "auto")
     amp = AmpPolicy(dev, resolve_autocast(dev, requested_autocast, strict=strict))
     precision_mode = "strict-f32" if strict else "accelerated"
-    protocol = "inferena-graph-replay-v10"
+    protocol = "inferena-graph-replay-v11"
     warmup_runs = int(os.environ.get("INFERENA_WARMUP_RUNS", "5"))
     measurement_runs = int(os.environ.get("INFERENA_MEASUREMENT_RUNS", "20"))
     if warmup_runs < 0 or measurement_runs < 1:
@@ -1544,6 +1544,7 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
             lambda output, batch: _benchmark_loss(model_type, output, batch),
             prepare_inputs(model_type, eager_model, dev), amp, training=training_requested,
             snapshot=lambda *args: correctness_snapshot(model_type, *args), plan=gate_plan,
+            latency_inputs=prepare_inputs(model_type, eager_model, dev, seq_len=1) if model_type == "causal_lm" else None,
         )
         oracle_seconds = time.perf_counter() - started
         precision_reference["correctness_reference"]["prepared_before_candidate_compilation"] = True
@@ -1596,6 +1597,8 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
                     lambda output, batch: _benchmark_loss(model_type, output, batch),
                     inputs, amp, training=training_requested,
                     reference=precision_reference, plan=gate_plan,
+                    language_model=model_type == "causal_lm",
+                    latency_inputs=prepare_inputs(model_type, eager_model, dev, seq_len=1) if model_type == "causal_lm" else None,
                 )
         except QualificationError as error:
             error.details["elapsed_seconds"] = time.perf_counter() - qualification_started

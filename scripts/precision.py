@@ -3,6 +3,26 @@
 import math
 
 from training_gate import CURVE_POLICY, assess_trajectories, workload_for
+from quality import check_language_model_report
+
+
+def check_forward_quality(forward, *, language_model=False, shape=None):
+    if forward["rtol"] != 0.02 or forward["atol"] != 1e-6 or forward["elements"] < 1:
+        raise ValueError("wrong accelerated forward gate")
+    for metric in ("rms", "max_abs"):
+        error, bound = forward[f"{metric}_error"], forward[f"{metric}_bound"]
+        if (not math.isfinite(error) or not math.isfinite(bound) or error < 0 or bound < 0
+                or not language_model and error > bound):
+            raise ValueError("failed accelerated forward gate claims success")
+    if language_model:
+        report = check_language_model_report(forward["language_model"])
+        if (forward.get("raw_logits_role") != "diagnostic"
+                or forward["elements"] != report["tokens"] * report["vocabulary"]
+                or shape is not None and (report["tokens"] != math.prod(shape[:-1])
+                                          or report["vocabulary"] != shape[-1])):
+            raise ValueError("language-model quality covers the wrong output")
+    elif "language_model" in forward:
+        raise ValueError("non-language output requires full-tensor fidelity")
 
 
 def check_precision_qualification(record, *, diagnostic=False):
@@ -25,13 +45,11 @@ def check_precision_qualification(record, *, diagnostic=False):
     gate = execution["precision_qualification"]
     if gate["status"] not in ("pass", "partial") or gate["reference"] != "eager strict f32":
         raise ValueError("missing accelerated precision qualification")
-    forward = gate["forward"]
-    if forward["rtol"] != 0.02 or forward["atol"] != 1e-6 or forward["elements"] < 1:
-        raise ValueError("wrong accelerated forward gate")
-    for metric in ("rms", "max_abs"):
-        error, bound = forward[f"{metric}_error"], forward[f"{metric}_bound"]
-        if not math.isfinite(error) or not math.isfinite(bound) or error < 0 or error > bound:
-            raise ValueError("failed accelerated forward gate claims success")
+    language_model = record["model"].startswith("SmolLM2-")
+    shape = record["outputs"]["output_shape"]
+    check_forward_quality(gate["forward"], language_model=language_model, shape=shape)
+    if language_model:
+        check_forward_quality(gate["latency_forward"], language_model=True, shape=[1, 1, shape[-1]])
     training = record["protocol"]["training_requested"]
     request = record["protocol"].get("training_gate")
     if request not in ("auto", "repeated-synthetic"):

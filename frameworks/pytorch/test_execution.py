@@ -431,8 +431,14 @@ class CampaignTest(unittest.TestCase):
                                   "plan_fraction_of_available": 0.75},
                 "qualification": {"policy": "fixed-full-tensor-v4", "rtol": 1e-4, "atol": 1e-6,
                                   "reference": "first checked program",
+                                  "arithmetic_reference": {"policy": "native-f32-full-tensor-v1", "status": "pass",
+                                      "reference": "original graph; untuned native strict-f32",
+                                      "prepared_before_precision_conversion": True,
+                                      "output_rtol": 1e-4, "gradient_rtol": 1e-4, "atol": 1e-6,
+                                      "preparation_seconds": 0.1, "checked_calls": 2, "rejected_calls": 0},
                                   "accelerated_gradient_rtol": 0.01, "qualified_calls": 2,
                                   "output_elements": 1, "gradient_elements": int(mode == "Training")},
+                "search_input_policy": "refresh before each step, outside timing",
                 "kernel_memo": {"policy": KERNEL_MEMO_POLICY, "enabled": True, "key": "a" * 64,
                                 "load": "miss", "loaded_classes": 0, "saved_classes": 1,
                                 "reused_class_visits": 0, "new_comparisons": 1},
@@ -475,6 +481,7 @@ class CampaignTest(unittest.TestCase):
             trial["qualifications"] = 1
             trial["kernel_tuning"].update(reused_classes=[{}], outcomes=[])
             session["qualification"]["qualified_calls"] = 1
+            session["qualification"]["arithmetic_reference"]["checked_calls"] = 1
             session["kernel_memo"].update(load="hit", loaded_classes=1,
                                           reused_class_visits=1, new_comparisons=0)
         check([resumed, pt])
@@ -597,6 +604,11 @@ class CampaignTest(unittest.TestCase):
             (0, ("optimizer", "sessions", 0, "search", "trials", 0, "qualifications"), 0),
             (0, ("optimizer", "sessions", 0, "qualification", "qualified_calls"), 0),
             (0, ("optimizer", "sessions", 0, "qualification", "reference"), "ordinary untuned construction"),
+            (0, ("optimizer", "sessions", 0, "qualification", "arithmetic_reference", "status"), "failed"),
+            (0, ("optimizer", "sessions", 0, "qualification", "arithmetic_reference", "reference"), "first checked program"),
+            (0, ("optimizer", "sessions", 0, "qualification", "arithmetic_reference", "checked_calls"), 1),
+            (0, ("optimizer", "sessions", 0, "qualification", "arithmetic_reference", "preparation_seconds"), float("nan")),
+            (0, ("optimizer", "sessions", 0, "search_input_policy"), "resident"),
             (0, ("optimizer", "sessions", 1, "qualification", "gradient_elements"), 0),
             (0, ("optimizer", "sessions", 0, "kernel_memo", "policy"), "unknown"),
             (0, ("optimizer", "sessions", 0, "kernel_memo", "loaded_classes"), 1),

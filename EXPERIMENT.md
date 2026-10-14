@@ -1,14 +1,15 @@
 # P3HPC paired collection
 
-The development collector uses **v20**, with exactly two profiles: `strict`
+The development collector uses **v21**, with exactly two profiles: `strict`
 and `accelerated` (practical). The October 11 cohort below remains frozen at
-**v18**. V19 introduced AMP; v20 changes accelerated training qualification and
-must not be combined with either earlier protocol's records.
+**v18**. V19 introduced AMP; v20 changed accelerated training qualification.
+V21 adds a native F32 arithmetic reference and refreshes search inputs to match
+measurement. Keep these protocols' records separate.
 
-## Development v20: two profiles
+## Development v21: two profiles
 
-The current native pin is Meganeura `7574ad1`, with Blade `96c1dc7` and Naga
-`a97559b6`, including the merged BF16 and Vulkan memory-model changes. BF16
+The current native pin is Meganeura `cfab3d1` ([rectangular BF16 support](https://github.com/kvark/meganeura/pull/259)),
+with Blade `96c1dc7` and Naga `a97559b6`. BF16
 is permitted by the accelerated arithmetic contract, including explicitly
 declared mixed f32/BF16 storage. Strict still forbids it. Meganeura's `Auto`
 selector currently uses the existing f32/f16 paths; permission does not imply
@@ -24,10 +25,33 @@ otherwise; MPS uses fp16. `--autocast bf16`, `fp16` or `off` fixes the setting;
 and never changes in response to a failed gate or a slow result. Strict and
 the graphics-only CPU oracle remain f32. Receipts record the actual policy.
 
-Meganeura retains f32 storage with eligible f16 cooperative inputs. Its existing
-full-tensor and cross-engine gradient gates are unchanged; this change does not
-add native f16 activation storage or replace native qualification with a learning
-gate. The separate convergence study still compares both engines on real text.
+Meganeura retains f32 storage with eligible f16 cooperative inputs. Each native
+session now first builds the **original, unconverted graph in untuned strict F32**,
+using the same checkpoint and inputs in a separate context on the selected GPU.
+The reference context is dropped before candidate construction. Every candidate,
+including the first and memoized candidates, must pass full-output maximum/RMS bounds of
+`1e-6 + 0.02 * reference magnitude` and aggregate full-gradient bounds of
+`1e-6 + 0.01 * reference magnitude` in accelerated mode. Strict uses `rtol=1e-4`.
+The existing, tighter within-search anchor check also remains. This catches
+precision errors that would be shared by the first reduced-precision program.
+Both the searched path and graph1 diagnostics enforce it before benchmark timing.
+The collector requires `native-f32-full-tensor-v1` evidence for every session.
+
+This is an arithmetic control in the native engine, not a second independent
+implementation. The PyTorch cross-engine check still compares sampled outputs
+and canonical per-parameter gradient norms. It cannot detect every directional
+gradient error shared by both native F32 and reduced implementations. The new
+gate also does not replace a learning gate: the separate convergence study
+compares both engines on real text.
+
+Reference construction/readback is counted in `compile_s` and reported separately
+as `arithmetic_reference.preparation_seconds`. It precedes the unchanged 30-second
+search budget; there are still 30 pairs per GPU and no extra benchmark columns.
+Search now uploads the representative inputs before every step, outside its
+timer, matching the held-out timing loop. A rejected challenger is discarded;
+a failed initial program or final incumbent aborts native construction, and
+collection stops with the failure retained. It never promotes that run's timings
+or changes precision.
 
 Every accelerated PyTorch setting, **including `off`/TF32**, now has the same
 untimed forward and training qualification. The full-output RMS and maximum
@@ -415,7 +439,8 @@ hold an incumbent and challenger. Most models construct three sessions; Whisper
 uses two. In-flight driver work and qualification can overrun the soft deadline.
 
 Every candidate's full outputs and canonical parameter gradients are compared
-with the first checked program. Candidates with outstanding kernel probes are
+with the first checked program. V21 additionally checks every candidate against
+the original graph's F32 arithmetic, as described above. Candidates with outstanding kernel probes are
 checked before and after tuning; memo-only candidates are checked after installing
 their kernels. Winning challengers are checked after paired measurement, and
 the final incumbent is checked again if another challenger has run since its
@@ -445,9 +470,15 @@ The first run is cold with respect to this memo; later runs are explicitly
 warm. Receipts record loaded/saved classes, reused class visits and new comparisons;
 reused visits also include reuse within a search. Preparation costs must be
 interpreted with these receipts, not pooled as independent cold-start searches.
+Driver shader caches are separate: a fresh kernel memo does not make shader
+compilation cold. The collector records driver-cache controls but labels their
+initial contents uncontrolled. Report preparation as such, or collect a separate
+experiment with verified empty per-run driver caches. The native F32 reference
+can warm pipelines within a process; its preparation is included in `compile_s`.
 Whole-program graph/layout/submission search still runs in each fresh process,
 with unchanged bounds and no patience stop. This does not persist weights,
-inputs, GPU state or the selected whole program. Numerical gates are unchanged.
+inputs, GPU state or the selected whole program. Memo reuse never bypasses
+numerical qualification.
 
 Both engines warm up with the actual phase workload until **both** five calls
 and ten seconds have completed. Actual warmup counts and elapsed seconds are

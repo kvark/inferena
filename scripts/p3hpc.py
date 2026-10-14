@@ -222,6 +222,20 @@ def check_native_search(session, seconds, max_submission_chunks, kernel_memo=Fal
             or qualification["qualified_calls"] < 1 or qualification["output_elements"] <= 0
             or session["mode"] == "Training" and qualification["gradient_elements"] <= 0):
         raise ValueError("native construction lacks full-output/gradient qualification")
+    arithmetic = qualification.get("arithmetic_reference", {})
+    strict = session["cooperative_matrix_policy"] == "NativeF32"
+    if (arithmetic.get("policy") != "native-f32-full-tensor-v1"
+            or arithmetic.get("status") != "pass"
+            or arithmetic.get("reference") != "original graph; untuned native strict-f32"
+            or arithmetic.get("prepared_before_precision_conversion") is not True
+            or arithmetic.get("output_rtol") != (1e-4 if strict else 0.02)
+            or arithmetic.get("gradient_rtol") != (1e-4 if strict else 0.01)
+            or arithmetic.get("atol") != 1e-6
+            or arithmetic.get("checked_calls") != qualification["qualified_calls"]
+            or not math.isfinite(arithmetic.get("preparation_seconds", math.nan))
+            or arithmetic["preparation_seconds"] <= 0
+            or session.get("search_input_policy") != "refresh before each step, outside timing"):
+        raise ValueError("native construction lacks an original-graph F32 arithmetic check or matched inputs")
     memo = session["kernel_memo"]
     reports = [trial["kernel_tuning"] for trial in trials if trial["kernel_tuning"] is not None]
     # TuneReport uses serde's skip_serializing_if for an empty reuse list.
@@ -683,11 +697,17 @@ def main():
                INFERENA_WARMUP_SECONDS=str(WARMUP_SECONDS))
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v20", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v21", "source": revision,
         "started_at": started_at,
         "host": {"name": socket.gethostname(), "os": platform.system(),
                  "kernel": platform.release(), "platform": platform.platform(), "arch": platform.machine(),
                  "cpu_frequency_policies": cpu_frequency_policies()},
+        "driver_shader_cache": {
+            "initial_state": "uncontrolled; independent of the native kernel memo",
+            "environment": {key: os.environ.get(key) for key in (
+                "MESA_SHADER_CACHE_DIR", "MESA_SHADER_CACHE_DISABLE",
+                "MESA_SHADER_CACHE_SINGLE_FILE", "__GL_SHADER_DISK_CACHE",
+                "__GL_SHADER_DISK_CACHE_PATH", "__GL_SHADER_DISK_CACHE_SIZE")}},
         "synthetic_parameter_init": SYNTHETIC_PARAMETER_INIT,
         "precision_policy": {"strict": "f32", "accelerated": {
             "autocast_requested": args.autocast, "pytorch_autocast": args.autocast_dtype,
@@ -712,6 +732,8 @@ def main():
                                           "scope": "campaign/model/precision", "selected_program_reuse": False},
                           "warmup_pairs": 2, "warmup_seconds": 0.25,
                           "qualification": "fixed-full-tensor-v4",
+                          "arithmetic_reference": "native-f32-full-tensor-v1; preparation included in compile_s, outside search budget",
+                          "search_input_policy": "refresh before each step, outside timing",
                           "search_seconds_per_session": args.tune_seconds, "strict_coop": "NativeF32"},
         "reference_compile_seconds": args.compile_seconds,
         "run_watchdog_seconds": args.run_seconds,

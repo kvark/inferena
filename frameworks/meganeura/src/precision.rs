@@ -81,11 +81,11 @@ impl Policy {
                 .capabilities();
             assert!(
                 caps.shader_bfloat16
-                    && caps
-                        .cooperative_matrix
-                        .bf16_f32_shapes
-                        .contains(&[16, 16, 16]),
-                "BF16 experiment requires native BF16 storage and 16x16x16 BF16/F32 cooperative matrices; use auto on this device"
+                    && meganeura::codegen::bf16_cooperative_shape(
+                        &caps.cooperative_matrix.bf16_f32_shapes
+                    )
+                    .is_some(),
+                "BF16 experiment requires native BF16 storage and supported BF16/F32 cooperative matrices; use auto on this device"
             );
         }
     }

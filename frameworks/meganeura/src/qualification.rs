@@ -1,4 +1,5 @@
-//! Full-tensor construction checks. The outer harness remains the PyTorch oracle.
+//! Full-tensor construction checks against both F32 arithmetic and the search anchor.
+//! The outer harness remains the independent PyTorch implementation check.
 use meganeura::{Graph, Mode, Session};
 use std::collections::BTreeMap;
 
@@ -85,66 +86,49 @@ struct Snapshot {
     gradients: BTreeMap<String, Vec<f32>>,
 }
 
-pub struct Qualification {
-    output_lengths: Vec<usize>,
-    mode: Mode,
-    reference: Option<Snapshot>,
-    calls: usize,
-}
-
-impl Qualification {
-    pub fn new(graph: &Graph, mode: Mode) -> Self {
-        Self {
-            output_lengths: graph
-                .outputs()
-                .iter()
-                .map(|&id| graph.node(id).ty.num_elements())
-                .collect(),
-            mode,
-            reference: None,
-            calls: 0,
-        }
-    }
-
-    pub fn check(&mut self, session: &Session) -> Result<(), String> {
-        if session.num_outputs() != self.output_lengths.len() {
+impl Snapshot {
+    fn read(session: &Session, output_lengths: &[usize], mode: Mode) -> Result<Self, String> {
+        if session.num_outputs() != output_lengths.len() {
             return Err("output inventory changed".into());
         }
-        // Candidate allocations are short-lived. A staged batch avoids paying
-        // the mapped-read calibration cost again for every new candidate.
         let mut outputs = session.read_buffers(&session.plan().output_buffers);
-        for (values, &len) in outputs.iter_mut().zip(&self.output_lengths) {
+        for (values, &len) in outputs.iter_mut().zip(output_lengths) {
             if values.len() < len {
                 return Err("output buffer is smaller than its logical tensor".into());
             }
             values.truncate(len);
         }
-        let gradients = if self.mode == Mode::Training {
+        let gradients = if mode == Mode::Training {
             gradients(session)?
         } else {
             BTreeMap::new()
         };
-        let (reference_outputs, reference_gradients) = self
-            .reference
-            .as_ref()
-            .map(|snapshot| (&snapshot.outputs, &snapshot.gradients))
-            .unwrap_or((&outputs, &gradients));
-        if gradients.keys().ne(reference_gradients.keys()) {
-            return Err("gradient inventory changed".into());
+        Ok(Self { outputs, gradients })
+    }
+
+    fn compare(
+        &self,
+        reference: &Self,
+        mode: Mode,
+        output_rtol: f64,
+        accelerated: bool,
+    ) -> Result<(), String> {
+        if self.outputs.len() != reference.outputs.len()
+            || self.gradients.keys().ne(reference.gradients.keys())
+        {
+            return Err("tensor inventory changed".into());
         }
-        for (index, (actual, reference)) in outputs.iter().zip(reference_outputs).enumerate() {
+        for (index, (actual, expected)) in self.outputs.iter().zip(&reference.outputs).enumerate() {
             let mut error = Error::default();
-            error.include(actual, reference)?;
+            error.include(actual, expected)?;
             error
-                .check(1e-4)
+                .check(output_rtol)
                 .map_err(|error| format!("output {index}: {error}"))?;
         }
-        let accelerated = std::env::var("INFERENA_STRICT").as_deref() != Ok("1");
         let mut total = Error::default();
-        for (name, actual) in &gradients {
-            let reference = &reference_gradients[name];
+        for (name, actual) in &self.gradients {
             let mut error = Error::default();
-            error.include(actual, reference)?;
+            error.include(actual, &reference.gradients[name])?;
             if !accelerated {
                 error
                     .check(1e-4)
@@ -152,34 +136,148 @@ impl Qualification {
             }
             total.merge(&error);
         }
-        if self.mode == Mode::Training {
-            total.check(if accelerated { 0.01 } else { 1e-4 })?;
+        if mode == Mode::Training {
+            total
+                .check(if accelerated { 0.01 } else { 1e-4 })
+                .map_err(|error| format!("full gradient: {error}"))?;
         }
-        if self.reference.is_none() {
-            self.reference = Some(Snapshot { outputs, gradients });
-        }
-        self.calls += 1;
         Ok(())
+    }
+}
+
+pub struct Qualification {
+    output_lengths: Vec<usize>,
+    mode: Mode,
+    accelerated: bool,
+    f32: Snapshot,
+    reference_seconds: f64,
+    anchor: Option<Snapshot>,
+    calls: usize,
+    rejected_calls: usize,
+}
+
+impl Qualification {
+    /// The F32 reference is built from the original graph, before any precision
+    /// conversion or search. Never let a reduced candidate define this oracle.
+    pub fn new(graph: &Graph, mode: Mode, reference: &Session) -> Result<Self, String> {
+        let output_lengths: Vec<_> = graph
+            .outputs()
+            .iter()
+            .map(|&id| graph.node(id).ty.num_elements())
+            .collect();
+        let f32 = Snapshot::read(reference, &output_lengths, mode)?;
+        f32.compare(&f32, mode, 1e-4, false)?;
+        Ok(Self {
+            output_lengths,
+            mode,
+            accelerated: !crate::precision::strict(),
+            f32,
+            reference_seconds: 0.0,
+            anchor: None,
+            calls: 0,
+            rejected_calls: 0,
+        })
+    }
+
+    pub fn set_reference_seconds(&mut self, seconds: f64) {
+        self.reference_seconds = seconds;
+    }
+
+    pub fn check(&mut self, session: &Session) -> Result<(), String> {
+        self.check_snapshot(Snapshot::read(session, &self.output_lengths, self.mode)?)
+    }
+
+    fn check_snapshot(&mut self, actual: Snapshot) -> Result<(), String> {
+        let result = (|| {
+            actual
+                .compare(
+                    &self.f32,
+                    self.mode,
+                    if self.accelerated { 0.02 } else { 1e-4 },
+                    self.accelerated,
+                )
+                .map_err(|error| format!("strict-f32 reference: {error}"))?;
+            // Preserve the tighter within-search repeatability check as well.
+            actual
+                .compare(
+                    self.anchor.as_ref().unwrap_or(&actual),
+                    self.mode,
+                    1e-4,
+                    self.accelerated,
+                )
+                .map_err(|error| format!("search anchor: {error}"))?;
+            if self.anchor.is_none() {
+                self.anchor = Some(actual);
+            }
+            Ok(())
+        })();
+        if let Err(error) = &result {
+            self.rejected_calls += 1;
+            eprintln!(
+                "[qualification] rejected {:?} candidate: {error}",
+                self.mode
+            );
+        } else {
+            self.calls += 1;
+        }
+        result
     }
 
     pub fn report(&self) -> serde_json::Value {
-        let reference = self.reference.as_ref().expect("qualified anchor");
+        assert!(self.anchor.is_some(), "qualified anchor");
         serde_json::json!({
-            // With a completed memo, the first check is already kernel-tuned.
-            // The outer PyTorch oracle is still checked in every fresh process.
             "policy": "fixed-full-tensor-v4", "reference": "first checked program",
             "rtol": 1e-4, "atol": 1e-6, "accelerated_gradient_rtol": 0.01,
             "qualified_calls": self.calls,
-            "output_elements": reference.outputs.iter().map(Vec::len).sum::<usize>(),
-            "gradient_tensors": reference.gradients.len(),
-            "gradient_elements": reference.gradients.values().map(Vec::len).sum::<usize>(),
+            "rejected_calls": self.rejected_calls,
+            "output_elements": self.f32.outputs.iter().map(Vec::len).sum::<usize>(),
+            "gradient_tensors": self.f32.gradients.len(),
+            "gradient_elements": self.f32.gradients.values().map(Vec::len).sum::<usize>(),
+            "arithmetic_reference": {
+                "policy": "native-f32-full-tensor-v1", "status": "pass",
+                "reference": "original graph; untuned native strict-f32",
+                "prepared_before_precision_conversion": true,
+                "output_rtol": if self.accelerated { 0.02 } else { 1e-4 },
+                "gradient_rtol": if self.accelerated { 0.01 } else { 1e-4 },
+                "atol": 1e-6, "preparation_seconds": self.reference_seconds,
+                "checked_calls": self.calls, "rejected_calls": self.rejected_calls,
+            },
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Error;
+    use super::{Error, Qualification, Snapshot};
+    use meganeura::Mode;
+
+    #[test]
+    fn first_candidate_cannot_define_its_own_precision_reference() {
+        let snapshot = |gradient| Snapshot {
+            outputs: vec![vec![1.0]],
+            gradients: [("weight".into(), gradient)].into(),
+        };
+        let mut gate = Qualification {
+            output_lengths: vec![1],
+            mode: Mode::Training,
+            accelerated: true,
+            f32: snapshot(vec![0.25, -0.5]),
+            reference_seconds: 0.01,
+            anchor: None,
+            calls: 0,
+            rejected_calls: 0,
+        };
+        // Identical norms conceal reversed derivatives; the full gate rejects
+        // them even on the very first program, before an anchor exists.
+        assert!(gate.check_snapshot(snapshot(vec![-0.25, 0.5])).is_err());
+        assert!(gate.anchor.is_none());
+        assert!(gate.check_snapshot(snapshot(vec![0.0, 0.0])).is_err());
+        assert!(gate.anchor.is_none());
+        gate.check_snapshot(snapshot(vec![0.25, -0.5])).unwrap();
+        assert_eq!(gate.report()["arithmetic_reference"]["rejected_calls"], 2);
+        assert_eq!(gate.report()["arithmetic_reference"]["checked_calls"], 1);
+        assert!(gate.check_snapshot(snapshot(vec![f32::NAN, -0.5])).is_err());
+    }
 
     #[test]
     fn full_tensor_bounds_reject_shape_nonfinite_sparse_and_diffuse_errors() {

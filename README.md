@@ -137,10 +137,14 @@ The f32 oracle also supplies cross-engine output and gradient checks.
 Graph replay includes forward/loss/scaled backward; scaler housekeeping runs
 after replay inside the measured step.
 
-The development collection protocol is **v20**, still 30 pairs per GPU.
+The development collection protocol is **v21**, still 30 pairs per GPU.
+Native candidates also pass a full-output/gradient check against the original
+graph in F32, including the first candidate and cached decisions. This adds
+reference preparation time, recorded in `compile_s`, before the 30-second search.
+Search refreshes inputs before each step to match benchmark execution.
 `scripts/amp_reference.py` provides optional dtype and `--repeated-batch`
 diagnostics; `scripts/convergence.py` separately compares both engines on real
-text. See the [current protocol](EXPERIMENT.md#development-v20-two-profiles).
+text. See the [current protocol](EXPERIMENT.md#development-v21-two-profiles).
 The completed October 11 v18 cohort retains its frozen source and arithmetic
 policy. Keep its records separate from the new qualification protocol.
 
@@ -149,8 +153,9 @@ Native precision experiments use `INFERENA_MEGANEURA_PRECISION`:
 kernels; `bf16-forward` converts supported forward matrices/convolutions;
 `bf16` also narrows eligible dense derivatives; `bf16-inputs` keeps matrix
 results in f32 while narrowing operands. Parameters, accumulation, losses and
-master gradients remain f32. BF16 requires native storage and 16×16×16
-BF16/F32 cooperative matrices. Conversion costs are included in every step.
+master gradients remain f32. BF16 requires native storage and 16×16×16 or
+8×16×16 BF16/F32 cooperative matrices (the latter enables B570). Conversion
+costs are included in every step.
 
 ```sh
 INFERENA_MEGANEURA_PRECISION=bf16-inputs MEGANEURA_TUNE=0 \
@@ -158,10 +163,10 @@ INFERENA_MEGANEURA_PRECISION=bf16-inputs MEGANEURA_TUNE=0 \
 ```
 
 These overrides emit diagnostic receipts and the paired collector rejects
-them. Their raw timings need independent numerical qualification; the
-constructor's within-policy check alone cannot establish agreement with f32.
-They add no default collection work or columns. The
-[BF16 investigation](ANALYSIS.md#bf16-permission-and-regression-checks-october-14-2026)
+them. They must pass the original-graph F32 check before timing; that arithmetic
+check does not establish training convergence or an independent implementation
+comparison. The optional experiments add no columns. The
+[BF16 investigation](ANALYSIS.md#rectangular-bf16-and-cohort-qualification-october-14-2026)
 records the current evidence for choosing candidates.
 
 PyTorch uses `torch.compile` in `default` mode, including on Windows and MPS.

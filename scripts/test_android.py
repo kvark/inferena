@@ -19,7 +19,9 @@ class AndroidContract(unittest.TestCase):
         import sys
         tuning = dict(scope="All", max_classes=2 * sys.maxsize + 1, min_improvement=0.05,
                       max_time=dict(secs=30, nanos=0), max_scratch_bytes=TUNE_SCRATCH_BYTES)
-        session = dict(mode="Training", search=dict(options=dict(max_time=dict(secs=30, nanos=0),
+        session = dict(mode="Training", cooperative_matrix_policy="NativeF32",
+            search_input_policy="refresh before each step, outside timing",
+            search=dict(options=dict(max_time=dict(secs=30, nanos=0),
             max_graphs=16, max_programs=64, max_submission_chunks=64, patience=None,
             min_improvement=0.01, warmup_runs=2, warmup_time=dict(secs=0, nanos=250000000),
             max_plan_bytes=9 * 1024**3 // 4, tuning=tuning), selected=0,
@@ -30,6 +32,10 @@ class AndroidContract(unittest.TestCase):
                                source="android-memavailable-capped-3gib", system_available_bytes=4 * 1024**3,
                                available_bytes=3 * 1024**3, plan_fraction_of_available=0.75),
             qualification=dict(policy="fixed-full-tensor-v4", reference="first checked program", rtol=1e-4,
+                               arithmetic_reference=dict(policy="native-f32-full-tensor-v1", status="pass",
+                                   reference="original graph; untuned native strict-f32", prepared_before_precision_conversion=True,
+                                   output_rtol=1e-4, gradient_rtol=1e-4, atol=1e-6, preparation_seconds=0.1,
+                                   checked_calls=1, rejected_calls=0),
                                atol=1e-6, accelerated_gradient_rtol=0.01, qualified_calls=1,
                                output_elements=1, gradient_elements=1),
             kernel_memo=dict(policy="campaign-kernel-memo-v1", enabled=False, load="disabled", loaded_classes=0,
@@ -54,7 +60,7 @@ class AndroidContract(unittest.TestCase):
     def test_native_phase_order_and_measurement_gate(self):
         args = create_parser().parse_args([])
         record = dict(framework="meganeura", framework_rev="revision", model="SmolVLA", gpu_name="Adreno",
-            protocol=dict(name="inferena-paper-v3", diagnostic=False, synthetic_parameter_init="name-index-uniform-v1",
+            protocol=dict(name="inferena-paper-v5", diagnostic=False, synthetic_parameter_init="name-index-uniform-v1",
                           warmup_runs=5, warmup_seconds=2, measurement_runs=20, training_requested=True,
                           warmup={p: dict(runs=5, seconds=2.1) for p in ("inference", "latency", "training")}),
             timing_samples_ms={p: [1.] * 20 for p in ("inference", "latency", "training")},
@@ -64,6 +70,13 @@ class AndroidContract(unittest.TestCase):
         with patch("p3hpc_android.check_native_search") as search:
             check_native(record, args, "SmolVLA", "strict", 20, {"rev": "revision"}, {"name": "Adreno"})
             self.assertEqual(search.call_count, 3)
+            record["precision"]["comparison_class"] = "accelerated"
+            for session in record["optimizer"]["sessions"]:
+                session["cooperative_matrix_policy"] = "Auto"
+            check_native(record, args, "SmolVLA", "accelerated", 20, {"rev": "revision"}, {"name": "Adreno"})
+            record["precision"]["comparison_class"] = "strict-f32"
+            for session in record["optimizer"]["sessions"]:
+                session["cooperative_matrix_policy"] = "NativeF32"
             record["optimizer"]["sessions"].pop()
             with self.assertRaises(ValueError):
                 check_native(record, args, "SmolVLA", "strict", 20, {"rev": "revision"}, {"name": "Adreno"})

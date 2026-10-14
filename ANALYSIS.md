@@ -4,6 +4,138 @@ The evidence separates inefficient resident kernels from weight-representation
 and memory-placement costs. It does **not** establish a removable barrier-cost percentage.
 No new speed samples were collected during the post-OOM offline analysis.
 
+## Rectangular BF16 and cohort qualification (October 14, 2026)
+
+[Meganeura #259](https://github.com/kvark/meganeura/pull/259), commit `cfab3d1`,
+allows the B570's advertised BF16/F32 M×N×K shape `[8,16,16]`. The existing
+32×32 output block uses eight rectangular native tiles. Square devices retain
+four 16×16 tiles. Dense transpose/addend products and implicit-GEMM convolutions
+share this loop; checked tails, F32 partials and whole 32-element split-K
+partitions are preserved. This enables explicit BF16 graphs; default F32/FP16
+selection is unchanged.
+
+Both B570 and RTX 5070 pass the 15-test BF16 regression filter, including the
+ignored full-F64 convolution oracle. The unsupported-device test correctly skips
+on these supported GPUs. Coverage includes every dense transpose/addend layout,
+unaligned dimensions, split partials, F32/BF16 results, master and reduced
+gradients, and repeated updates. The library CPU suite passes 439 tests with
+seven ignored; formatting, Clippy and PR CI pass.
+
+**The old native qualification could miss a precision error in its first
+program.** It used that program as its full-tensor anchor. The paired harness's
+independent PyTorch check compared sampled outputs and gradient norms, which
+cannot detect every element error or reversed derivative. The earlier Whisper
+FP16 search therefore produced raw timings despite failing the separate full
+F32 comparison. Explicit dtype diagnostics were already excluded from the
+cohort, so those timings were not promoted to publication results.
+
+Inferena now builds the original graph in untuned strict F32 before applying
+precision conversions or searching. Every candidate passes both that full-tensor
+arithmetic check and the existing within-search check. Accelerated forward
+maximum/RMS bounds use `atol=1e-6, rtol=0.02`; aggregate full-gradient bounds use
+`atol=1e-6, rtol=0.01`. Strict uses `rtol=1e-4`. Initial programs and memo hits
+also pass these checks. A bad challenger is discarded; a bad initial or final
+program aborts construction. Graph1 diagnostics enforce the check too. Failed
+native construction emits no result JSON; the collector cannot accept its
+timings. Rejection logs and watchdog receipts remain available.
+
+This is a native arithmetic control, **not an independent implementation**.
+The PyTorch cross-engine check remains; a shared native F32 compiler error can
+still require a full independent tensor oracle to diagnose. Neither fixed-step
+gradients nor the primitive update tests replace real-data convergence.
+
+Actual negative checks now reject:
+
+- B570 SmolLM2-135M BF16 inputs: one-token output maximum error 0.6009 exceeds
+  the fixed 0.5553 bound. No benchmark result is emitted.
+- B570 diffusion BF16 inputs: aggregate gradient RMS error 3.721e-5 exceeds
+  3.038e-5. No benchmark result is emitted.
+- RTX Whisper unrestricted FP16 with the ordinary 30-second search: the initial
+  training program's gradient maximum error 1.963e-5 exceeds 7.696e-6. Training
+  warmup/timing never begins. The previous first-candidate anchor accepted this
+  arithmetic, so this is an exercised rejection, not just a schema test.
+
+RTX Whisper Auto and BF16 inputs both pass the searched path. Training is
+23.531 ms and 28.739 ms respectively, with ten-second warmups and twenty retained
+samples. The earlier Auto measurement was 23.565 ms. B570 BF16 now executes and
+passes Whisper, SmolVLA and ResNet, but is slower in each screen. SmolLM2 and
+diffusion fail the numerical gate. No BF16 policy is promoted to the cohort.
+
+All 60 default-path phase comparisons (five models × two profiles × two GPUs,
+three phases) are bit-identical to the prior merged-pin build, including full
+outputs, losses and canonical gradients, with matching parameters and inputs.
+The final separate-context build repeats all 60 comparisons with bit-identical
+results (`final-validation.json`); that pass uses one sample and brief warmup
+only for numerical validation, with CPU test work allowed concurrently. Its
+timings are not used for performance claims. These are graph1 regression checks,
+not a full searched cohort. Alternating
+old/new binaries with ten-second warmups remove the B570 training difference:
+SmolVLA medians are 26.228 ms before and 26.258 ms after (+0.11%). Its inference
+median differs by 2.7%; latency by 0.5%. B570 diffusion training is 13.625 versus
+13.626 ms in a matched followup.
+
+RTX SmolVLA graph1 one-token latency retains a difference: 1.881 versus 2.125 ms
+across the three alternating pairs; one old process also takes 2.137 ms. The
+128-dispatch plans are identical. Isolating the F32 reference context does not
+remove this difference. The **actual 30-second searched protocol** does not
+reproduce a slowdown in the matched followup: inference is 2.390 versus 2.408 ms,
+latency 1.131 versus 1.105 ms, and training 7.388 versus 7.300 ms. These are one
+fresh searched process per build, not replicated cohort estimates. The graph1
+difference remains disclosed; there is no blanket claim that every timing is
+unchanged. Both reference construction and the added tensor readbacks are
+outside the step timer, but preparation can affect later execution.
+
+The final implementation constructs the F32 reference in a separate GPU context
+on the same device, then drops it before candidate construction. This removes
+64 MiB of reference-related retained device allocation observed with the shared
+context in the RTX SmolVLA probe; it is not presented as a latency fix. The
+`guarded` and `isolated` binaries/source archives distinguish the two stages.
+
+**Collection protocol v21 still has two profiles and 30 pairs per GPU.** It now
+requires the F32-reference receipt and refreshes inputs before every search step,
+outside timing, just as the benchmark does. The previous search kept them resident.
+F32 reference preparation is included in `compile_s`, separately reported, and
+precedes the unchanged 30-second search allowance. In the B570 screen it costs
+about 0.7 seconds for Whisper and 9.8 seconds for SmolLM2-135M across all requested
+sessions. Summing the initial screen's reference costs projects about two minutes
+on B570 and 36 seconds on RTX across 30 pairs, plus context lifecycle overhead.
+This is a projection, not a measured complete cohort duration. These checks add
+preparation work, not benchmark columns.
+
+Before starting a new publication cohort:
+
+1. Prequalify and freeze the PyTorch arithmetic policy. Capability-only `auto`
+   still selects BF16 where supported, with no numerical fallback. The existing
+   SmolLM2 BF16 failures are real exclusions; FP16 passed the prior 256-update
+   real-text/probe/held-out test on both local GPUs. Do not rerun failed BF16
+   and silently substitute FP16 timings. A different policy needs an explicit
+   receipt and fresh qualification under the pinned source.
+2. Keep memo-cold and memo-warm preparation separate, or use
+   `--no-kernel-memo`. Driver shader caches are independent. The collector now
+   records their environment controls and labels their initial contents
+   uncontrolled. A cold-start claim needs verified empty driver caches; a fresh
+   kernel memo alone is insufficient.
+3. Keep v21 separate from frozen v18/v20 evidence, run B570 first with the
+   watchdog, and preserve failed trials. Native BF16 remains diagnostic until a
+   useful qualifying path exists; promoting its training also needs the matched
+   learning check. The Android collector's stale protocol/profile labels were
+   corrected, but no Android hardware run was performed here.
+
+The report reader now accepts v19/v20/v21 and Android v2, and refuses to pool
+different paired protocol versions even if source identifiers match. Training
+acceptance uses the matching model/profile/condition's replicate group; one
+failed group's median no longer hides other groups' passing training results.
+Missing/duplicate groups or failed phases still produce no timing or speedup.
+Inferena's 20 Rust unit tests, 33 PyTorch execution tests and 20 script tests pass,
+as do Clippy and formatting for the native runner and harness. The ignored GPU
+memo regression passes separately on both GPUs: saved decisions are reused,
+while each fresh session rechecks its new weights and inputs against F32.
+
+Evidence: `../inferena-results/rectangular-protocol-20261014`, including library
+logs, retained binaries, serial watchdog receipts, full default-path tensors,
+`regression.json`, positive/negative precision checks, searched Whisper runs and
+alternating timing followups. The older October 14 artifact remains unchanged.
+
 ## BF16 permission and regression checks (October 14, 2026)
 
 Accelerated permits BF16 alongside FP16 and F32, with the same two collection

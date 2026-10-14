@@ -56,6 +56,40 @@ fn build_session(
     });
     let arithmetic = precision::Policy::from_env();
     arithmetic.configure(&mut config);
+    let reference_start = Instant::now();
+    let mut reference_config = session_config();
+    // Keep reference allocations and runtime calibration out of the context
+    // whose selected program will be measured.
+    let reference_gpu = std::sync::Arc::new(
+        meganeura::runtime::init_gpu_context().expect("reference GPU initialization failed"),
+    );
+    assert_eq!(
+        reference_gpu.device_information().device_name,
+        config
+            .gpu
+            .as_ref()
+            .unwrap()
+            .device_information()
+            .device_name,
+        "arithmetic reference selected a different GPU",
+    );
+    reference_config.gpu = Some(reference_gpu);
+    reference_config.mode = mode;
+    reference_config.tune = false;
+    reference_config.cache = None;
+    reference_config.runtime.coop = CoopPolicy::NativeF32;
+    reference_config.options.flash_forward_coop = false;
+    reference_config.options.flash_backward_coop = false;
+    reference_config.options.bf16_matrix_gradients = false;
+    let mut reference = meganeura::build(graph, reference_config).0;
+    initialize_parameters(&mut reference);
+    initialize_inputs(&mut reference);
+    reference.step();
+    reference.wait();
+    let mut qualification = qualification::Qualification::new(graph, mode, &reference)
+        .expect("invalid strict-f32 arithmetic reference");
+    drop(reference);
+    qualification.set_reference_seconds(reference_start.elapsed().as_secs_f64());
     let reduced_graph = arithmetic.graph(graph);
     let graph = reduced_graph.as_ref().unwrap_or(graph);
     let policy = format!("{:?}", config.runtime.coop);
@@ -79,7 +113,6 @@ fn build_session(
         let memory = config.gpu.as_ref().unwrap().memory_stats();
         let (available, memory_source, system_available) =
             search_memory_budget(memory.budget, memory.usage);
-        let mut qualification = qualification::Qualification::new(graph, mode);
         let mut options = train::BuildSearchOptions {
             max_graphs: 16,
             max_programs: 64,
@@ -116,7 +149,7 @@ fn build_session(
         )
         .expect("cannot load kernel memo");
         options.kernel_memo = Some(cache.memo.clone());
-        let (session, report) = train::build_measured(
+        let (session, report) = train::build_measured_with_inputs(
             graph,
             config,
             options,
@@ -134,6 +167,10 @@ fn build_session(
                 initialize_inputs(session);
                 Ok(())
             },
+            |session| {
+                initialize_inputs(session);
+                Ok(())
+            },
             |session| qualification.check(session),
         )
         .expect("calibrated construction failed");
@@ -147,7 +184,6 @@ fn build_session(
         );
         preparation["kernel_memo"] = cache.finish(&report).expect("cannot save kernel memo");
         preparation["search"] = serde_json::to_value(report).unwrap();
-        preparation["qualification"] = qualification.report();
         preparation["memory_budget"] = serde_json::json!({
             "device_budget_bytes": memory.budget,
             "device_usage_bytes": memory.usage,
@@ -161,8 +197,15 @@ fn build_session(
         let mut session = meganeura::build(graph, config).0;
         initialize_parameters(&mut session);
         initialize_inputs(&mut session);
+        session.step();
+        session.wait();
+        qualification
+            .check(&session)
+            .expect("unqualified native arithmetic");
         session
     };
+    preparation["qualification"] = qualification.report();
+    preparation["search_input_policy"] = "refresh before each step, outside timing".into();
     preparation["cooperative_dispatches"] = serde_json::json!(
         session
             .plan()
@@ -182,6 +225,18 @@ fn build_session(
             )
             .count()
     );
+    preparation["bf16_matrix_shape"] =
+        if preparation["bf16_matrix_dispatches"].as_u64().unwrap() > 0 {
+            serde_json::json!(meganeura::codegen::bf16_cooperative_shape(
+                &session
+                    .context()
+                    .capabilities()
+                    .cooperative_matrix
+                    .bf16_f32_shapes,
+            ))
+        } else {
+            serde_json::Value::Null
+        };
     SESSION_PREPARATION.with_borrow_mut(|reports| reports.push(preparation));
     session
 }

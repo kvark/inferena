@@ -174,11 +174,24 @@ mod tests {
                     ..Default::default()
                 };
                 config.runtime.coop = CoopPolicy::Disabled;
-                let mut qualification = crate::qualification::Qualification::new(&graph, mode);
                 // Changing both tensors proves the memo restores decisions,
                 // never old weights, inputs or a qualification result.
                 let input = (run + 1) as f32 * 0.25;
                 let weight = (run + 1) as f32 * 0.125;
+                let mut reference_config = SessionConfig {
+                    mode,
+                    gpu: Some(gpu.clone()),
+                    ..Default::default()
+                };
+                reference_config.runtime.coop = CoopPolicy::NativeF32;
+                let mut reference = meganeura::build(&graph, reference_config).0;
+                reference.set_input("x", &[input; 33 * 17]);
+                reference.set_parameter("w", &[weight; 17 * 65]);
+                reference.step();
+                reference.wait();
+                let mut qualification =
+                    crate::qualification::Qualification::new(&graph, mode, &reference).unwrap();
+                drop(reference);
                 let (session, report) = train::build_measured(
                     &graph,
                     config,

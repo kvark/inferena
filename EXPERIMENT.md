@@ -7,6 +7,15 @@ must not be combined with either earlier protocol's records.
 
 ## Development v20: two profiles
 
+The current native pin is Meganeura `7574ad1`, with Blade `96c1dc7` and Naga
+`a97559b6`, including the merged BF16 and Vulkan memory-model changes. BF16
+is permitted by the accelerated arithmetic contract, including explicitly
+declared mixed f32/BF16 storage. Strict still forbids it. Meganeura's `Auto`
+selector currently uses the existing f32/f16 paths; permission does not imply
+automatic BF16 selection. Optional native dtype diagnostics do not enter the
+collection or change its budgets. See the
+[October 14 investigation](ANALYSIS.md#bf16-permission-and-regression-checks-october-14-2026).
+
 Strict retains its f32 arithmetic and correctness contract. Accelerated permits
 AMP and bf16/fp16 arithmetic alongside existing hardware paths. PyTorch's
 `--autocast auto` selects native bf16 on CUDA/HIP/XPU when supported and fp16

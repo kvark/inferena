@@ -44,13 +44,39 @@ pub fn before(session: &Session, phase: &str) -> Value {
     std::fs::create_dir_all(root().join("blobs")).unwrap();
     let plan = session.plan();
     let mut parameters = serde_json::Map::new();
-    for (name, len) in crate::qualification::source_parameters(session) {
-        let buffer = plan.param_buffers.iter().find(|p| p.0 == name).unwrap().1;
-        let ty = &plan.param_types[&buffer];
-        assert_eq!(ty.num_elements(), len);
-        let mut values = vec![0.0; len];
-        session.read_param(&name, &mut values);
-        parameters.insert(name, tensor(&values, &ty.shape, "F32"));
+    let sources: Vec<_> = crate::qualification::source_parameters(session)
+        .into_iter()
+        .map(|(name, len)| {
+            let buffer = plan.param_buffers.iter().find(|p| p.0 == name).unwrap().1;
+            (name, len, buffer)
+        })
+        .collect();
+    let mut pending = sources.as_slice();
+    while !pending.is_empty() {
+        // Bound staging to 64 MiB or one oversized tensor. Direct mapped reads
+        // of device-local parameters can be extremely slow on discrete GPUs.
+        let mut bytes = 0;
+        let count = pending
+            .iter()
+            .take_while(|(_, _, buffer)| {
+                let size = plan.buffers[buffer.0 as usize];
+                if bytes != 0 && bytes + size > 64 * 1024 * 1024 {
+                    return false;
+                }
+                bytes += size;
+                true
+            })
+            .count();
+        let (batch, rest) = pending.split_at(count);
+        pending = rest;
+        let buffers: Vec<_> = batch.iter().map(|entry| entry.2).collect();
+        for ((name, len, buffer), mut values) in batch.iter().zip(session.read_buffers(&buffers)) {
+            let ty = &plan.param_types[buffer];
+            assert_eq!(ty.num_elements(), *len);
+            assert!(values.len() >= *len);
+            values.truncate(*len);
+            parameters.insert(name.clone(), tensor(&values, &ty.shape, "F32"));
+        }
     }
     let mut inputs = serde_json::Map::new();
     for (name, buffer) in &plan.input_buffers {
@@ -65,6 +91,7 @@ pub fn before(session: &Session, phase: &str) -> Value {
     json!({"phase": phase, "parameters": parameters, "inputs": inputs,
         "device": session.device_information().device_name,
         "precision": if std::env::var("INFERENA_STRICT").as_deref() == Ok("1") { "strict-f32" } else { "reduced-input-f32-accumulate" },
+        "arithmetic": crate::precision::Policy::from_env().metadata(),
         "tuning": meganeura::config::TUNE.bool_or(true),
         "cooperative_dispatches": plan.dispatches.iter().filter(|d| d.use_coop()).count()})
 }

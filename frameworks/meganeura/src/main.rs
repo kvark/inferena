@@ -19,6 +19,7 @@ mod convergence;
 mod export;
 mod initialization;
 mod parameters;
+mod precision;
 mod qualification;
 mod search_cache;
 
@@ -53,10 +54,15 @@ fn build_session(
             meganeura::runtime::init_gpu_context().expect("GPU initialization failed"),
         )
     });
+    let arithmetic = precision::Policy::from_env();
+    arithmetic.configure(&mut config);
+    let reduced_graph = arithmetic.graph(graph);
+    let graph = reduced_graph.as_ref().unwrap_or(graph);
     let policy = format!("{:?}", config.runtime.coop);
     let mut preparation = serde_json::json!({
         "mode": format!("{mode:?}"),
         "cooperative_matrix_policy": policy,
+        "arithmetic": arithmetic.metadata(),
         "search": null,
     });
     let session = if meganeura::config::TUNE.bool_or(true) {
@@ -104,6 +110,7 @@ fn build_session(
                 "driver": device.driver_name,
                 "driver_info": device.driver_info,
                 "cooperative_policy": policy,
+                "arithmetic": arithmetic.name(),
                 "tuning": options.tuning,
             }),
         )
@@ -162,6 +169,17 @@ fn build_session(
             .dispatches
             .iter()
             .filter(|dispatch| dispatch.use_coop())
+            .count()
+    );
+    preparation["bf16_matrix_dispatches"] = serde_json::json!(
+        session
+            .plan()
+            .dispatches
+            .iter()
+            .filter(
+                |d| matches!(d.kernel, meganeura::compile::Kernel::CooperativeBF16 { .. })
+                    || matches!(d.shader, meganeura::compile::ShaderEntry::Conv2dBF16 { .. })
+            )
             .count()
     );
     SESSION_PREPARATION.with_borrow_mut(|reports| reports.push(preparation));
@@ -1049,6 +1067,8 @@ fn environment_json(session: &meganeura::Session) -> serde_json::Value {
         "gpu_device_id": device_id,
         "cooperative_f32_tile": caps.f32_tile,
         "cooperative_f16_tile": caps.f16_tile,
+        "bf16_storage": session.context().capabilities().shader_bfloat16,
+        "cooperative_bf16_f32_shapes": session.context().capabilities().cooperative_matrix.bf16_f32_shapes,
         "gpu_device_local_budget_bytes": session
             .device_memory_stats()
             .map(|stats| stats.budget_bytes),
@@ -1095,41 +1115,7 @@ fn emit_result(
     let sample = validation_sample(output, 256);
     let backend = detect_backend();
     let (warmup_runs, measurement_runs) = benchmark_counts();
-    let strict = std::env::var("INFERENA_STRICT").as_deref() == Ok("1");
-    let accelerated = !strict;
-    let precision = if accelerated {
-        serde_json::json!({
-            "comparison_class": "accelerated",
-            "cooperative_matrix_policy": "Auto: protect full-precision derivative regions",
-            "tensor_storage": "f32",
-            "matmul_inputs": "forward: f16 for eligible cooperative-matrix kernels; f32 otherwise",
-            "attention_inputs": "forward: f16 for eligible cooperative-matrix kernels; f32 otherwise",
-            "convolution_inputs": "forward: f16 for eligible cooperative-matrix kernels; f32 otherwise",
-            "backward_matmul_inputs": "f32",
-            "backward_convolution_inputs": "f32",
-            "backward_attention_inputs": "f32",
-            "accumulation": "f32",
-            "output": "f32",
-            "reduced_precision_allowed": true,
-            "f16_cooperative_matrix_permitted": true,
-            "persistent_f16_tensors": false,
-        })
-    } else {
-        serde_json::json!({
-            "comparison_class": "strict-f32",
-            "cooperative_matrix_policy": "NativeF32",
-            "tensor_storage": "f32",
-            "matmul_inputs": "f32",
-            "attention_inputs": "f32",
-            "convolution_inputs": "f32",
-            "accumulation": "f32",
-            "output": "f32",
-            "reduced_precision_allowed": false,
-            "f16_cooperative_matrix_permitted": false,
-            "native_f32_cooperative_matrix_permitted": true,
-            "persistent_f16_tensors": false,
-        })
-    };
+    let precision = precision::Policy::from_env().metadata();
 
     let rev = std::env::var("FRAMEWORK_REV").unwrap_or_default();
     let workload_metrics = model.starts_with("SmolLM").then(|| {
@@ -1165,7 +1151,7 @@ fn emit_result(
             "training_requested": training.is_some(),
             "training_scope": training.map(|_| "forward + loss + backward; no optimizer update"),
             "compile_scope": "graph construction, calibrated graph/kernel/submission search, GPU pipelines, weight/input initialization and full-tensor qualification for requested sessions",
-            "diagnostic": std::env::var_os("INFERENA_NSYS").is_some(),
+            "diagnostic": std::env::var_os("INFERENA_NSYS").is_some() || precision::Policy::from_env() != precision::Policy::Auto,
             "context_lifetime": "owned per session; destroyed after use",
         },
         "precision": precision,

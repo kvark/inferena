@@ -4,6 +4,108 @@ The evidence separates inefficient resident kernels from weight-representation
 and memory-placement costs. It does **not** establish a removable barrier-cost percentage.
 No new speed samples were collected during the post-OOM offline analysis.
 
+## BF16 permission and regression checks (October 14, 2026)
+
+Accelerated permits BF16 alongside FP16 and F32, with the same two collection
+profiles and existing numerical bounds. That permission does not require an
+engine to use BF16. The updated harness accepts declared mixed F32/BF16
+storage and no longer requires an accelerated implementation to permit FP16.
+Strict still rejects reduced precision. Meganeura is pinned to merged
+`7574ad1`, Blade to `96c1dc7`, and Naga to `a97559b6`. Its default `Auto`
+selector still uses the existing F32/FP16 paths. Explicit BF16 diagnostics are
+excluded from the paired collector; they add no default collection time.
+
+**The default paths preserve their numerical results.** Forty fresh processes
+compare the previous Meganeura `eb8c90f` / Blade `7909fc1` pins with the merged
+pins: five models, strict and accelerated, on B570 and RTX 5070. All 60 paired
+phase comparisons have bit-identical full outputs, losses and canonical
+gradients, with identical source parameters and inputs. This is graph1 coverage
+(`MEGANEURA_TUNE=0`), not a repeat of the full searched cohort. Each phase has
+at least five warmups and one second of warmup, then twenty retained samples.
+The same batched tensor-export change is applied to both builds, outside timing.
+Serial jobs use a 300-second process-tree watchdog; the B570 runs first.
+
+Most short-screen timing differences are within 2%. RTX strict diffusion's
+latency has one 38% outlier. Three alternating pairs with ten-second warmups
+remove it: medians are 2.959 ms before and 2.963 ms after (+0.14%); training is
+8.986 versus 9.010 ms (+0.27%). The original short-screen receipt is retained.
+
+A preparation-time difference (roughly 0.5 versus 1.25 seconds) is caused by
+driver cache state. CPU profiles locate the extra work in NVIDIA's shader
+compiler, and both versions of the new-pin runner emit the same 106 WGSL
+sources. With separate empty driver caches, preparation is 1.005 versus
+0.950 seconds; the next process using each cache takes 0.492 versus 0.475
+seconds. Disabling the cache yields 1.299 versus 1.250 seconds. The
+previous-pin control takes 1.018 seconds with its own empty cache and 0.483
+seconds on the next process, also showing no preparation regression here. The
+[NVIDIA cache controls](https://download.nvidia.com/XFree86/Linux-x86_64/550.144.03/README/openglenvvariables.html)
+and their values are retained in `cache-control.json` receipts. These short
+preparation measurements diagnose a confound, not replicated cold-start claims.
+
+**BF16 fixes a real FP16 range failure, but the current graph1 kernels are not
+faster.** On RTX Whisper, unrestricted `AllowF16` loses entire gradient tensors:
+aggregate full-gradient relative L2 error is 11.851%, and 41 of 66 individual
+gradient tensors fail the diagnostic 1% maximum/RMS gate. Explicit BF16 reduces
+aggregate error to 0.105%, with all individual tensors passing. Keeping matrix
+results in F32 reduces it to 0.101%. These are fixed-parameter gradient checks,
+not new training-convergence evidence.
+
+The normal **30-second search budget** with fresh kernel-decision caches and
+ten-second warmups confirms this distinction on Whisper. Auto trains in
+23.565 ms with 0.0068% gradient L2 error. Unrestricted FP16 takes 24.730 ms
+and still fails at 11.851%. BF16 inputs take 28.736 ms and pass at 0.101%.
+All three full-forward checks pass. BF16 therefore rescues numerical range
+here, but there is no correct-and-faster replacement to promote. These are
+single fresh searched processes, not a replicated cohort speedup estimate.
+
+The closest operand-only BF16 control retains F32 matrix results, accumulation,
+interfaces, parameters and master gradients. This separates operand precision
+from the convenience transform's extra BF16 result rounding. Both controls
+include conversion of F32 parameters during every timed step. Diagnostic gates
+use the existing `1e-6` absolute allowance, 2% full-forward maximum/RMS bound and
+1% aggregate full-gradient maximum/RMS bound; bounds are not fitted to results.
+
+| RTX graph1 workload | Auto training | BF16-input training | BF16-input gradient L2 | Gradient gate |
+| --- | ---: | ---: | ---: | --- |
+| SmolLM2-135M | 34.532 ms | 36.628 ms | 1.838% | Fail |
+| Whisper-tiny | 24.331 ms | 29.664 ms | 0.101% | Pass |
+| SmolVLA | 12.852 ms | 14.329 ms | 0.551% | Pass |
+| Diffusion U-Net | 8.800 ms | 11.351 ms | 1.227% | Fail |
+| ResNet-50 | 28.732 ms | 31.129 ms | 0.385% | Pass |
+
+These single-process short-warmup medians screen candidates; failed cells are
+raw diagnostic measurements and cannot become collection speedups. The
+forward-only BF16 transform and the transform with BF16 dense derivatives are
+also retained in the evidence. Neither produces a faster qualifying replacement
+in this screen. SmolLM2's ordinary BF16 transform fails forward maximum error
+(2.492% of the reference maximum, against 2%); FP16 passes. Retaining F32
+matrix results improves BF16 prefill to 1.767%, but one-token forward still
+fails at 2.284%, and training fails. Its one-token timing rises from 3.064 ms
+under Auto to 7.594 ms with BF16 inputs. BF16's exponent range is useful for
+Whisper's small derivatives; its coarser mantissa is not an accuracy improvement
+for every workload.
+
+**B570 needs another tile shape.** Mesa `26.0.3-1ubuntu1` exposes native BF16
+storage and an 8×16×16 BF16/F32 cooperative tile. Meganeura's current BF16
+kernels require 16×16×16 and reject the explicit experiment before compilation.
+The default B570 path remains unchanged. RTX 5070 (`595.91.07`) exposes the
+required tile. Both runs use Linux `7.0.0-38-generic`.
+
+Evidence lives in `../inferena-results/bf16-accelerated-20261014`: source
+archives and binary hashes, retained binaries, shared content-addressed full
+tensors, per-process environment/watchdog receipts, `regression.json`,
+`candidates.json`, and `input-candidates.json`. The interrupted original
+per-parameter exporter attempt is preserved separately. Batched readback fixes
+that diagnostic bottleneck without changing the timed model execution.
+
+The next useful library work is BF16 kernel selection/tuning and support for
+the B570's rectangular tile. Broad BF16 graph conversion is not justified by
+these results. Existing PyTorch dtype selection and all learning-quality gates
+remain unchanged; the earlier SmolLM2 real-text findings below still apply.
+Validation passes: 19 Rust tests and 49 Python tests, targeted rustfmt/clippy,
+and the results-Markdown checker. The optional saved-memo GPU test remains
+ignored; fresh-cache search is exercised by the Whisper runs above.
+
 ## Accelerated real-text qualification (October 12, 2026)
 
 Development v20 implements a common PyTorch training gate for `off`/TF32,

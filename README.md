@@ -113,14 +113,17 @@ Precision is part of every result:
   bf16/fp16 storage and arithmetic, and hardware acceleration, subject to the
   recorded numerical gates. PyTorch selects native bf16 when supported and
   otherwise fp16 on GPU backends (fp16 training uses gradient scaling).
-  Meganeura currently keeps f32 storage and permits eligible f16 cooperative
-  inputs. Every result records the arithmetic actually used.
+  Meganeura's default `Auto` path keeps f32 storage and permits eligible f16
+  cooperative inputs. Its explicit BF16 path is available for qualification
+  experiments. Every result records the arithmetic actually used.
 - `--strict` disables those paths for an f32 control run. PyTorch TF32 and
   Meganeura f16 cooperative-matrix paths are disabled. Native f32 cooperative
   matrices remain allowed.
 
 These are the only two collection profiles. Accelerated permits each engine's
 available optimizations; it does not require identical internal dtypes.
+BF16 permission does not force a conversion or add a collection column.
+Mixed storage receipts list their actual dtypes; strict mode rejects BF16.
 The collector's `--autocast bf16`, `--autocast fp16` or `--autocast off` fixes
 the PyTorch choice before collection; the default `auto` selects by capability,
 with no retry in another dtype after a numerical or compilation failure. Strict remains f32. CPU-only
@@ -140,6 +143,26 @@ diagnostics; `scripts/convergence.py` separately compares both engines on real
 text. See the [current protocol](EXPERIMENT.md#development-v20-two-profiles).
 The completed October 11 v18 cohort retains its frozen source and arithmetic
 policy. Keep its records separate from the new qualification protocol.
+
+Native precision experiments use `INFERENA_MEGANEURA_PRECISION`:
+`auto` preserves the normal path; `fp16` also permits reduced derivative
+kernels; `bf16-forward` converts supported forward matrices/convolutions;
+`bf16` also narrows eligible dense derivatives; `bf16-inputs` keeps matrix
+results in f32 while narrowing operands. Parameters, accumulation, losses and
+master gradients remain f32. BF16 requires native storage and 16×16×16
+BF16/F32 cooperative matrices. Conversion costs are included in every step.
+
+```sh
+INFERENA_MEGANEURA_PRECISION=bf16-inputs MEGANEURA_TUNE=0 \
+  frameworks/meganeura/run.sh Whisper-tiny
+```
+
+These overrides emit diagnostic receipts and the paired collector rejects
+them. Their raw timings need independent numerical qualification; the
+constructor's within-policy check alone cannot establish agreement with f32.
+They add no default collection work or columns. The
+[BF16 investigation](ANALYSIS.md#bf16-permission-and-regression-checks-october-14-2026)
+records the current evidence for choosing candidates.
 
 PyTorch uses `torch.compile` in `default` mode, including on Windows and MPS.
 CUDA, HIP and XPU runs use explicit whole-phase graph replay by default.

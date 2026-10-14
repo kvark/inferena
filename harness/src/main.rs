@@ -405,9 +405,14 @@ fn precision_contract_error(result: &BenchResult, requested: &str) -> Option<Str
     let accelerated = requested == "accelerated";
     for key in ["tensor_storage", "accumulation", "output"] {
         let permitted = match key {
-            "tensor_storage" => {
-                ["f32", "f16", "bf16", "f32 parameters; autocast activations"].as_slice()
-            }
+            "tensor_storage" => [
+                "f32",
+                "f16",
+                "bf16",
+                "mixed",
+                "f32 parameters; autocast activations",
+            ]
+            .as_slice(),
             "accumulation" => ["f32", "backend autocast policy"].as_slice(),
             _ => ["f32", "f16", "bf16", "operator-dependent"].as_slice(),
         };
@@ -423,6 +428,28 @@ fn precision_contract_error(result: &BenchResult, requested: &str) -> Option<Str
                 text(key)
             ));
         }
+    }
+
+    let mixed_storage = text("tensor_storage") == Some("mixed");
+    if (mixed_storage || precision.contains_key("storage_dtypes"))
+        && !precision
+            .get("storage_dtypes")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|types| {
+                types.len() >= if mixed_storage { 2 } else { 1 }
+                    && types.iter().all(|dtype| {
+                        dtype.as_str().is_some_and(|name| {
+                            ["f32", "f16", "bf16"].contains(&name)
+                                && (accelerated || name == "f32")
+                                && match text("tensor_storage") {
+                                    Some(label @ ("f32" | "f16" | "bf16")) => name == label,
+                                    _ => true,
+                                }
+                        })
+                    })
+            })
+    {
+        return Some("storage_dtypes must match the storage label and requested precision".into());
     }
 
     if flag("reduced_precision_allowed") != Some(accelerated) {
@@ -476,10 +503,13 @@ fn precision_contract_error(result: &BenchResult, requested: &str) -> Option<Str
                 flag("f16_cooperative_matrix_permitted")
             ));
         }
-        ("meganeura", "accelerated") if flag("f16_cooperative_matrix_permitted") != Some(true) => {
+        ("meganeura", "strict-f32")
+            if flag("bf16_permitted") == Some(true)
+                || flag("bf16_graph_conversion") == Some(true) =>
+        {
             return Some(format!(
-                "precision.f16_cooperative_matrix_permitted={:?}; accelerated mode requires true",
-                flag("f16_cooperative_matrix_permitted")
+                "precision.bf16_permitted={:?}; strict mode forbids BF16",
+                flag("bf16_permitted")
             ));
         }
         _ => {}
@@ -1946,6 +1976,43 @@ mod tests {
                 "nvidia_tf32_override": "0",
             }),
         );
+        assert!(precision_contract_error(&candidate, "strict-f32").is_some());
+    }
+
+    #[test]
+    fn bf16_is_permitted_in_accelerated_but_never_strict() {
+        let mut candidate = result(vec![1, 256], true);
+        candidate.framework = "meganeura".into();
+        candidate.extra.insert(
+            "precision".into(),
+            serde_json::json!({
+                "tensor_storage": "mixed", "storage_dtypes": ["f32", "bf16"],
+                "accumulation": "f32", "output": "f32",
+                "reduced_precision_allowed": true, "bf16_permitted": true,
+                "f16_cooperative_matrix_permitted": false,
+                "persistent_f16_tensors": false,
+            }),
+        );
+        assert_eq!(precision_contract_error(&candidate, "accelerated"), None);
+        assert!(precision_contract_error(&candidate, "strict-f32").is_some());
+        for types in [
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            serde_json::json!(["f32", "unknown"]),
+        ] {
+            candidate.extra.get_mut("precision").unwrap()["storage_dtypes"] = types;
+            assert!(precision_contract_error(&candidate, "accelerated").is_some());
+        }
+        // Even an F32-labelled result cannot silently permit BF16 in strict.
+        let precision = candidate.extra.get_mut("precision").unwrap();
+        precision.as_object_mut().unwrap().remove("storage_dtypes");
+        precision["tensor_storage"] = "f32".into();
+        precision["reduced_precision_allowed"] = false.into();
+        assert!(precision_contract_error(&candidate, "strict-f32").is_some());
+        candidate.extra.get_mut("precision").unwrap()["bf16_permitted"] = false.into();
+        assert_eq!(precision_contract_error(&candidate, "strict-f32"), None);
+        candidate.extra.get_mut("precision").unwrap()["storage_dtypes"] =
+            serde_json::json!(["f32", "bf16"]);
         assert!(precision_contract_error(&candidate, "strict-f32").is_some());
     }
 

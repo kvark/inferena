@@ -111,6 +111,7 @@ pub fn run(spec_path: &Path, output: &Path) {
         "model": spec.model, "precision": if strict { "strict-f32" } else { "reduced-input-f32-accumulate" },
         "spec_sha256": hex::encode(Sha256::digest(&bytes)),
         "environment": super::environment_json(&session),
+        "arithmetic": super::precision::Policy::from_env().metadata(),
         "preparation_seconds": started.elapsed().as_secs_f64(),
         "preparation": "native-preparation.json",
         "optimizer": {"name": "SGD", "learning_rate": spec.learning_rate, "momentum": 0, "weight_decay": 0},

@@ -5,6 +5,115 @@ post-OOM offline analysis separates inefficient resident kernels from
 weight-representation and memory-placement costs; it does not establish a
 removable barrier-cost percentage or contain new speed measurements.
 
+## Search slowdown and accelerated recipe (October 14, 2026)
+
+The v22 failures are retained unchanged. This investigation keeps all v22
+numerical thresholds and the two-profile matrix. Evidence is in
+`../inferena-results/slowdown-quality-20261014/`; prototype measurements below
+are diagnostic preflights, not replacement cohort records.
+
+### Whisper: dispatch equality was skipping different shaders
+
+Meganeura's search skipped whole-program timing when dispatch lists and
+submission counts matched. Attention knobs can produce different shaders with
+identical dispatch geometry. The B570 v22 strict Whisper run qualified trial 46
+(EPT16, 256 threads, eight keys, interleaved, fused), then retained the incumbent
+without collecting a single timing sample. That layout had won the historical
+cohort. RTX trial 50 similarly skipped the fused layout before timing and
+selecting its slower unfused counterpart. The retained candidate receipts are
+summarized in `whisper-skipped-candidates.json`.
+
+Commit `acb799a` compares complete execution plans before skipping a trial. A GPU
+regression test fails before the fix (zero timing pairs instead of four) and
+passes after it; an exact duplicate still skips timing. This alone exposed a
+budget problem: timing the formerly skipped shaders exhausted the cold 30-second
+search before reaching B570's fast layout. Commit `b344d49` prioritizes attention
+layouts with the incumbent's winning fusion setting, while retaining every
+combination. It does not add a vendor-specific layout preference or enlarge the
+search budget. All 20 search tests pass on B570 and RTX 5070, and all-target,
+all-feature Clippy passes.
+The changes are published for review in
+[Meganeura PR #260](https://github.com/kvark/meganeura/pull/260).
+
+A cold B570 control and fixed run use fresh driver caches, no native memo,
+30-second search, 40-second traced warmup and 20 held-out samples. Both pass the
+preserved PyTorch F32 output/loss/gradient comparison:
+
+| Phase | Merged `99e3de2` (ms) | Fixed `b344d49` (ms) |
+| --- | ---: | ---: |
+| Inference | 13.636 | 12.373 |
+| Latency | 13.675 | 12.282 |
+| Training | 61.696 | 61.673 |
+
+The fixed search reaches the previously skipped B570 layout. These are single
+process controls, with a longer diagnostic warmup; the full collection is still
+required to establish replicated performance and correctness.
+
+The corresponding RTX 5070 control also chooses the previously skipped fused
+layout. Inference improves from 5.643 to 5.482 ms, latency from 5.680 to 5.455 ms,
+and training from 24.689 to 23.861 ms. Both processes pass the same preserved F32
+cross-engine comparison. These are also single-process controls, retained in
+`rtx-whisper-{current,ordered}-plan-trace` and `whisper-controls.json`.
+
+### Diffusion: changing operating clocks confound the historical comparison
+
+Rebuilding the historical Inferena `0a718b6` / Meganeura `5b37124` binary reproduces
+slow current-day B570 timings. Historical and current programs have the same
+300-dispatch inference kernel inventory. Within one fixed historical session,
+inference drifts from about 3.93 ms near 2,025 MHz to 5.78 ms at 1,300 MHz.
+At frequency-matched stable one-second bins, old/current medians are 5.785/5.786 ms
+at 1,300 MHz and 5.497/5.498 ms at 1,400 MHz; training is 11.640/11.593 ms at
+2,250 MHz. No thermal or power throttle flag is observed. Actual and requested
+GPU clocks track each other, but this does not identify the underlying driver
+or firmware policy. No clock, power or governor settings were changed.
+
+This is evidence against attributing the historical timing gap to a kernel
+regression. It does not reconstruct the original cohort's operating conditions.
+Raw traces and sensors are in `b570-historical-current-trace`.
+
+### SmolLM2: a declared precision boundary, with unchanged quality bounds
+
+Plain BF16 fails the one-token distribution gate in eager as well as compiled
+execution. Keeping only the output head in F32 does not resolve it. F32 compiled
+execution passes; protecting MLP projections localizes the sensitivity more
+strongly than protecting attention projections. Ordinary FP16 improves the
+result but still fails one of 41 compiled input probes on each GPU. Changing
+Inductor's precision-cast emulation does not fix that failure.
+
+The selected `auto` recipe uses FP16 with the seven linear projections in the
+final decoder block in F32. It preserves the same master parameters and state
+names, and passes all 41 compiled probes on both GPUs (the original nine plus
+32 seeded held-out token/target pairs). This boundary covers only the linear
+projections, not every operation in the block. Explicit `fp16`, `bf16` and `off`
+requests remain unmodified diagnostics. The manifest declares each model's
+recipe before execution; a failed gate cannot select another recipe.
+
+The full prototype PyTorch runner also passes prefill, one-token latency,
+execution/replay checks, 256 matched real-text SGD updates, and all fixed training
+probe and held-out checks on both GPUs. No threshold was widened:
+
+| GPU | One-token mean KL | KL limit | Training curve relative L2 (diagnostic) | Updates |
+| --- | ---: | ---: | ---: | ---: |
+| B570 | 0.0001531 | 0.0099503 | 0.002153 | 256/256 |
+| RTX 5070 | 0.0001439 | 0.0099503 | 0.002143 | 256/256 |
+
+Each run uses explicit whole-phase replay, a fresh compiler cache, the 120-second
+compile budget, ten-second phase warmup and twenty measurement samples.
+Compilation takes 109.3 seconds on B570 and 57.1 seconds on RTX. These prototypes
+inject the boundary before model preparation and label it separately in their
+records; they do not claim to be v23 collection. Production wiring uses PyTorch
+runner v12 and paired protocol v23, and requires its own full frozen-source run.
+The quality contract remains bounded numerical fidelity on these inputs, not
+universal generation quality or convergence evidence for every model.
+
+The recipe has a measured cost that must remain visible: prototype FP16 training
+is 16.72 ms on B570 and 10.12 ms on RTX, versus v22 BF16 process-median aggregates
+of 12.61 and 8.86 ms. FP16's required unscale/finite-check/scale-update work is
+inside the timed step. These unmatched prototype numbers do not isolate all of
+the cost, but they rule out claiming a blanket no-regression result. Prefill is
+similar (4.63/2.90 ms versus 4.67/2.96 ms). The full v23 run must report the new
+recipe's training cost separately from unchanged-workload native regressions.
+
 ## V22 full local collection (October 14, 2026)
 
 The agreed acceptance changes are implemented in `p3hpc-paired-campaign-v22`:

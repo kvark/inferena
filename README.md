@@ -111,8 +111,9 @@ Precision is part of every result:
 
 - The default is the practical **accelerated** configuration. It permits AMP,
   bf16/fp16 storage and arithmetic, and hardware acceleration, subject to the
-  recorded numerical gates. PyTorch selects native bf16 when supported and
-  otherwise fp16 on GPU backends (fp16 training uses gradient scaling).
+  recorded numerical gates. PyTorch's frozen `auto` recipe uses fp16 with F32
+  final-decoder linear projections for SmolLM2-135M; other GPU workloads use
+  native bf16 when supported, otherwise fp16. FP16 training uses gradient scaling.
   Meganeura's default `Auto` path keeps f32 storage and permits eligible f16
   cooperative inputs. Its explicit BF16 path is available for qualification
   experiments. Every result records the arithmetic actually used.
@@ -125,7 +126,7 @@ available optimizations; it does not require identical internal dtypes.
 BF16 permission does not force a conversion or add a collection column.
 Mixed storage receipts list their actual dtypes; strict mode rejects BF16.
 The collector's `--autocast bf16`, `--autocast fp16` or `--autocast off` fixes
-the PyTorch choice before collection; the default `auto` selects by capability,
+ordinary PyTorch autocast before collection; the default `auto` selects a declared model/backend recipe,
 with no retry in another dtype after a numerical or compilation failure. Strict remains f32. CPU-only
 correctness references remain f32 and supply no GPU comparison timings.
 
@@ -141,14 +142,14 @@ curve L2 is diagnostic. Non-language outputs retain the tensor-fidelity gate.
 Graph replay includes forward/loss/scaled backward; scaler housekeeping runs
 after replay inside the measured step.
 
-The development collection protocol is **v22**, still 30 pairs per GPU.
+The development collection protocol is **v23**, still 30 pairs per GPU.
 Native candidates also pass a full-output/gradient check against the original
 graph in F32, including the first candidate and cached decisions. This adds
 reference preparation time, recorded in `compile_s`, before the 30-second search.
 Search refreshes inputs before each step to match benchmark execution.
 `scripts/amp_reference.py` provides optional dtype and `--repeated-batch`
 diagnostics; `scripts/convergence.py` separately compares both engines on real
-text. See the [current protocol](EXPERIMENT.md#development-v21-two-profiles).
+text. See the [current protocol](EXPERIMENT.md#development-v23-two-profiles).
 The completed October 11 v18 cohort retains its frozen source and arithmetic
 policy. Keep its records separate from the new qualification protocol.
 

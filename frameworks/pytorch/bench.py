@@ -30,7 +30,8 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from execution import QualificationError, capture_phase, graph_backend, profile_phase, synchronize, nsys_range
 from budget import compilation_budget, save
-from amp import AmpPolicy, BenchmarkBackward, qualify as qualify_precision, prepare_reference, resolve_autocast, training_plan
+from amp import AmpPolicy, BenchmarkBackward, qualify as qualify_precision, prepare_reference, precision_policy, training_plan
+from model_precision import apply_model_guard
 
 
 # --- Conditioned latent-diffusion U-Net (matches meganeura::models::sd_unet) ---
@@ -1454,17 +1455,18 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
         raise ValueError("inference-only currently supports SmolLM2 workloads")
     strict = os.environ.get("INFERENA_STRICT", "0") == "1"
     requested_autocast = os.environ.get("INFERENA_AUTOCAST", "auto")
-    amp = AmpPolicy(dev, resolve_autocast(dev, requested_autocast, strict=strict))
+    declared_policy = precision_policy(dev, requested_autocast, model_name, strict=strict)
+    amp = AmpPolicy(dev, declared_policy["autocast"] or "")
     precision_mode = "strict-f32" if strict else "accelerated"
-    protocol = "inferena-graph-replay-v11"
+    protocol = "inferena-graph-replay-v12"
     warmup_runs = int(os.environ.get("INFERENA_WARMUP_RUNS", "5"))
     measurement_runs = int(os.environ.get("INFERENA_MEASUREMENT_RUNS", "20"))
     if warmup_runs < 0 or measurement_runs < 1:
         raise ValueError("warmups must be >= 0 and measurement runs must be >= 1")
     precision = _configure_benchmark_precision(dev, strict, amp)
-    precision["autocast_requested"] = requested_autocast
-    precision.setdefault("autocast", None)
-    precision["autocast_selection"] = "capability-based-v1; no timing or numerical fallback"
+    precision.update(declared_policy)
+    if declared_policy["model_guard"] is not None:
+        precision["matmul_inputs"] = f"{amp.name}; declared final decoder projections use f32"
     mode = os.environ.get("INFERENA_TORCH_MODE", "default")
     options = compiler_options(mode)
     graph_capable = torch.device(dev).type in ("cuda", "xpu")
@@ -1509,6 +1511,8 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
     load_start = time.perf_counter()
     eager_model = load_model(model_name, spec, dev)
     eager_model.to(dev)
+    if apply_model_guard(eager_model, declared_policy["model_guard"]) != declared_policy["f32_linear_modules"]:
+        raise ValueError("loaded model differs from the declared F32 projection boundary")
     if model_type == "resnet":
         eager_model.eval()
     else:

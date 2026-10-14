@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import torch
 
-from amp import AmpPolicy, BenchmarkBackward, compare_loss_curves, qualify, optimizer_update, resolve_autocast
+from amp import AmpPolicy, BenchmarkBackward, compare_loss_curves, qualify, optimizer_update, precision_policy, resolve_autocast
 from execution import QualificationError, compare_tensors
 
 
@@ -107,6 +107,26 @@ class AmpTest(unittest.TestCase):
         self.assertEqual(resolve_autocast("cuda", "off"), "")
         with self.assertRaisesRegex(ValueError, "strict"):
             resolve_autocast("cuda", "bf16", strict=True)
+
+    def test_model_recipe_is_fixed_before_execution_and_explicit_requests_win(self):
+        for device in ("cuda", "xpu", "mps"):
+            with self.subTest(device=device):
+                self.assertEqual(resolve_autocast(device, model_name="SmolLM2-135M"), "fp16")
+                policy = precision_policy(device, "auto", "SmolLM2-135M")
+                self.assertEqual(policy["model_guard"], "final-decoder-linears-f32-v1")
+                self.assertEqual(len(policy["f32_linear_modules"]), 7)
+                self.assertTrue(all(p.startswith("model.layers.29.") for p in policy["f32_linear_modules"]))
+                for requested, dtype in (("bf16", "bf16"), ("fp16", "fp16"), ("off", None)):
+                    explicit = precision_policy(device, requested, "SmolLM2-135M")
+                    self.assertEqual(explicit["autocast"], dtype)
+                    self.assertIsNone(explicit["model_guard"])
+                    self.assertEqual(explicit["f32_linear_modules"], [])
+                strict = precision_policy(device, "off", "SmolLM2-135M", strict=True)
+                self.assertIsNone(strict["autocast"])
+                self.assertIsNone(strict["model_guard"])
+        cpu = precision_policy("cpu", "auto", "SmolLM2-135M")
+        self.assertIsNone(cpu["autocast"])
+        self.assertEqual(cpu["f32_linear_modules"], [])
 
     def test_scaled_backward_recovers_small_gradients_without_updating_weights(self):
         with patch.dict(os.environ, {"INFERENA_STRICT": "0"}):
@@ -306,7 +326,7 @@ class AmpTest(unittest.TestCase):
                 _bench("test", {"type": "whisper"}, "cpu", None)
             record = json.loads(output.getvalue())
         self.assertEqual(record["status"], "ok")
-        self.assertEqual(record["protocol"]["name"], "inferena-graph-replay-v11")
+        self.assertEqual(record["protocol"]["name"], "inferena-graph-replay-v12")
         self.assertEqual(record["precision"]["comparison_class"], "accelerated")
         self.assertEqual(record["correctness_reference"]["precision"], "strict-f32")
         self.assertIsNotNone(record["correctness_reference"]["outputs"]["grad_norm"])

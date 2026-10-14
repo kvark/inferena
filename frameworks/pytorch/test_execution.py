@@ -445,7 +445,7 @@ class CampaignTest(unittest.TestCase):
             } for mode in ("Inference", "Training")],
         }}
         pt = {**copy.deepcopy(base), "framework": "pytorch", "backend": "CUDA",
-              "protocol": {**copy.deepcopy(base["protocol"]), "name": "inferena-graph-replay-v11"},
+              "protocol": {**copy.deepcopy(base["protocol"]), "name": "inferena-graph-replay-v12"},
               "torch_version": TORCH_VERSION,
               "environment": {"torch_git_version": TORCH_REVISION, "python_version": PYTHON_VERSION,
                               "triton_backend": "nvidia"},
@@ -469,6 +469,15 @@ class CampaignTest(unittest.TestCase):
               }}
         check = lambda records: check_pair(records, args, "default", True, 1, "source", precision="strict")
         check([mg, pt])
+        # The collector checks the declared module boundaries as well as dtype.
+        from amp import precision_policy
+        args.autocast_policies = {"Whisper-tiny": precision_policy("cpu", "auto", "Whisper-tiny")}
+        pt["precision"].update(precision_policy("cpu", "off", "Whisper-tiny", strict=True))
+        check([mg, pt])
+        undeclared = copy.deepcopy(pt)
+        undeclared["precision"]["f32_linear_modules"] = ["undeclared.projection"]
+        with self.assertRaisesRegex(ValueError, "declared policy"):
+            check([mg, undeclared])
         fallback = copy.deepcopy(mg)
         for session in fallback["optimizer"]["sessions"]:
             trial = copy.deepcopy(session["search"]["trials"][0])

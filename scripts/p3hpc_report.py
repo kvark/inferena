@@ -10,10 +10,11 @@ def campaign_rows(directory):
     manifest = json.loads((directory / "campaign.json").read_text())
     android_protocols = {"p3hpc-android-campaign-v1": "p3hpc-paired-campaign-v18",
                          "p3hpc-android-campaign-v2": "p3hpc-paired-campaign-v21",
-                         "p3hpc-android-campaign-v3": "p3hpc-paired-campaign-v22"}
+                         "p3hpc-android-campaign-v3": "p3hpc-paired-campaign-v22",
+                         "p3hpc-android-campaign-v4": "p3hpc-paired-campaign-v23"}
     android = manifest["protocol"] in android_protocols
     paired_protocol = android_protocols.get(manifest["protocol"], manifest["protocol"])
-    if paired_protocol not in {f"p3hpc-paired-campaign-v{v}" for v in (18, 19, 20, 21, 22)}:
+    if paired_protocol not in {f"p3hpc-paired-campaign-v{v}" for v in (18, 19, 20, 21, 22, 23)}:
         raise ValueError("unsupported campaign protocol")
     if android and manifest.get("paired_protocol", paired_protocol) != paired_protocol:
         raise ValueError("Android and paired campaign protocols disagree")
@@ -38,7 +39,8 @@ def campaign_rows(directory):
                         groups = [g for g in validation.get("groups", [])
                                   if (g["model"], g["precision"], g["mode"], g["graph_replay"])
                                   == (model, precision, mode, graphs)]
-                        if "groups" in validation or paired_protocol in ("p3hpc-paired-campaign-v21", "p3hpc-paired-campaign-v22"):
+                        if "groups" in validation or paired_protocol in (
+                                "p3hpc-paired-campaign-v21", "p3hpc-paired-campaign-v22", "p3hpc-paired-campaign-v23"):
                             complete &= len(groups) == 1 and groups[0]["status"] == "pass"
                         else:
                             # Older aggregate-only receipts can prove all groups

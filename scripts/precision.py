@@ -6,6 +6,14 @@ from training_gate import CURVE_POLICY, assess_trajectories, receipt_matches, wo
 from quality import check_language_model_report
 
 
+def check_arithmetic_policy(record, expected):
+    """The measured recipe must equal the declaration made before collection."""
+    precision = record["precision"]
+    for key in ("autocast_requested", "autocast", "autocast_selection", "model_guard", "f32_linear_modules"):
+        if key not in precision or precision[key] != expected[key]:
+            raise ValueError(f"executed arithmetic differs from the declared policy: {key}")
+
+
 def check_forward_quality(forward, *, language_model=False, shape=None, require_pass=True):
     if forward["rtol"] != 0.02 or forward["atol"] != 1e-6 or forward["elements"] < 1:
         raise ValueError("wrong accelerated forward gate")

@@ -22,7 +22,7 @@ import time
 import tomllib
 
 from collection import run_recorded, write_json
-from precision import check_precision_qualification
+from precision import check_arithmetic_policy, check_precision_qualification
 from quality import LM_POLICY, MEAN_KL_LIMIT, TOKEN_KL_LIMIT, check_language_model_report
 from training_gate import CURVE_POLICY, FIXTURE, FIXTURE_SHA256, load_fixture, workload_for
 
@@ -333,7 +333,7 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
         if record["protocol"]["warmup_runs"] != 5:
             raise ValueError("unexpected warmup count")
         protocol = record["protocol"]
-        expected = "inferena-paper-v6" if engine == "meganeura" else "inferena-graph-replay-v11"
+        expected = "inferena-paper-v6" if engine == "meganeura" else "inferena-graph-replay-v12"
         if protocol.get("name") != expected or protocol.get("warmup_seconds") != WARMUP_SECONDS:
             raise ValueError("runner did not declare the workload warmup policy")
         if protocol.get("synthetic_parameter_init") != SYNTHETIC_PARAMETER_INIT:
@@ -367,10 +367,12 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
                                      for record in (mg, pt)):
         raise ValueError("requested arithmetic contract did not execute")
     dtype = pt["precision"].get("autocast")
-    if hasattr(args, "autocast_dtype") and dtype != (args.autocast_dtype if precision == "accelerated" else None):
-        raise ValueError("requested accelerated autocast dtype did not execute")
-    if hasattr(args, "autocast_dtype") and pt["precision"].get("autocast_requested") != (args.autocast if precision == "accelerated" else "off"):
-        raise ValueError("autocast request differs from the declared policy")
+    if hasattr(args, "autocast_policies"):
+        policy = args.autocast_policies[pt["model"]]
+        if precision == "strict":
+            policy = dict(policy, autocast_requested="off", autocast=None,
+                          model_guard=None, f32_linear_modules=[])
+        check_arithmetic_policy(pt, policy)
     if pt["precision"]["comparison_class"] == "accelerated":
         check_precision_qualification(pt)
         if pt["correctness_reference"]["outputs"]["output_shape"] != mg["outputs"]["output_shape"]:
@@ -620,7 +622,7 @@ def create_parser():
     parser.add_argument("--allow-integrated-gpu", action="store_true", default=True, help=argparse.SUPPRESS)
     parser.add_argument("--precisions", nargs="+", choices=("strict", "accelerated"), default=["strict", "accelerated"])
     parser.add_argument("--autocast", choices=("auto", "off", "bf16", "fp16"), default="auto",
-                        help="accelerated PyTorch dtype; auto uses native bf16, otherwise fp16 on GPUs; strict stays f32")
+                        help="accelerated PyTorch recipe; auto uses the declared model/backend policy; strict stays f32")
     parser.add_argument("--replicates", type=int, default=3)
     parser.add_argument("--no-kernel-memo", dest="kernel_memo", action="store_false", default=True,
                         help="repeat private kernel tuning independently in every native process")
@@ -699,6 +701,7 @@ def main():
         parser.error("Android options require --backend android")
     probe_env = dict(os.environ)
     probe_env["INFERENA_AUTOCAST"] = args.autocast
+    probe_env["INFERENA_POLICY_MODELS"] = json.dumps(args.models)
     if args.backend:
         probe_env["INFERENA_TORCH_BACKEND"] = args.backend
     try:
@@ -706,9 +709,10 @@ def main():
         # process exit before collection so the controller holds no GPU memory.
         reference = json.loads(subprocess.check_output([
             sys.executable, "-c", "import json, os; from bench import detect_device, device_name, backend_name; "
-            "from amp import resolve_autocast; d = detect_device(); "
+            "from amp import precision_policy; d = detect_device(); "
             "print(json.dumps({'backend': backend_name(d).split()[0].lower(), 'gpu': device_name(d), "
-            "'autocast': resolve_autocast(d, os.environ['INFERENA_AUTOCAST']) or None}))",
+            "'autocast_policies': {m: precision_policy(d, os.environ['INFERENA_AUTOCAST'], m) "
+            "for m in json.loads(os.environ['INFERENA_POLICY_MODELS'])}}))",
         ], cwd=ROOT / "frameworks/pytorch", env=probe_env, text=True, encoding="utf-8"))
     except subprocess.CalledProcessError as error:
         parser.error(str(error))
@@ -718,7 +722,7 @@ def main():
     args.backend = backend
     if backend == "cpu" and args.autocast not in ("auto", "off"):
         parser.error("the graphics-only CPU correctness oracle requires f32; use --autocast off")
-    args.autocast_dtype = reference["autocast"]
+    args.autocast_policies = reference["autocast_policies"]
     if backend in ("cuda", "rocm", "xpu"):
         reference_gpu = reference["gpu"]
         args.gpu = args.gpu or reference_gpu
@@ -754,7 +758,7 @@ def main():
                INFERENA_WARMUP_SECONDS=str(WARMUP_SECONDS))
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v22", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v23", "source": revision,
         "started_at": started_at,
         "host": {"name": socket.gethostname(), "os": platform.system(),
                  "kernel": platform.release(), "platform": platform.platform(), "arch": platform.machine(),
@@ -767,8 +771,7 @@ def main():
                 "__GL_SHADER_DISK_CACHE_PATH", "__GL_SHADER_DISK_CACHE_SIZE")}},
         "synthetic_parameter_init": SYNTHETIC_PARAMETER_INIT,
         "precision_policy": {"strict": "f32", "accelerated": {
-            "autocast_requested": args.autocast, "pytorch_autocast": args.autocast_dtype,
-            "selection": "capability-based-v1; no timing or numerical fallback",
+            "autocast_requested": args.autocast, "pytorch_by_model": args.autocast_policies,
             "native": "existing qualified reduced-input paths; f32 storage",
             "correctness_reference": "compare both original F32 references; independently qualify each accelerated output",
             "language_model_forward": {"policy": LM_POLICY, "mean_kl_limit": MEAN_KL_LIMIT,

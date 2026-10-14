@@ -1,15 +1,19 @@
 # P3HPC paired collection
 
-The development collector uses **v22**, with exactly two profiles: `strict`
+The development collector uses **v23**, with exactly two profiles: `strict`
 and `accelerated` (practical). The October 11 cohort below remains frozen at
 **v18**. V19 introduced AMP; v20 changed accelerated training qualification.
 V21 adds a native F32 arithmetic reference and refreshes search inputs to match
 measurement. V22 applies language-model distribution/loss gates and removes the
-additional curve-L2 veto. Keep these protocols' records separate.
+additional curve-L2 veto. V23 declares a model-specific SmolLM2 autocast recipe
+and fixes native search coverage without changing the quality thresholds.
+Keep these protocols' records separate.
 
-## Development v22: two profiles
+## Development v23: two profiles
 
-The current native pin is merged Meganeura `99e3de2` ([rectangular BF16 support](https://github.com/kvark/meganeura/pull/259)),
+The current native pin is Meganeura `b344d49` on `fix/search-program-identity`
+([PR #260](https://github.com/kvark/meganeura/pull/260)),
+based on merged `99e3de2` ([rectangular BF16 support](https://github.com/kvark/meganeura/pull/259)),
 with Blade `96c1dc7` and Naga `a97559b6`. BF16
 is permitted by the accelerated arithmetic contract, including explicitly
 declared mixed f32/BF16 storage. Strict still forbids it. Meganeura's `Auto`
@@ -20,11 +24,21 @@ collection or change its budgets. See the
 
 Strict retains its f32 arithmetic and correctness contract. Accelerated permits
 AMP and bf16/fp16 arithmetic alongside existing hardware paths. PyTorch's
-`--autocast auto` selects native bf16 on CUDA/HIP/XPU when supported and fp16
-otherwise; MPS uses fp16. `--autocast bf16`, `fp16` or `off` fixes the setting;
-`off` permits TF32/backend-high arithmetic. Selection happens before execution
+`--autocast auto` uses FP16 with the seven linear projections in the final decoder
+block kept in F32 for **SmolLM2-135M**. Other workloads select native bf16 on
+CUDA/HIP/XPU when supported and fp16 otherwise; MPS uses fp16. The frozen
+SmolLM2 boundary preserves F32 master parameters and is recorded as
+`final-decoder-linears-f32-v1`, including every module path. Attention operations
+outside those projections still follow autocast. The recipe has local CUDA/XPU
+qualification; other backends still require their own qualification.
+`--autocast bf16`, `fp16` or `off` explicitly requests ordinary autocast without
+the model boundary; `off` permits TF32/backend-high arithmetic.
+Selection happens before execution
 and never changes in response to a failed gate or a slow result. Strict and
-the graphics-only CPU oracle remain f32. Receipts record the actual policy.
+the graphics-only CPU oracle remain f32. The manifest declares each model's
+recipe before any benchmark process runs, and collection verifies that actual
+dtype and F32 module boundaries match it. No additional profile or timing
+column is introduced.
 
 Meganeura retains f32 storage with eligible f16 cooperative inputs. Each native
 session now first builds the **original, unconverted graph in untuned strict F32**,
@@ -71,6 +85,13 @@ or changes precision.
 The qualified untuned initial program may remain the winner when tuning fails to
 improve it or exhausts the budget. Its selected trial need not contain a kernel
 tuning receipt; attempted tuning remains recorded on the challenger trials.
+
+V23's native pin compares complete execution plans before skipping duplicate
+trials. Identical dispatch geometry does not imply identical shaders: attention
+layout knobs can change generated code. Search explores attention layouts using
+the incumbent's winning fusion setting before trying every remaining combination.
+Both changes retain the 30-second, 16-graph and 64-program limits and all existing
+candidate correctness gates.
 
 Every accelerated PyTorch setting, **including `off`/TF32**, now has the same
 untimed forward and training qualification. SmolLM2 uses the distribution/loss
@@ -140,19 +161,19 @@ updates. Qualification times are recorded separately from compilation and step
 timings. `scripts/amp_reference.py` remains an optional dtype diagnostic;
 `scripts/convergence.py` remains the separate cross-engine learning study.
 
-### October 14 local readiness run
+### October 14 v22 local readiness run
 
 The complete B570 and RTX 5070 matrices use frozen Inferena `1ed4df7` with the
-pins and budgets above. Both execute all 30 pairs. Each GPU passes 45/45 strict
+merged Meganeura `99e3de2` and the budgets above. Both execute all 30 pairs. Each GPU passes 45/45 strict
 phases, 42/45 accelerated phases, and all ten replicated-gradient groups. The
 three repeated exclusions on each GPU are SmolLM2-135M BF16 one-token latency;
 inference and training remain qualified. Failed latency has no timing or
 substituted dtype. The common-revision report has 58/60 qualified phase cells.
 
-These are readiness results, not a fully qualified default-`auto` publication
-cohort. Before collecting other devices, freeze an explicitly qualified
-SmolLM2 precision policy. Do not raise the bounds or substitute FP16 results into
-these BF16 records. See the [full run and follow-up evidence](ANALYSIS.md#v22-full-local-collection-october-14-2026).
+These remain readiness results, not a fully qualified default-`auto` publication
+cohort. V23's new recipe requires its own full collection. Do not raise the bounds
+or substitute FP16 results into these BF16 records. See the
+[full run and follow-up evidence](ANALYSIS.md#v22-full-local-collection-october-14-2026).
 The result directories are
 `../inferena-results/accelerated-v22-20261014/{b570-full-r3,rtx5070-full}`.
 

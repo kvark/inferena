@@ -21,7 +21,7 @@ def check_record(record, model, precision, mode, gpu, *, sdpa=None, diagnostic=F
         raise ValueError("requested attention policy did not execute")
     if record["model"] != model or record["status"] not in ("ok", "partial") or not gpu_matches(gpu, record["gpu_name"]):
         raise ValueError("unexpected model/device or incomplete accelerated result")
-    if record["precision"]["comparison_class"] != "accelerated" or protocol["name"] != "inferena-graph-replay-v11":
+    if record["precision"]["comparison_class"] != "accelerated" or protocol["name"] != "inferena-graph-replay-v12":
         raise ValueError("requested accelerated arithmetic did not execute")
     if record["precision"].get("autocast") != (None if precision == "off" else precision):
         raise ValueError("requested accelerated arithmetic did not execute")

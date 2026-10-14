@@ -9,6 +9,7 @@ import sys
 import torch
 
 from execution import QualificationError
+from model_precision import AUTOCAST_SELECTION, SMOLLM2_LAYERS, guard_modules, model_guard, preferred_autocast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from training_gate import (REAL_TEXT, CURVE_POLICY, CURVE_ATOL,
@@ -19,8 +20,8 @@ FORWARD_RTOL = 0.02
 MAX_SCALE_ATTEMPTS = 8
 
 
-def resolve_autocast(device, requested="auto", *, strict=False):
-    """One capability-based choice before execution; never retry another dtype."""
+def resolve_autocast(device, requested="auto", *, strict=False, model_name=None):
+    """One declared model/backend recipe before execution; never retry a dtype."""
     if requested not in ("auto", "off", "", "bf16", "fp16"):
         raise ValueError("autocast must be auto, off, bf16 or fp16")
     if strict:
@@ -30,11 +31,23 @@ def resolve_autocast(device, requested="auto", *, strict=False):
     if requested != "auto":
         return "" if requested == "off" else requested
     backend = torch.device(device).type
+    preferred = preferred_autocast(model_name)
+    if backend in ("cuda", "xpu", "mps") and preferred is not None:
+        return preferred
     if backend in ("cuda", "xpu"):
         with getattr(torch, backend).device(device):
             return "bf16" if getattr(torch, backend).is_bf16_supported(including_emulation=False) else "fp16"
     # CPU is the graphics-only correctness oracle, not a mixed-precision GPU reference.
     return "fp16" if backend == "mps" else ""
+
+
+def precision_policy(device, requested, model_name, *, strict=False):
+    """Resolve and declare every autocast exception without loading weights."""
+    dtype = resolve_autocast(device, requested, strict=strict, model_name=model_name)
+    guard = model_guard(model_name, requested, dtype)
+    paths = guard_modules(SMOLLM2_LAYERS) if guard is not None else []
+    return dict(autocast_requested=requested, autocast=dtype or None,
+                autocast_selection=AUTOCAST_SELECTION, model_guard=guard, f32_linear_modules=paths)
 
 
 def optimizer_update(optimizer, scaler, loss_call):

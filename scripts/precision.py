@@ -2,7 +2,7 @@
 
 import math
 
-from training_gate import CURVE_POLICY, assess_trajectories, workload_for
+from training_gate import CURVE_POLICY, assess_trajectories, receipt_matches, workload_for
 from quality import check_language_model_report
 
 
@@ -94,8 +94,8 @@ def check_precision_qualification(record, *, diagnostic=False):
             reference = curve["reference_trajectory"]
             expected = assess_trajectories(curve, reference, workload)
             if (curve["reference_losses"] != reference["losses"]
-                    or any(curve[key] != value for key, value in expected.items())
-                    or any(curve[key] != value for key, value in expected["comparisons"]["training"].items()
+                    or any(not receipt_matches(curve[key], value) for key, value in expected.items())
+                    or any(not receipt_matches(curve[key], value) for key, value in expected["comparisons"]["training"].items()
                            if key != "status")):
                 raise ValueError("training gate disagrees with recorded trajectories")
         if curve["status"] == "failed" and (record["timings"].get("training_ms") is not None

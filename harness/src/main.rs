@@ -1854,6 +1854,18 @@ mod tests {
     }
 
     #[test]
+    fn forwarding_receipts_preserves_f64_values() {
+        let receipt = serde_json::json!({
+            "relative_l2": 0.003553088113636246_f64,
+            "probe_loss_ratio": 0.9447575302675789_f64,
+            "loss": 5.916818618774414_f64,
+        });
+        let forwarded: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&receipt).unwrap()).unwrap();
+        assert_eq!(receipt, forwarded);
+    }
+
+    #[test]
     fn amp_comparison_uses_the_f32_oracle_and_rejects_missing_evidence() {
         let mut reference = result(vec![1, 256], true);
         reference.framework = "pytorch".into();

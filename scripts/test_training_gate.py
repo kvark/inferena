@@ -5,10 +5,18 @@ import unittest
 from unittest.mock import patch
 
 from quality import language_model_report
-from training_gate import assess_trajectories, load_fixture, workload_for
+from training_gate import assess_trajectories, load_fixture, receipt_matches, workload_for
 
 
 class TrainingGateTest(unittest.TestCase):
+    def test_roundoff_in_diagnostics_cannot_change_a_gate_outcome(self):
+        import math
+        expected = dict(status="pass", relative_l2=0.003553088113636246, mismatched_steps=0)
+        self.assertTrue(receipt_matches(dict(expected, relative_l2=0.00355308811363625), expected))
+        for change in (dict(status="failed"), dict(mismatched_steps=1), dict(relative_l2=0.004),
+                       dict(relative_l2=math.nan), dict(relative_l2=math.inf)):
+            self.assertFalse(receipt_matches(dict(expected, **change), expected))
+
     def setUp(self):
         self.workload = workload_for("SmolLM2-135M")
         self.reference = {

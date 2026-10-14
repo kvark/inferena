@@ -14,6 +14,20 @@ CURVE_POLICY = "loss-curve-v2"
 CURVE_RTOL, CURVE_ATOL = 0.02, 1e-6
 
 
+def receipt_matches(actual, expected):
+    """Compare recomputed diagnostics across JSON/libm roundoff, not gate outcomes."""
+    if isinstance(expected, float):
+        return (isinstance(actual, (int, float)) and math.isfinite(actual)
+                and math.isclose(actual, expected, rel_tol=1e-12, abs_tol=1e-14))
+    if isinstance(expected, dict):
+        return (isinstance(actual, dict) and actual.keys() == expected.keys()
+                and all(receipt_matches(actual[k], v) for k, v in expected.items()))
+    if isinstance(expected, list):
+        return (isinstance(actual, list) and len(actual) == len(expected)
+                and all(receipt_matches(a, e) for a, e in zip(actual, expected)))
+    return actual == expected
+
+
 def load_fixture():
     # Freeze the token batches and their provenance. Its embedded gate describes
     # the original study; current acceptance is versioned here and in receipts.

@@ -8,7 +8,7 @@ measurement. Keep these protocols' records separate.
 
 ## Development v21: two profiles
 
-The current native pin is Meganeura `cfab3d1` ([rectangular BF16 support](https://github.com/kvark/meganeura/pull/259)),
+The current native pin is merged Meganeura `99e3de2` ([rectangular BF16 support](https://github.com/kvark/meganeura/pull/259)),
 with Blade `96c1dc7` and Naga `a97559b6`. BF16
 is permitted by the accelerated arithmetic contract, including explicitly
 declared mixed f32/BF16 storage. Strict still forbids it. Meganeura's `Auto`
@@ -92,6 +92,13 @@ latency, records the failed curves, and leaves training timing empty. Bounds
 have not been loosened: the B570 bf16 probe failure and RTX bf16 forward failure
 identified in the [diagnosis](ANALYSIS.md#accelerated-gap-follow-up-october-12-2026)
 remain reasons to reject their respective cells.
+
+These are v21 acceptance decisions, not proof that ordinary BF16 is unusable.
+The [acceptance audit](ANALYSIS.md#acceptance-threshold-audit-october-14-2026)
+finds that raw-logit bounds and the additional 1% curve-L2 veto can reject
+small task-quality differences. It proposes distribution/loss criteria for the
+next protocol; the current collector and frozen results retain their declared
+thresholds.
 
 Compiled AMP uses the requested CUDA/HIP/XPU replay policy. Forward, loss and
 scaled backward are captured; unscaling, finite checks and scale updates run

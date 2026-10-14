@@ -4,6 +4,109 @@ The evidence separates inefficient resident kernels from weight-representation
 and memory-placement costs. It does **not** establish a removable barrier-cost percentage.
 No new speed samples were collected during the post-OOM offline analysis.
 
+## Acceptance threshold audit (October 14, 2026)
+
+Meganeura #259 is merged as `99e3de2`; its complete tree is identical to the
+tested `cfab3d1` branch. Inferena now pins the merged commit. `cargo check
+--locked -p inferena-meganeura` passes with that pin.
+
+**The accelerated acceptance criteria need revision.** Preserving a frozen
+experiment's original thresholds is necessary for honest reporting; it does
+not justify carrying an unsuitable criterion into a new experiment. The earlier
+claim that the B570 BF16 probe failure ruled out reconsidering the 1% bound was
+too strong. These are our engineering tolerances, not established limits on
+acceptable mixed-precision learning.
+
+Fresh SmolLM2-135M forward probes compare eager and default-compiled BF16/FP16
+against eager strict F32 on each GPU. They use the unchanged checkpoint,
+synthetic benchmark sequence, four frozen training probes and four held-out
+sequences: nine inputs per arithmetic/execution combination. This is an untimed
+audit with serial GPU jobs and process-tree watchdogs. It produces no benchmark
+performance samples. Math SDPA is used on B570 and automatic SDPA on RTX.
+
+| BF16 evidence, eager and compiled combined | B570 | RTX 5070 |
+| --- | ---: | ---: |
+| Passing current forward gate | 3 / 18 | 3 / 18 |
+| Largest relative logit L2 error | 2.618% | 2.814% |
+| Largest logit error / reference peak | 10.732% | 12.053% |
+| Largest absolute relative cross-entropy change | 0.2435% | 0.3780% |
+| Largest mean KL divergence, nats/token | 0.001547 | 0.001806 |
+| Largest single-token KL divergence, nats | 0.07387 | 0.06441 |
+
+FP16 passes the current forward gate in all 36 cases. BF16's ordinary eager
+execution also fails many cases, so this is not solely a compiler/replay issue.
+Top-1 agreement is not perfect: the lowest batch agreement is 92.97% on B570
+and 95.31% on RTX. Small distribution changes can change the winning token when
+probabilities are close; these probes do not establish identical generation or
+general task accuracy.
+
+The present raw-logit test also rejects adding the same constant to every
+logit, although softmax probabilities and cross-entropy are unchanged. In the
+retained control, adding one gives 13.05% relative tensor error and KL below
+2e-14. This exposes a mismatch between raw tensor fidelity and the practical
+language-model behavior that the accelerated profile is intended to preserve.
+Changing the maximum-logit allowance to 5% or 10% would still reject ordinary
+BF16 on these inputs without resolving that mismatch.
+
+Fresh, separately compiled BF16 trajectories complete all 256 varying real-text
+SGD updates. They are recorded directly even if the forward gate would have
+stopped the benchmark; they cannot supply benchmark timings. Both satisfy the
+existing learning checks and, in these runs, even the original 1% curve limit:
+
+| Fresh BF16 training evidence | B570 | RTX 5070 |
+| --- | ---: | ---: |
+| Training-curve relative L2 | 0.5511% | 0.5562% |
+| Fixed-probe relative L2 | 0.9472% | 0.9882% |
+| Held-out relative L2 | 0.3683% | 0.3257% |
+| Fixed-probe loss reduction | 5.617% | 5.399% |
+| Held-out loss reduction | 3.249% | 3.233% |
+
+The prior B570 integration run's probe error was 1.0018%, despite all individual
+losses satisfying the 2% bound and its learning checks passing. These standalone
+trajectory probes are not exact repetitions of the integration/capture workflow,
+so the difference must not be attributed solely to run-to-run noise. Together
+they show that the earlier rejection does not establish a failure to learn.
+
+The proposed next contract, evaluated separately from the current collector,
+is:
+
+- For pretrained language-model logits, compare the complete predicted
+  distributions to F32: mean `KL(reference || candidate) <= log(1.01)` and
+  maximum token KL `<= log(1.10)`. These correspond to 1% average and 10%
+  per-token cross-perplexity budgets under the reference distribution. Require
+  the labelled cross-entropy to remain within the existing 2% bound as well.
+  Retain raw-logit errors as diagnostics. These are explicit proposed budgets,
+  not a claim of a universal AMP error bound or a guarantee of generation quality.
+- For training, keep every observed loss within the existing 2% bound, all
+  completed finite updates, the fixed-probe learning requirement and the
+  held-out checks. Report curve L2 without its additional 1% veto. A curve can
+  satisfy every per-loss bound and learn successfully while failing that veto.
+- Keep strict arithmetic, same-policy execution/replay repeatability and
+  independent implementation checks. The new inference criterion alone says
+  nothing about backward correctness. Do not loosen the native full-gradient
+  guard merely to admit BF16; a native training path also needs the matched
+  learning study before promotion.
+- Apply the same task-quality criterion to both engines before freezing the
+  next cohort protocol. Non-probability outputs and synthetic, untrained models
+  need their own suitable checks; do not apply a language-model softmax gate
+  indiscriminately to them. Keep the same two benchmark profiles.
+
+All 36 BF16 forward cases pass the proposed probability/loss criterion. It
+accepts the harmless constant shift and rejects zeroed, sign-reversed and
+vocabulary-permuted outputs. A separate sparse-error control passes mean KL
+and labelled loss but fails the per-token KL bound, exercising that safeguard.
+Both fresh training curves and the older B570 BF16 curve meet the proposed
+training criterion. Injected missing updates, non-finite losses, absent parameter
+updates and held-out loss drift still fail. This supports revising the gate; it does not make
+hardware support an unconditional correctness certificate. PyTorch's own
+[mixed-precision guidance](https://pytorch.org/blog/what-every-user-should-know-about-mixed-precision-training-in-pytorch/)
+also notes that some models require selective precision management.
+
+The production v21 thresholds remain unchanged in this audit. Old failures
+remain failures under their recorded protocol; none are relabelled as accepted
+benchmark results. Evidence and runnable probes are retained in
+`../inferena-results/acceptance-audit-20261014`.
+
 ## Rectangular BF16 and cohort qualification (October 14, 2026)
 
 [Meganeura #259](https://github.com/kvark/meganeura/pull/259), commit `cfab3d1`,

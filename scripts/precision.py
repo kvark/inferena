@@ -9,7 +9,8 @@ from quality import check_language_model_report
 def check_arithmetic_policy(record, expected):
     """The measured recipe must equal the declaration made before collection."""
     precision = record["precision"]
-    for key in ("autocast_requested", "autocast", "autocast_selection", "model_guard", "f32_linear_modules"):
+    for key in ("autocast_requested", "autocast", "autocast_selection", "model_guard", "f32_linear_modules",
+                "phase_autocast", "model_guard_phases"):
         if key not in precision or precision[key] != expected[key]:
             raise ValueError(f"executed arithmetic differs from the declared policy: {key}")
 

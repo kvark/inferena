@@ -9,7 +9,7 @@ import sys
 import torch
 
 from execution import QualificationError
-from model_precision import AUTOCAST_SELECTION, SMOLLM2_LAYERS, guard_modules, model_guard, preferred_autocast
+from model_precision import AUTOCAST_SELECTION, SMOLLM2_LAYERS, guard_modules, latency_autocast, model_guard
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from training_gate import (REAL_TEXT, CURVE_POLICY, CURVE_ATOL,
@@ -20,8 +20,8 @@ FORWARD_RTOL = 0.02
 MAX_SCALE_ATTEMPTS = 8
 
 
-def resolve_autocast(device, requested="auto", *, strict=False, model_name=None):
-    """One declared model/backend recipe before execution; never retry a dtype."""
+def resolve_autocast(device, requested="auto", *, strict=False):
+    """One capability-based default before execution; never retry a dtype."""
     if requested not in ("auto", "off", "", "bf16", "fp16"):
         raise ValueError("autocast must be auto, off, bf16 or fp16")
     if strict:
@@ -31,9 +31,6 @@ def resolve_autocast(device, requested="auto", *, strict=False, model_name=None)
     if requested != "auto":
         return "" if requested == "off" else requested
     backend = torch.device(device).type
-    preferred = preferred_autocast(model_name)
-    if backend in ("cuda", "xpu", "mps") and preferred is not None:
-        return preferred
     if backend in ("cuda", "xpu"):
         with getattr(torch, backend).device(device):
             return "bf16" if getattr(torch, backend).is_bf16_supported(including_emulation=False) else "fp16"
@@ -43,11 +40,14 @@ def resolve_autocast(device, requested="auto", *, strict=False, model_name=None)
 
 def precision_policy(device, requested, model_name, *, strict=False):
     """Resolve and declare every autocast exception without loading weights."""
-    dtype = resolve_autocast(device, requested, strict=strict, model_name=model_name)
-    guard = model_guard(model_name, requested, dtype)
+    dtype = resolve_autocast(device, requested, strict=strict)
+    latency_dtype = latency_autocast(model_name, requested, dtype)
+    guard = model_guard(model_name, requested, latency_dtype)
     paths = guard_modules(SMOLLM2_LAYERS) if guard is not None else []
     return dict(autocast_requested=requested, autocast=dtype or None,
-                autocast_selection=AUTOCAST_SELECTION, model_guard=guard, f32_linear_modules=paths)
+                autocast_selection=AUTOCAST_SELECTION, model_guard=guard, f32_linear_modules=paths,
+                model_guard_phases=["latency"] if guard else [],
+                phase_autocast=dict(inference=dtype or None, training=dtype or None, latency=latency_dtype or None))
 
 
 def optimizer_update(optimizer, scaler, loss_call):
@@ -356,7 +356,7 @@ def forward_quality(actual, reference, labels=None):
 
 
 def qualify(model, candidate, forward, loss_fn, inputs, policy, *, training=True, snapshot=None, reference=None, plan=None,
-            language_model=False, latency_inputs=None):
+            language_model=False, latency_inputs=None, latency_policy=None):
     """Qualify the requested candidate and restore parameters, buffers and RNG."""
     if reference is None:
         reference = prepare_reference(model, forward, loss_fn, inputs, policy, training=training, snapshot=snapshot, plan=plan,
@@ -375,7 +375,7 @@ def qualify(model, candidate, forward, loss_fn, inputs, policy, *, training=True
             if latency_inputs is None or "latency_output" not in prepared:
                 raise QualificationError("missing language-model latency reference")
             try:
-                with torch.no_grad(), policy.context():
+                with torch.no_grad(), (latency_policy or policy).context():
                     actual_latency = forward(candidate, latency_inputs)
                 report["latency_forward"] = forward_quality(actual_latency, prepared["latency_output"], latency_inputs["labels"])
             except QualificationError as error:

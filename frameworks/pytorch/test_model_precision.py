@@ -5,7 +5,7 @@ import unittest
 
 import torch
 
-from model_precision import F32Linear, SMOLLM2_GUARD, SMOLLM2_LAYERS, apply_model_guard, guard_modules
+from model_precision import OneTokenF32Linear, SMOLLM2_GUARD, SMOLLM2_LAYERS, apply_model_guard, guard_modules
 
 
 def model_with_linears():
@@ -32,7 +32,7 @@ class ModelPrecisionTest(unittest.TestCase):
         parameters = dict(model.named_parameters())
         state = {key: value.clone() for key, value in model.state_dict().items()}
         original = model.model.layers[-1].mlp.down_proj
-        x = torch.randn(3, 4, requires_grad=True)
+        x = torch.randn(2, 1, 4, requires_grad=True)
         reference = original(x)
         expected = torch.autograd.grad(reference.square().sum(), (x, original.weight, original.bias))
         paths = apply_model_guard(model, SMOLLM2_GUARD)
@@ -52,13 +52,25 @@ class ModelPrecisionTest(unittest.TestCase):
         for actual, reference in zip(gradients, expected, strict=True):
             torch.testing.assert_close(actual, reference, rtol=0, atol=0)
         model.load_state_dict(state, strict=True)
+        # Longer prefill/training inputs keep ordinary BF16 autocast, including
+        # its backward arithmetic; a latency repair must not slow those phases.
+        prefill = torch.randn(2, 3, 4, requires_grad=True)
+        with torch.autocast("cpu", dtype=torch.bfloat16):
+            expected = original(prefill)
+            actual = guarded(prefill)
+        self.assertEqual(actual.dtype, torch.bfloat16)
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        actual_grads = torch.autograd.grad(actual.float().square().sum(), (prefill, guarded.weight, guarded.bias))
+        expected_grads = torch.autograd.grad(expected.float().square().sum(), (prefill, original.weight, original.bias))
+        for actual, expected in zip(actual_grads, expected_grads, strict=True):
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
     def test_incompatible_checkpoint_fails_before_any_replacement(self):
         model = model_with_linears()
         model.model.layers[-1].mlp.down_proj = torch.nn.Identity()
         with self.assertRaisesRegex(ValueError, "declared linear modules"):
             apply_model_guard(model, SMOLLM2_GUARD)
-        self.assertFalse(any(isinstance(module, F32Linear) for module in model.modules()))
+        self.assertFalse(any(isinstance(module, OneTokenF32Linear) for module in model.modules()))
         self.assertEqual(apply_model_guard(model, None), [])
         with self.assertRaisesRegex(ValueError, "unknown model precision"):
             apply_model_guard(model, "unknown")

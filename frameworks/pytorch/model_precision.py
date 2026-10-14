@@ -3,16 +3,16 @@
 import torch
 
 
-AUTOCAST_SELECTION = "model-policy-v2; no timing or numerical fallback"
-SMOLLM2_GUARD = "final-decoder-linears-f32-v1"
+AUTOCAST_SELECTION = "model-phase-policy-v3; no timing or numerical fallback"
+SMOLLM2_GUARD = "one-token-final-decoder-linears-f32-v1"
 # The pinned SmolLM2-135M architecture; declaration must not depend on whether
 # the checkpoint has already been downloaded when the collector probes devices.
 SMOLLM2_LAYERS = 30
 
 
-def preferred_autocast(model_name):
-    """A frozen recipe; other workloads keep the backend capability policy."""
-    return "fp16" if model_name == "SmolLM2-135M" else None
+def latency_autocast(model_name, requested, dtype):
+    """Only the one-token workload needs a different arithmetic recipe."""
+    return "fp16" if model_name == "SmolLM2-135M" and requested == "auto" and dtype else dtype
 
 
 def model_guard(model_name, requested, dtype):
@@ -30,14 +30,19 @@ def guard_modules(layers):
         "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj")]
 
 
-class F32Linear(torch.nn.Module):
-    """Keep a projection and its output in F32, sharing its master parameters."""
+class OneTokenF32Linear(torch.nn.Module):
+    """Keep one-token projections in F32; ordinary autocast handles longer inputs."""
 
     def __init__(self, original):
         super().__init__()
         self.weight, self.bias = original.weight, original.bias
 
     def forward(self, x):
+        # The frozen workloads have [batch, sequence, features] projection
+        # inputs: 128 tokens for prefill/training, one for stateless latency.
+        # This static shape branch is specialized during budgeted compilation.
+        if x.ndim != 3 or x.shape[-2] != 1:
+            return torch.nn.functional.linear(x, self.weight, self.bias)
         with torch.autocast(self.weight.device.type, enabled=False):
             return torch.nn.functional.linear(x.float(), self.weight, self.bias)
 
@@ -59,5 +64,5 @@ def apply_model_guard(model, guard):
         raise ValueError("the F32 boundary requires the declared linear modules and F32 master weights")
     for path, original in zip(paths, originals, strict=True):
         parent, _, name = path.rpartition(".")
-        setattr(model.get_submodule(parent), name, F32Linear(original))
+        setattr(model.get_submodule(parent), name, OneTokenF32Linear(original))
     return paths

@@ -109,11 +109,17 @@ class AmpTest(unittest.TestCase):
             resolve_autocast("cuda", "bf16", strict=True)
 
     def test_model_recipe_is_fixed_before_execution_and_explicit_requests_win(self):
+        from contextlib import ExitStack, nullcontext
         for device in ("cuda", "xpu", "mps"):
-            with self.subTest(device=device):
-                self.assertEqual(resolve_autocast(device, model_name="SmolLM2-135M"), "fp16")
+            with self.subTest(device=device), ExitStack() as stack:
+                if device in ("cuda", "xpu"):
+                    stack.enter_context(patch.object(getattr(torch, device), "device", return_value=nullcontext()))
+                    stack.enter_context(patch.object(getattr(torch, device), "is_bf16_supported", return_value=True))
                 policy = precision_policy(device, "auto", "SmolLM2-135M")
-                self.assertEqual(policy["model_guard"], "final-decoder-linears-f32-v1")
+                default = "fp16" if device == "mps" else "bf16"
+                self.assertEqual(policy["phase_autocast"], dict(inference=default, training=default, latency="fp16"))
+                self.assertEqual(policy["model_guard"], "one-token-final-decoder-linears-f32-v1")
+                self.assertEqual(policy["model_guard_phases"], ["latency"])
                 self.assertEqual(len(policy["f32_linear_modules"]), 7)
                 self.assertTrue(all(p.startswith("model.layers.29.") for p in policy["f32_linear_modules"]))
                 for requested, dtype in (("bf16", "bf16"), ("fp16", "fp16"), ("off", None)):
@@ -121,12 +127,36 @@ class AmpTest(unittest.TestCase):
                     self.assertEqual(explicit["autocast"], dtype)
                     self.assertIsNone(explicit["model_guard"])
                     self.assertEqual(explicit["f32_linear_modules"], [])
+                    self.assertEqual(set(explicit["phase_autocast"].values()), {dtype})
                 strict = precision_policy(device, "off", "SmolLM2-135M", strict=True)
                 self.assertIsNone(strict["autocast"])
                 self.assertIsNone(strict["model_guard"])
         cpu = precision_policy("cpu", "auto", "SmolLM2-135M")
         self.assertIsNone(cpu["autocast"])
         self.assertEqual(cpu["f32_linear_modules"], [])
+
+    def test_latency_qualification_uses_its_declared_dtype(self):
+        model = torch.nn.Linear(4, 4)
+        with torch.no_grad():
+            model.weight.fill_(0.125)
+            model.bias.zero_()
+        calls = []
+        def forward(current, batch):
+            calls.append((batch["x"].shape[1], torch.get_autocast_dtype("cpu")
+                          if torch.is_autocast_enabled("cpu") else None))
+            return current(batch["x"])
+        def batch(tokens):
+            return dict(x=torch.ones(1, tokens, 4), labels=torch.zeros(1, tokens, dtype=torch.long))
+        def loss(output, inputs):
+            return torch.nn.functional.cross_entropy(output.float().reshape(-1, 4), inputs["labels"].reshape(-1))
+        with patch.dict(os.environ, {"INFERENA_STRICT": "0"}):
+            result = qualify(model, model, forward, loss, batch(2), AmpPolicy("cpu", "bf16"),
+                             training=False, language_model=True, latency_inputs=batch(1),
+                             latency_policy=AmpPolicy("cpu", "fp16"))
+        self.assertEqual(result["status"], "pass")
+        self.assertIn((2, torch.bfloat16), calls)
+        self.assertIn((1, torch.float16), calls)
+        self.assertNotIn((1, torch.bfloat16), calls)
 
     def test_scaled_backward_recovers_small_gradients_without_updating_weights(self):
         with patch.dict(os.environ, {"INFERENA_STRICT": "0"}):
@@ -326,7 +356,7 @@ class AmpTest(unittest.TestCase):
                 _bench("test", {"type": "whisper"}, "cpu", None)
             record = json.loads(output.getvalue())
         self.assertEqual(record["status"], "ok")
-        self.assertEqual(record["protocol"]["name"], "inferena-graph-replay-v12")
+        self.assertEqual(record["protocol"]["name"], "inferena-graph-replay-v13")
         self.assertEqual(record["precision"]["comparison_class"], "accelerated")
         self.assertEqual(record["correctness_reference"]["precision"], "strict-f32")
         self.assertIsNotNone(record["correctness_reference"]["outputs"]["grad_norm"])

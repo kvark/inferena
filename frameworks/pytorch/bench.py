@@ -1457,8 +1457,9 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
     requested_autocast = os.environ.get("INFERENA_AUTOCAST", "auto")
     declared_policy = precision_policy(dev, requested_autocast, model_name, strict=strict)
     amp = AmpPolicy(dev, declared_policy["autocast"] or "")
+    latency_amp = AmpPolicy(dev, declared_policy["phase_autocast"]["latency"] or "")
     precision_mode = "strict-f32" if strict else "accelerated"
-    protocol = "inferena-graph-replay-v12"
+    protocol = "inferena-graph-replay-v13"
     warmup_runs = int(os.environ.get("INFERENA_WARMUP_RUNS", "5"))
     measurement_runs = int(os.environ.get("INFERENA_MEASUREMENT_RUNS", "20"))
     if warmup_runs < 0 or measurement_runs < 1:
@@ -1466,7 +1467,8 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
     precision = _configure_benchmark_precision(dev, strict, amp)
     precision.update(declared_policy)
     if declared_policy["model_guard"] is not None:
-        precision["matmul_inputs"] = f"{amp.name}; declared final decoder projections use f32"
+        precision["matmul_inputs"] = (f"{amp.name} prefill/training; {latency_amp.name} latency; "
+                                      "one-token final decoder projections use f32")
     mode = os.environ.get("INFERENA_TORCH_MODE", "default")
     options = compiler_options(mode)
     graph_capable = torch.device(dev).type in ("cuda", "xpu")
@@ -1573,6 +1575,7 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
 
                 with torch.no_grad(), amp.context():
                     _benchmark_forward(model_type, candidate, compile_inputs)
+                with torch.no_grad(), latency_amp.context():
                     _benchmark_latency_call(
                         model_type, candidate, compile_inputs, dev
                     )()
@@ -1602,6 +1605,7 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
                     inputs, amp, training=training_requested,
                     reference=precision_reference, plan=gate_plan,
                     language_model=model_type == "causal_lm",
+                    latency_policy=latency_amp,
                     latency_inputs=prepare_inputs(model_type, eager_model, dev, seq_len=1) if model_type == "causal_lm" else None,
                 )
         except QualificationError as error:
@@ -1713,7 +1717,7 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
     latency_call = _benchmark_latency_call(model_type, model, inputs, dev)
 
     def no_grad_latency():
-        with torch.no_grad(), amp.context():
+        with torch.no_grad(), latency_amp.context():
             return _benchmark_logits(model_type, latency_call())
 
     if "latency_precision_failure" in execution:

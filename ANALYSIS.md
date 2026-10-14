@@ -80,7 +80,7 @@ strongly than protecting attention projections. Ordinary FP16 improves the
 result but still fails one of 41 compiled input probes on each GPU. Changing
 Inductor's precision-cast emulation does not fix that failure.
 
-The selected `auto` recipe uses FP16 with the seven linear projections in the
+The initial prototype uses FP16 with the seven linear projections in the
 final decoder block in F32. It preserves the same master parameters and state
 names, and passes all 41 compiled probes on both GPUs (the original nine plus
 32 seeded held-out token/target pairs). This boundary covers only the linear
@@ -113,6 +113,33 @@ inside the timed step. These unmatched prototype numbers do not isolate all of
 the cost, but they rule out claiming a blanket no-regression result. Prefill is
 similar (4.63/2.90 ms versus 4.67/2.96 ms). The full v23 run must report the new
 recipe's training cost separately from unchanged-workload native regressions.
+
+That cost is avoidable because the failure is specific to one-token latency.
+The v23 collection at `7cbb866` was interrupted during its first pair and retained
+as superseded in `../inferena-results/accelerated-v23-20261014/`; it supplies no
+completed cohort. V24 instead declares FP16/F32 only for the one-token workload,
+while prefill and training retain their already-qualified capability-selected
+BF16 policy on these GPUs. A static sequence-length branch in the seven wrapper
+projections leaves longer inputs and their backward arithmetic unchanged. Unit
+tests compare those BF16 outputs and gradients exactly, check the independent
+latency autocast context, and reject mismatched phase-policy receipts. The
+production runner is v13. This narrower recipe requires fresh full qualification
+and collection; neither earlier failures nor interrupted v23 attempts are reused.
+
+Both production preflights pass all phases, replay checks and 256 training
+updates with the narrower recipe:
+
+| GPU | Prefill (ms) | One-token latency (ms) | Training (ms) | Compilation (s) |
+| --- | ---: | ---: | ---: | ---: |
+| B570 | 4.267 | 2.760 | 12.905 | 95.98 |
+| RTX 5070 | 2.960 | 1.937 | 8.861 | 55.28 |
+
+One-token mean KL remains 0.0001531 / 0.0001439. Training is within 2.4% / 0.1%
+of the prior BF16 cohort medians (12.607 / 8.857 ms), avoiding the full-model FP16
+prototype's 16.722 / 10.119 ms cost. These remain single-process preflights;
+all phase metadata and raw gates are retained in `qualify-phase-{xpu,cuda}`.
+The Python runner suite passes 39 tests on each GPU, and all 26 collector tests
+pass. The native pin and Rust binaries are unchanged from the tested search fix.
 
 ## V22 full local collection (October 14, 2026)
 

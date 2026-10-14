@@ -1,15 +1,17 @@
 # P3HPC paired collection
 
-The development collector uses **v23**, with exactly two profiles: `strict`
+The development collector uses **v24**, with exactly two profiles: `strict`
 and `accelerated` (practical). The October 11 cohort below remains frozen at
 **v18**. V19 introduced AMP; v20 changed accelerated training qualification.
 V21 adds a native F32 arithmetic reference and refreshes search inputs to match
 measurement. V22 applies language-model distribution/loss gates and removes the
-additional curve-L2 veto. V23 declares a model-specific SmolLM2 autocast recipe
-and fixes native search coverage without changing the quality thresholds.
+additional curve-L2 veto. V23 introduced a model-specific SmolLM2 autocast recipe
+and fixed native search coverage. Its full-model FP16 trial was stopped before
+collection completed because it unnecessarily slowed already-qualified training.
+V24 restricts the FP16/F32 recipe to one-token latency. No quality threshold changes.
 Keep these protocols' records separate.
 
-## Development v23: two profiles
+## Development v24: two profiles
 
 The current native pin is Meganeura `b344d49` on `fix/search-program-identity`
 ([PR #260](https://github.com/kvark/meganeura/pull/260)),
@@ -24,20 +26,23 @@ collection or change its budgets. See the
 
 Strict retains its f32 arithmetic and correctness contract. Accelerated permits
 AMP and bf16/fp16 arithmetic alongside existing hardware paths. PyTorch's
-`--autocast auto` uses FP16 with the seven linear projections in the final decoder
-block kept in F32 for **SmolLM2-135M**. Other workloads select native bf16 on
-CUDA/HIP/XPU when supported and fp16 otherwise; MPS uses fp16. The frozen
-SmolLM2 boundary preserves F32 master parameters and is recorded as
-`final-decoder-linears-f32-v1`, including every module path. Attention operations
-outside those projections still follow autocast. The recipe has local CUDA/XPU
-qualification; other backends still require their own qualification.
+`--autocast auto` selects native bf16 on CUDA/HIP/XPU when supported and fp16
+otherwise; MPS uses fp16. **SmolLM2-135M one-token latency** instead uses FP16 with
+the seven linear projections in the final decoder block kept in F32. Prefill and
+training keep the capability-selected dtype, including their original backward
+arithmetic. The frozen boundary is recorded as
+`one-token-final-decoder-linears-f32-v1`, with every module path and its latency
+scope. The projection inputs have shape `[batch, sequence, features]`; the F32
+boundary applies only when sequence length is one. Attention operations outside
+those projections still follow autocast. This branch specializes during budgeted
+compilation. The same F32 master parameters and state names are preserved.
 `--autocast bf16`, `fp16` or `off` explicitly requests ordinary autocast without
 the model boundary; `off` permits TF32/backend-high arithmetic.
 Selection happens before execution
 and never changes in response to a failed gate or a slow result. Strict and
 the graphics-only CPU oracle remain f32. The manifest declares each model's
-recipe before any benchmark process runs, and collection verifies that actual
-dtype and F32 module boundaries match it. No additional profile or timing
+per-phase recipe before any benchmark process runs, and collection verifies that
+actual dtypes and F32 module boundaries match it. No additional profile or timing
 column is introduced.
 
 Meganeura retains f32 storage with eligible f16 cooperative inputs. Each native
@@ -171,7 +176,7 @@ inference and training remain qualified. Failed latency has no timing or
 substituted dtype. The common-revision report has 58/60 qualified phase cells.
 
 These remain readiness results, not a fully qualified default-`auto` publication
-cohort. V23's new recipe requires its own full collection. Do not raise the bounds
+cohort. V24's new recipe requires its own full collection. Do not raise the bounds
 or substitute FP16 results into these BF16 records. See the
 [full run and follow-up evidence](ANALYSIS.md#v22-full-local-collection-october-14-2026).
 The result directories are

@@ -333,7 +333,7 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
         if record["protocol"]["warmup_runs"] != 5:
             raise ValueError("unexpected warmup count")
         protocol = record["protocol"]
-        expected = "inferena-paper-v6" if engine == "meganeura" else "inferena-graph-replay-v12"
+        expected = "inferena-paper-v6" if engine == "meganeura" else "inferena-graph-replay-v13"
         if protocol.get("name") != expected or protocol.get("warmup_seconds") != WARMUP_SECONDS:
             raise ValueError("runner did not declare the workload warmup policy")
         if protocol.get("synthetic_parameter_init") != SYNTHETIC_PARAMETER_INIT:
@@ -371,7 +371,8 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
         policy = args.autocast_policies[pt["model"]]
         if precision == "strict":
             policy = dict(policy, autocast_requested="off", autocast=None,
-                          model_guard=None, f32_linear_modules=[])
+                          model_guard=None, f32_linear_modules=[], model_guard_phases=[],
+                          phase_autocast={phase: None for phase in PHASES})
         check_arithmetic_policy(pt, policy)
     if pt["precision"]["comparison_class"] == "accelerated":
         check_precision_qualification(pt)
@@ -758,7 +759,7 @@ def main():
                INFERENA_WARMUP_SECONDS=str(WARMUP_SECONDS))
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v23", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v24", "source": revision,
         "started_at": started_at,
         "host": {"name": socket.gethostname(), "os": platform.system(),
                  "kernel": platform.release(), "platform": platform.platform(), "arch": platform.machine(),

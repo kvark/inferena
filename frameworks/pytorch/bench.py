@@ -629,8 +629,7 @@ MODEL_REGISTRY = {
 
 
 def load_model(model_name: str, spec: dict, dev: str):
-    """Load model, trying: local dir -> HF download -> random-init fallback."""
-    hf_id = spec["hf_id"]
+    """Use shared local checkpoints or the model-specific synthetic fixture."""
     model_type = spec["type"]
 
     # Custom architectures (SmolVLA, SD U-Net) are always random-init.
@@ -661,30 +660,12 @@ def load_model(model_name: str, spec: dict, dev: str):
     root_dir = os.path.dirname(os.path.dirname(script_dir))
     local_dir = os.path.join(root_dir, "models", model_name)
 
-    model = None
-
-    # Try local dir first.
-    if os.path.isfile(os.path.join(local_dir, "config.json")):
-        print(f"[pytorch] found local model at {local_dir}", file=sys.stderr)
-        try:
-            model = _load_pretrained(model_type, local_dir)
-        except Exception as e:
-            if os.environ.get("INFERENA_REQUIRE_LOCAL_WEIGHTS") == "1":
-                raise
-            print(f"[pytorch] local load failed ({e})", file=sys.stderr)
-
-    if model is None and os.environ.get("INFERENA_REQUIRE_LOCAL_WEIGHTS") == "1":
-        raise FileNotFoundError(f"required local checkpoint could not be loaded: {local_dir}")
-
-    # Try HF download.
-    if model is None:
-        try:
-            model = _load_pretrained(model_type, hf_id)
-        except Exception as e:
-            print(f"[pytorch] HF load failed ({e}), using random-init", file=sys.stderr)
-            model = _random_init(model_type, model_name)
-
-    return model
+    if not os.path.isfile(os.path.join(local_dir, "config.json")):
+        raise FileNotFoundError(
+            f"prepare local weights first: python scripts/prepare_models.py {model_name}"
+        )
+    print(f"[pytorch] loading {local_dir}", file=sys.stderr)
+    return _load_pretrained(model_type, local_dir)
 
 
 def _load_pretrained(model_type: str, path_or_id: str):
@@ -871,34 +852,7 @@ def _random_init(model_type: str, model_name: str):
     if model_type == "smolvla":
         model = ActionExpert().to(torch.float32)
         return _smolvla_init(model)
-    else:
-        from transformers import LlamaConfig, LlamaForCausalLM
-        configs = {
-            "SmolLM2-135M": LlamaConfig(
-                vocab_size=49152, hidden_size=576, num_hidden_layers=30,
-                num_attention_heads=9, num_key_value_heads=3,
-                intermediate_size=1536, max_position_embeddings=2048,
-            ),
-            "SmolLM2-360M": LlamaConfig(
-                vocab_size=49152, hidden_size=960, num_hidden_layers=32,
-                num_attention_heads=15, num_key_value_heads=5,
-                intermediate_size=2560, max_position_embeddings=2048,
-            ),
-            "SmolLM2-1.7B": LlamaConfig(
-                vocab_size=49152, hidden_size=2048, num_hidden_layers=24,
-                num_attention_heads=32, num_key_value_heads=32,
-                intermediate_size=8192, max_position_embeddings=2048,
-            ),
-        }
-        config = configs.get(model_name)
-        if config is None:
-            print(f"[pytorch] no fallback config for {model_name}", file=sys.stderr)
-            sys.exit(1)
-        model = LlamaForCausalLM(config).to(torch.float32)
-        with torch.no_grad():
-            for name, p in model.named_parameters():
-                _name_seeded_init(p, name)
-        return model
+    raise ValueError(f"no synthetic fixture for {model_type}")
 
 
 def prepare_inputs(model_type: str, model, dev: str, seq_len: int = 128):
@@ -1424,6 +1378,23 @@ def select_compiler_backend(device):
         os.environ["TRITON_DEFAULT_BACKEND"] = selected
 
 
+def compiler_options(mode):
+    if mode == "eager":
+        return None
+    modes = torch._inductor.list_mode_options()
+    if mode not in modes:
+        raise ValueError(f"unknown INFERENA_TORCH_MODE: {mode}")
+    torch._dynamo.config.suppress_errors = False
+    options = dict(modes[mode])
+    options.setdefault("max_autotune", False)
+    options.setdefault("coordinate_descent_tuning", False)
+    options.setdefault("max_autotune_gemm", False)
+    options.setdefault("max_autotune_pointwise", False)
+    # One explicit replay owner, including the uncaptured comparison.
+    options["triton.cudagraphs"] = False
+    return options
+
+
 def attention_policy(device, model_type=None):
     # The pinned XPU fused attention waits on an event during graph capture.
     # Keep one public SDPA policy for both replay and its uncaptured ablation.
@@ -1467,7 +1438,8 @@ def bench(model_name: str, spec: dict):
         stream.wait_stream(api.current_stream(dev))
     # Compilation can retain AccumulateGrad nodes. Their stream must remain
     # valid for capture, so all replay-capable backends use one stream.
-    with attention, api.stream(stream) if stream is not None else nullcontext():
+    cache = clear_compile_cache() if os.environ.get("INFERENA_TORCH_MODE", "default") != "eager" else nullcontext()
+    with cache, attention, api.stream(stream) if stream is not None else nullcontext():
         _bench(model_name, spec, dev, stream)
     if stream is not None:
         api.current_stream(dev).wait_stream(stream)
@@ -1494,9 +1466,7 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
     precision.setdefault("autocast", None)
     precision["autocast_selection"] = "capability-based-v1; no timing or numerical fallback"
     mode = os.environ.get("INFERENA_TORCH_MODE", "default")
-    modes = torch._inductor.list_mode_options()
-    if mode != "eager" and mode not in modes:
-        raise ValueError(f"unknown INFERENA_TORCH_MODE: {mode}")
+    options = compiler_options(mode)
     graph_capable = torch.device(dev).type in ("cuda", "xpu")
     graph_setting = os.environ.get("INFERENA_GRAPH_REPLAY", os.environ.get(
         "INFERENA_CUDA_GRAPHS", "1" if graph_capable else "0"))
@@ -1579,17 +1549,9 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
         precision_reference["correctness_reference"]["prepared_before_candidate_compilation"] = True
     compile_s = 0.0
     if mode != "eager":
-        compile_cache = clear_compile_cache()
         compile_start = time.perf_counter()
         with compilation_budget():
             try:
-                options = dict(modes[mode])
-                options.setdefault("max_autotune", False)
-                options.setdefault("coordinate_descent_tuning", False)
-                options.setdefault("max_autotune_gemm", False)
-                options.setdefault("max_autotune_pointwise", False)
-                # One explicit replay owner, including the uncaptured ablation.
-                options["triton.cudagraphs"] = False
                 execution["compiler_options"] = options
                 candidate = torch.compile(eager_model, options=options)
                 compile_inputs = prepare_inputs(model_type, candidate, dev)
@@ -1956,5 +1918,5 @@ if __name__ == "__main__":
         print(f"[pytorch] dry-run OK: {model_name} ({spec['type']})", file=sys.stderr)
         sys.exit(0)
     if os.environ.get("INFERENA_LEGACY", "0") == "1":
-        raise ValueError("legacy runner removed; reproduce it at paper-arxiv-1")
+        raise ValueError("INFERENA_LEGACY is no longer supported; request INFERENA_TORCH_MODE=eager explicitly")
     bench(model_name, spec)

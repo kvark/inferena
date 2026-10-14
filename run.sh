@@ -82,14 +82,6 @@ for d in site.getsitepackages():
     fi
 fi
 
-# --- Prefer discrete NVIDIA GPU over integrated GPU for Vulkan ---
-if [ -z "${MEGANEURA_DEVICE_ID:-}" ] && [ -z "${VK_ICD_FILENAMES:-}" ] && [[ "${INFERENA_TORCH_BACKEND:-cuda}" == cuda ]]; then
-    NVIDIA_ICD=$(find /usr/share/vulkan/icd.d /etc/vulkan/icd.d -name '*nvidia*' 2>/dev/null | head -1 || true)
-    if [ -n "$NVIDIA_ICD" ]; then
-        export VK_ICD_FILENAMES="$NVIDIA_ICD"
-    fi
-fi
-
 ALL_MODELS="SmolLM2-135M SmolVLA StableDiffusion ResNet-50 Whisper-tiny"
 SUPPORTED_MODELS="$ALL_MODELS SmolLM2-360M SmolLM2-1.7B"
 
@@ -532,6 +524,11 @@ if [ "$CHECK_ONLY" = true ] || [ "$HAS_ARGS" = false ]; then
     fi
 fi
 
+if [ "$UPDATE" = true ] && { [ -n "${INFERENA_NSYS:-}" ] || [ "${INFERENA_REFERENCE_DIAGNOSTIC:-0}" = 1 ]; }; then
+    echo "Diagnostic runs cannot update published benchmark tables." >&2
+    exit 2
+fi
+
 # --- Resolve platform name for --update ---
 PLATFORM=""
 if [ "$UPDATE" = true ]; then
@@ -663,7 +660,7 @@ for MODEL in $MODELS; do
     # Download if requested.
     if [ "$DOWNLOAD" = true ]; then
         echo "Downloading $MODEL ..." >&2
-        bash "$ROOT_DIR/models/download.sh" "$MODEL" || true
+        bash "$ROOT_DIR/models/download.sh" "$MODEL"
     fi
 
     ARGS=(

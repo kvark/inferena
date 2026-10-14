@@ -314,7 +314,7 @@ class CampaignTest(unittest.TestCase):
                     self.assertEqual(json.load(contents.extractfile(f"{campaign.name}/campaign.json")), {"status": status})
                 self.assertTrue((campaign / "runner.log").is_file())
             previous = archive.read_bytes()
-            with patch("p3hpc.shutil.make_archive", side_effect=OSError("disk full")):
+            with patch("p3hpc.tarfile.open", side_effect=OSError("disk full")):
                 with self.assertRaises(OSError):
                     archive_results(campaign)
             self.assertEqual(archive.read_bytes(), previous)

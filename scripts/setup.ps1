@@ -23,9 +23,9 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 }
 
 switch ($Backend) {
-    { $_ -in 'cu130', 'xpu', 'cpu', 'mps', 'rocm7.2' } { break }
+    { $_ -in 'cu130', 'xpu', 'cpu' } { break }
     default {
-        Write-Error "Unknown wheel backend: $Backend`nUsage: powershell scripts/setup.ps1 <cu130|xpu|cpu|mps|rocm7.2> [new-venv-path]"
+        Write-Error "Unknown wheel backend: $Backend`nUsage: powershell scripts/setup.ps1 <cu130|xpu|cpu> [new-venv-path]"
         exit 2
     }
 }
@@ -44,10 +44,7 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $EnvPython = Join-Path $EnvPath 'Scripts\python.exe'
 
-$TorchArgs = @()
-if ($Backend -ne 'mps') {
-    $TorchArgs = @('--torch-backend', $Backend)
-}
+$TorchArgs = @('--torch-backend', $Backend)
 
 $Requirements = Join-Path $Root 'requirements-p3hpc.txt'
 if ($Backend -eq 'cu130') {

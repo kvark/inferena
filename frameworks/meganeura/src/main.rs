@@ -16,7 +16,9 @@ thread_local! {
 }
 
 mod convergence;
+mod export;
 mod initialization;
+mod parameters;
 mod qualification;
 mod search_cache;
 
@@ -38,6 +40,7 @@ fn build_session(
     initialize_parameters: impl Fn(&mut Session),
     initialize_inputs: impl Fn(&mut Session),
 ) -> Session {
+    export::set_graph(graph);
     let mut config = session_config();
     config.mode = mode;
     // This runner owns search options and retains its evidence, rather than
@@ -68,10 +71,8 @@ fn build_session(
             .expect("INFERENA_MAX_SUBMISSION_CHUNKS must be a positive integer");
         assert!((1..=64).contains(&max_submission_chunks));
         let memory = config.gpu.as_ref().unwrap().memory_stats();
-        assert!(
-            memory.budget > memory.usage,
-            "GPU memory budget is unavailable or exhausted"
-        );
+        let (available, memory_source, system_available) =
+            search_memory_budget(memory.budget, memory.usage);
         let mut qualification = qualification::Qualification::new(graph, mode);
         let mut options = train::BuildSearchOptions {
             max_graphs: 16,
@@ -86,7 +87,7 @@ fn build_session(
             max_time: Duration::from_secs_f64(seconds),
             // Leave room for padding, driver allocations, readback and private probes.
             // This is a logical-plan bound, not a measured heap peak.
-            max_plan_bytes: ((memory.budget - memory.usage) / 4 * 3) as usize,
+            max_plan_bytes: (available / 4 * 3) as usize,
             tuning: TuneOptions {
                 max_classes: usize::MAX,
                 max_time: Duration::from_secs_f64(seconds),
@@ -143,6 +144,9 @@ fn build_session(
         preparation["memory_budget"] = serde_json::json!({
             "device_budget_bytes": memory.budget,
             "device_usage_bytes": memory.usage,
+            "source": memory_source,
+            "available_bytes": available,
+            "system_available_bytes": system_available,
             "plan_fraction_of_available": 0.75,
         });
         session
@@ -162,6 +166,38 @@ fn build_session(
     );
     SESSION_PREPARATION.with_borrow_mut(|reports| reports.push(preparation));
     session
+}
+
+fn search_memory_budget(budget: u64, usage: u64) -> (u64, &'static str, Option<u64>) {
+    if budget > usage {
+        return (budget - usage, "vulkan", None);
+    }
+    // Android drivers may omit VK_EXT_memory_budget entirely. Bound search by
+    // current shared-system availability and a fixed 3 GiB ceiling. This is a
+    // plan limit, not a fabricated GPU-heap measurement or allocation guarantee.
+    #[cfg(target_os = "android")]
+    {
+        let meminfo =
+            std::fs::read_to_string("/proc/meminfo").expect("Android memory availability");
+        let kib: u64 = meminfo
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("MemAvailable:")
+                    .and_then(|value| value.split_whitespace().next())
+            })
+            .expect("MemAvailable missing")
+            .parse()
+            .expect("invalid MemAvailable");
+        let bytes = kib.checked_mul(1024).expect("memory availability overflow");
+        assert!(bytes > 0, "system memory exhausted");
+        return (
+            bytes.min(3 * 1024 * 1024 * 1024),
+            "android-memavailable-capped-3gib",
+            Some(bytes),
+        );
+    }
+    #[cfg(not(target_os = "android"))]
+    panic!("GPU memory budget is unavailable or exhausted");
 }
 
 fn session_config() -> SessionConfig<'static> {
@@ -428,6 +464,8 @@ fn bench_session(
     session: &mut meganeura::Session,
     set_inputs: &dyn Fn(&mut meganeura::Session),
 ) -> BenchStats {
+    set_inputs(session);
+    let mut exported = export::before(session, phase);
     let (warmups, samples) = benchmark_counts();
     let warmup_time = warmup_time();
     let warmup_range = nsys_range(&format!("meganeura/{phase}/warmup"));
@@ -458,6 +496,7 @@ fn bench_session(
         drop(wait_range);
         samples_ms.push(t0.elapsed().as_secs_f64() * 1000.0);
     }
+    export::after(session, phase, &mut exported);
     BenchStats::from_samples(samples_ms, warmup)
 }
 
@@ -1042,6 +1081,16 @@ fn emit_result(
     environment: &serde_json::Value,
 ) {
     assert_eq!(output_shape.iter().product::<usize>(), output.len());
+    assert!(
+        loss.is_finite() && output.iter().all(|value| value.is_finite()),
+        "non-finite forward result"
+    );
+    if training.is_some() {
+        assert!(
+            grad_norm.is_finite() && gradient_norms.values().all(|norm| norm.is_finite()),
+            "non-finite gradient result"
+        );
+    }
     let hash = sha256_f32(output);
     let sample = validation_sample(output, 256);
     let backend = detect_backend();
@@ -1167,8 +1216,8 @@ fn emit_result(
             "logits_hash": hash,
             "output_shape": output_shape,
             "logits_sample": sample,
-            "loss": if loss.is_nan() { -1.0 } else { (loss * 1_000_000.0).round() / 1_000_000.0 },
-            "grad_norm": training.map(|_| if grad_norm.is_nan() { -1.0 } else { (grad_norm * 1_000_000.0).round() / 1_000_000.0 }),
+            "loss": (loss * 1_000_000.0).round() / 1_000_000.0,
+            "grad_norm": training.map(|_| (grad_norm * 1_000_000.0).round() / 1_000_000.0),
             "gradient_norms": gradient_norms,
         },
     });

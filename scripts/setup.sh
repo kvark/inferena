@@ -62,6 +62,6 @@ REQUIREMENTS="$ROOT/requirements-p3hpc.txt"
 if [ -f "$ENV_DIR/Scripts/python.exe" ] && [ "$BACKEND" = cu130 ]; then
     REQUIREMENTS="$ROOT/requirements-p3hpc-cu130-windows.txt"
 fi
-uv pip install --python "$ENV_PYTHON" "${TORCH_ARGS[@]}" -r "$REQUIREMENTS"
+uv pip install --python "$ENV_PYTHON" "${TORCH_ARGS[@]+"${TORCH_ARGS[@]}"}" -r "$REQUIREMENTS"
 case "$BACKEND" in cu130) PROBE_BACKEND=cuda ;; rocm*) PROBE_BACKEND=rocm ;; *) PROBE_BACKEND=$BACKEND ;; esac
 "$ENV_PYTHON" "$ROOT/scripts/check_environment.py" --backend "$PROBE_BACKEND"

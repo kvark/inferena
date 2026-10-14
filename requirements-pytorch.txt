@@ -1,0 +1,7 @@
+# Minimal, tested PyTorch comparison environment. Choose the wheel backend in setup.
+torch==2.13.0
+torchvision==0.28.0
+transformers==5.14.1
+numpy==2.5.1
+safetensors==0.8.0
+huggingface-hub==1.26.0

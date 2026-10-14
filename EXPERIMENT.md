@@ -68,6 +68,9 @@ timer, matching the held-out timing loop. A rejected challenger is discarded;
 a failed initial program or final incumbent aborts native construction, and
 collection stops with the failure retained. It never promotes that run's timings
 or changes precision.
+The qualified untuned initial program may remain the winner when tuning fails to
+improve it or exhausts the budget. Its selected trial need not contain a kernel
+tuning receipt; attempted tuning remains recorded on the challenger trials.
 
 Every accelerated PyTorch setting, **including `off`/TF32**, now has the same
 untimed forward and training qualification. SmolLM2 uses the distribution/loss

@@ -200,9 +200,15 @@ def check_native_search(session, seconds, max_submission_chunks, kernel_memo=Fal
     if not trials or not 0 <= search["selected"] < len(trials):
         raise ValueError("native construction has no selected program")
     selected = trials[search["selected"]]
-    if (selected["outcome"]["qualified"] is not True or not selected["kernel_tuning"]
-            or selected["qualifications"] < 1):
-        raise ValueError("native selected program was not tuned and qualified")
+    if selected["outcome"]["qualified"] is not True or selected["qualifications"] < 1:
+        raise ValueError("native selected program was not qualified")
+    if selected["kernel_tuning"] is None:
+        # Search preserves an ordinary, qualified baseline when tuning loses
+        # or the budget runs out. Only the initial trial can be that fallback.
+        outcome = selected["outcome"]
+        if (search["selected"] != 0 or outcome.get("decision") != "KeepBaseline"
+                or any(outcome.get(key) != 0 for key in ("initial", "candidate", "selected"))):
+            raise ValueError("native untuned selection is not the qualified initial fallback")
     for trial in trials:
         kernel = trial["kernel_tuning"]
         if kernel is None:
@@ -881,7 +887,7 @@ def main():
                                    "mode": mode, "graphs": graphs, "model": model,
                                    "precision": precision, "replicate": replicate + 1,
                                    "watchdog": "watchdog.json",
-                                   "preparation_policy": "native-tuned/reference-" + mode, "status": "running"}
+                                   "preparation_policy": "native-searched/reference-" + mode, "status": "running"}
                             manifest["runs"].append(run)
                             save()
                             print(run["path"], flush=True)

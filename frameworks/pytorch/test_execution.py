@@ -469,6 +469,19 @@ class CampaignTest(unittest.TestCase):
               }}
         check = lambda records: check_pair(records, args, "default", True, 1, "source", precision="strict")
         check([mg, pt])
+        fallback = copy.deepcopy(mg)
+        for session in fallback["optimizer"]["sessions"]:
+            trial = copy.deepcopy(session["search"]["trials"][0])
+            trial["kernel_tuning"] = None
+            trial["qualifications"] = 1
+            trial["outcome"].update(decision="KeepBaseline", initial=0, candidate=0, selected=0)
+            session["search"]["trials"].insert(0, trial)
+        check([fallback, pt])
+        for change in (dict(qualified=False), dict(decision="UseCandidate"), dict(selected=1)):
+            invalid = copy.deepcopy(fallback)
+            invalid["optimizer"]["sessions"][0]["search"]["trials"][0]["outcome"].update(change)
+            with self.assertRaises(ValueError):
+                check([invalid, pt])
         explicit_empty = copy.deepcopy(mg)
         for session in explicit_empty["optimizer"]["sessions"]:
             session["search"]["trials"][0]["kernel_tuning"]["reused_classes"] = []

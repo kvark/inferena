@@ -11,6 +11,58 @@ from execution import QualificationError, compare_tensors
 
 
 class AmpTest(unittest.TestCase):
+    def test_bad_latency_keeps_qualified_prefill_and_training(self):
+        from contextlib import redirect_stdout
+        from types import SimpleNamespace
+        import copy
+        import io
+        import json
+        from bench import _bench
+        from precision import check_precision_qualification
+
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embedding = torch.nn.Embedding(4, 4)
+                self.projection = torch.nn.Linear(4, 4)
+
+            def forward(self, input_ids, attention_mask, use_cache=False):
+                logits = self.projection(self.embedding(input_ids))
+                if input_ids.shape[1] == 1 and torch.is_autocast_enabled("cpu"):
+                    logits = logits * 100
+                return SimpleNamespace(logits=logits)
+
+        def inputs(model_type, model, dev, seq_len=8):
+            ids = (torch.arange(seq_len) % 4).reshape(1, -1)
+            return dict(input_ids=ids, labels=(ids + 1) % 4, attention_mask=torch.ones_like(ids))
+
+        def measure(fn, *_, before=None):
+            if before is not None:
+                before()
+            return fn(), [1.0] * 20, {"runs": 5, "seconds": 10.0}
+
+        torch.manual_seed(17)
+        model = Model()
+        env = {"INFERENA_AUTOCAST": "bf16", "INFERENA_STRICT": "0",
+               "INFERENA_TORCH_MODE": "eager", "INFERENA_GRAPH_REPLAY": "0"}
+        with patch.dict(os.environ, env), patch("bench.load_model", return_value=model), \
+                patch("bench.prepare_inputs", side_effect=inputs), patch("bench._measure_call", side_effect=measure):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                _bench("SmolLM2-test", {"type": "causal_lm"}, "cpu", None)
+        record = json.loads(output.getvalue())
+        self.assertEqual(record["status"], "partial")
+        self.assertEqual(check_precision_qualification(record),
+                         {"inference": "pass", "latency": "failed", "training": "pass"})
+        self.assertEqual(record["execution"]["failure"]["phase"], "latency")
+        self.assertIsNone(record["timings"]["latency_ms"])
+        self.assertIsNone(record["timing_samples_ms"]["latency"])
+        self.assertEqual(len(record["timing_samples_ms"]["training"]), 20)
+        forged = copy.deepcopy(record)
+        forged["timings"]["latency_ms"] = 1.0
+        with self.assertRaisesRegex(ValueError, "latency supplies timing"):
+            check_precision_qualification(forged)
+
     def test_language_model_gate_is_shift_invariant_and_checks_each_token(self):
         from amp import forward_quality
         reference = torch.tensor([0.9, 0.1]).log().repeat(1, 512, 1)

@@ -514,6 +514,14 @@ class CampaignTest(unittest.TestCase):
             records, args, "default", True, 1, "source", receipt, precision="strict")[0]
         self.assertEqual({k: v["status"] for k, v in assess([mg, partial]).items()},
                          {"inference": "valid", "training": "failed", "latency": "not-attempted"})
+        both = copy.deepcopy(partial)
+        both["execution"]["graph_replay"]["phases"]["latency"] = {
+            "status": "failed", "failure": dict(failure, phase="latency")}
+        self.assertEqual({k: v["status"] for k, v in assess([mg, both]).items()},
+                         {"inference": "valid", "training": "failed", "latency": "failed"})
+        both["execution"]["graph_replay"]["phases"]["latency"]["failure"]["kind"] = "execution"
+        with self.assertRaisesRegex(ValueError, "failure receipt"):
+            assess([mg, both])
         from generate_chart import load_summaries
         with tempfile.TemporaryDirectory() as temporary:
             summary = Path(temporary) / "Whisper-tiny_summary.json"

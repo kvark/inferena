@@ -28,14 +28,12 @@ def check_record(record, model, precision, mode, gpu, *, sdpa=None, diagnostic=F
     if (execution["requested_mode"] != mode or execution["compiled"] != (mode != "eager")
             or execution["graph_replay"]["requested"] or not execution["compile_budget_enforced"]):
         raise ValueError("requested uncaptured compiler policy did not execute")
-    check_precision_qualification(record, diagnostic=diagnostic)
-    gate = execution["precision_qualification"]
-    training_valid = gate["training"]["status"] == "pass"
+    phases = check_precision_qualification(record, diagnostic=diagnostic)
     for phase in ("inference", "training", "latency"):
-        if phase == "training" and not training_valid:
-            if (record["timing_samples_ms"][phase] is not None or record["timings"]["training_ms"] is not None
-                    or record["status"] != "partial" or "training_precision_failure" not in execution):
-                raise ValueError("failed accelerated training must not supply timings")
+        if phases[phase] == "failed":
+            if (record["timing_samples_ms"][phase] is not None or record["timings"][f"{phase}_ms"] is not None
+                    or record["status"] != "partial" or f"{phase}_precision_failure" not in execution):
+                raise ValueError(f"failed accelerated {phase} must not supply timings")
             continue
         if (execution["graph_replay"]["phases"][phase]["status"] != "validated-uncaptured"
                 or protocol["warmup"][phase]["runs"] < 5 or protocol["warmup"][phase]["seconds"] < 10
@@ -45,7 +43,7 @@ def check_record(record, model, precision, mode, gpu, *, sdpa=None, diagnostic=F
             raise ValueError(f"{phase} has invalid timings")
     if execution.get("gradient_scaler", {}).get("enabled", False) != (precision == "fp16"):
         raise ValueError("wrong gradient-scaling policy")
-    return {"inference": "pass", "latency": "pass", "training": "pass" if training_valid else "failed"}
+    return phases
 
 
 def main():

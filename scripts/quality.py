@@ -27,7 +27,7 @@ def language_model_report(kl, losses, reference_losses, vocabulary):
             "kl_per_token": kl, "losses": losses, "reference_losses": reference_losses}
 
 
-def check_language_model_report(report):
+def check_language_model_report(report, *, require_pass=True):
     expected = language_model_report(report["kl_per_token"], report["losses"],
                                      report["reference_losses"], report["vocabulary"])
     if set(report) != set(expected):
@@ -39,6 +39,6 @@ def check_language_model_report(report):
                 raise ValueError(f"language-model quality receipt disagrees: {key}")
         elif actual != value:
             raise ValueError(f"language-model quality receipt disagrees: {key}")
-    if expected["status"] != "pass":
+    if require_pass and expected["status"] != "pass":
         raise ValueError("language-model quality exceeds fixed bounds")
     return expected

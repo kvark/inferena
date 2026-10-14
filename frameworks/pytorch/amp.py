@@ -361,9 +361,13 @@ def qualify(model, candidate, forward, loss_fn, inputs, policy, *, training=True
         if language_model:
             if latency_inputs is None or "latency_output" not in prepared:
                 raise QualificationError("missing language-model latency reference")
-            with torch.no_grad(), policy.context():
-                actual_latency = forward(candidate, latency_inputs)
-            report["latency_forward"] = forward_quality(actual_latency, prepared["latency_output"], latency_inputs["labels"])
+            try:
+                with torch.no_grad(), policy.context():
+                    actual_latency = forward(candidate, latency_inputs)
+                report["latency_forward"] = forward_quality(actual_latency, prepared["latency_output"], latency_inputs["labels"])
+            except QualificationError as error:
+                report["status"] = "partial"
+                report["latency_forward"] = {"status": "failed", "failure": error.details}
         if "correctness_reference" in prepared:
             report["correctness_reference"] = prepared["correctness_reference"]
         if training:

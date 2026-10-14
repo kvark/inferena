@@ -1618,6 +1618,8 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
             save(Path(path), execution["precision_qualification"])
         if training_requested and execution["precision_qualification"]["training"]["status"] != "pass":
             execution["training_precision_failure"] = execution["precision_qualification"]["training"]
+        if execution["precision_qualification"].get("latency_forward", {}).get("status") == "failed":
+            execution["latency_precision_failure"] = execution["precision_qualification"]["latency_forward"]
     del gate_plan
 
     def inference_call():
@@ -1710,7 +1712,13 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
         with torch.no_grad(), amp.context():
             return _benchmark_logits(model_type, latency_call())
 
-    no_grad_latency = prepare_phase("latency", no_grad_latency)
+    if "latency_precision_failure" in execution:
+        no_grad_latency = None
+        execution["graph_replay"]["phases"]["latency"] = {
+            "status": "failed", "failure": {**execution["latency_precision_failure"]["failure"], "phase": "latency"},
+        }
+    else:
+        no_grad_latency = prepare_phase("latency", no_grad_latency)
     latency_samples = None
     if no_grad_latency is not None:
         _reset_peak_memory(dev)
@@ -1722,8 +1730,9 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
     inference_summary = _timing_summary(inference_samples)
     training_summary = _timing_summary(training_samples) if training_samples is not None else None
     latency_summary = _timing_summary(latency_samples) if latency_samples is not None else None
-    if "training_precision_failure" in execution and "failure" not in execution:
-        execution["failure"] = execution["graph_replay"]["phases"]["training"]["failure"]
+    for phase in ("training", "latency"):
+        if f"{phase}_precision_failure" in execution and "failure" not in execution:
+            execution["failure"] = execution["graph_replay"]["phases"][phase]["failure"]
     precision["torch_float32_matmul_precision"] = (
         torch.get_float32_matmul_precision()
     )

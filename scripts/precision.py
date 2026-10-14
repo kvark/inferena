@@ -6,7 +6,7 @@ from training_gate import CURVE_POLICY, assess_trajectories, workload_for
 from quality import check_language_model_report
 
 
-def check_forward_quality(forward, *, language_model=False, shape=None):
+def check_forward_quality(forward, *, language_model=False, shape=None, require_pass=True):
     if forward["rtol"] != 0.02 or forward["atol"] != 1e-6 or forward["elements"] < 1:
         raise ValueError("wrong accelerated forward gate")
     for metric in ("rms", "max_abs"):
@@ -15,7 +15,7 @@ def check_forward_quality(forward, *, language_model=False, shape=None):
                 or not language_model and error > bound):
             raise ValueError("failed accelerated forward gate claims success")
     if language_model:
-        report = check_language_model_report(forward["language_model"])
+        report = check_language_model_report(forward["language_model"], require_pass=require_pass)
         if (forward.get("raw_logits_role") != "diagnostic"
                 or forward["elements"] != report["tokens"] * report["vocabulary"]
                 or shape is not None and (report["tokens"] != math.prod(shape[:-1])
@@ -48,8 +48,23 @@ def check_precision_qualification(record, *, diagnostic=False):
     language_model = record["model"].startswith("SmolLM2-")
     shape = record["outputs"]["output_shape"]
     check_forward_quality(gate["forward"], language_model=language_model, shape=shape)
+    latency_status = "pass"
     if language_model:
-        check_forward_quality(gate["latency_forward"], language_model=True, shape=[1, 1, shape[-1]])
+        latency = gate["latency_forward"]
+        if latency.get("status") == "failed":
+            latency_status = "failed"
+            failure = latency["failure"]
+            if (failure.get("kind") != "numerical" or not failure.get("message")
+                    or record["timings"].get("latency_ms") is not None
+                    or record["timing_samples_ms"].get("latency") is not None
+                    or record["status"] != "partial" or execution.get("latency_precision_failure") != latency):
+                raise ValueError("failed accelerated latency supplies timing or lacks its failure receipt")
+            if "metrics" in failure:
+                check_forward_quality(failure["metrics"], language_model=True, shape=[1, 1, shape[-1]], require_pass=False)
+                if failure["metrics"]["language_model"]["status"] != "failed":
+                    raise ValueError("latency failure disagrees with quality evidence")
+        else:
+            check_forward_quality(latency, language_model=True, shape=[1, 1, shape[-1]])
     training = record["protocol"]["training_requested"]
     request = record["protocol"].get("training_gate")
     if request not in ("auto", "repeated-synthetic"):
@@ -87,10 +102,11 @@ def check_precision_qualification(record, *, diagnostic=False):
                 or record["timing_samples_ms"].get("training") is not None
                 or record["status"] != "partial" or execution.get("training_precision_failure") != curve):
             raise ValueError("failed accelerated training supplies timing or lacks its failure receipt")
-        if gate["status"] != ("pass" if curve["status"] == "pass" else "partial"):
-            raise ValueError("inconsistent precision gate status")
-    elif gate["training"] is not None or gate["status"] != "pass":
+    elif gate["training"] is not None:
         raise ValueError("unrequested accelerated training gate")
+    training_status = gate["training"]["status"] if training else None
+    if gate["status"] != ("partial" if "failed" in (training_status, latency_status) else "pass"):
+        raise ValueError("inconsistent precision gate status")
     oracle = record["correctness_reference"]
     outputs = oracle["outputs"]
     if (oracle["precision"] != "strict-f32" or oracle["training_requested"] != training
@@ -103,4 +119,4 @@ def check_precision_qualification(record, *, diagnostic=False):
                 or not math.isfinite(outputs["grad_norm"])
                 or any(not math.isfinite(x) for x in outputs["gradient_norms"].values()))):
         raise ValueError("invalid strict-f32 oracle for the accelerated reference")
-    return {"inference": "pass", "latency": "pass", "training": gate["training"]["status"] if training else None}
+    return {"inference": "pass", "latency": latency_status, "training": training_status}

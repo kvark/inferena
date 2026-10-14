@@ -107,8 +107,10 @@ work. The earlier repeated-batch SmolLM2 test remains an optional diagnostic:
 ```
 
 The paired collector rejects the diagnostic override. There are no additional
-required columns. A failed training gate preserves qualified inference and
-latency, records the failed curves, and leaves training timing empty. V22 implements
+required columns. Training and latency precision failures each leave that phase's
+timing empty while retaining other qualified phases. Multiple failed phases carry
+separate receipts. A failed prefill aborts the reference and supplies no timings.
+V22 implements
 the [acceptance audit](ANALYSIS.md#acceptance-threshold-audit-october-14-2026)
 proposal. It changes the acceptance policy, not the historical evidence: earlier
 raw-logit and curve-L2 failures remain failures under their original protocol.

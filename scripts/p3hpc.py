@@ -484,11 +484,13 @@ def assess_phases(records, args, mode, graphs, count, revision, preparation, *, 
         if report["status"] in ("failed", "not-attempted"):
             if not failure or reference["status"] != "partial":
                 raise ValueError("missing phase without a classified failure")
-            if (report["status"] == "failed") != (phase == failure["phase"]):
+            phase_failure = report.get("failure", failure)
+            if (phase_failure.get("kind") not in ("numerical", "capture")
+                    or (report["status"] == "failed") != (phase == phase_failure.get("phase"))):
                 raise ValueError("failed phase disagrees with the failure receipt")
             if reference["timing_samples_ms"].get(phase) is not None:
                 raise ValueError("unqualified phase claims timing samples")
-            outcomes[phase] = {"status": report["status"], "failure": failure}
+            outcomes[phase] = {"status": report["status"], "failure": phase_failure}
             continue
         try:
             check_pair(records, args, mode, graphs, count, revision, phases=(phase,),

@@ -5,6 +5,51 @@ post-OOM offline analysis separates inefficient resident kernels from
 weight-representation and memory-placement costs; it does not establish a
 removable barrier-cost percentage or contain new speed measurements.
 
+## XPU kernel autotuning repair (October 15, 2026)
+
+The fixed-configuration intervention below establishes that Triton launch
+choices can cause an 11.19% timing difference for identical source and graph.
+The repair uses PyTorch's built-in `TorchProfilerBenchmarker` on XPU, selected
+through its public environment setting before importing the compiler. It does
+not seed a fast cache or remove candidate optimizations. Every process retains
+default shape padding, fresh compiler caches and the same compilation deadline,
+arithmetic, replay, numerical gates and final step timer.
+
+After one successful feasibility probe, a separate alternating comparison runs
+three fresh processes per method from the same archived v26 source `a220bf3`:
+
+| SmolVLA phase | Default benchmarker (ms) | Profiler benchmarker (ms) | Change |
+| --- | ---: | ---: | ---: |
+| Inference | 2.768 | 2.520 | -8.98% |
+| Latency | 2.468 | 2.225 | -9.84% |
+| Training | 7.684 | 7.141 | -7.06% |
+
+All 18 phase checks pass. Profiler inference spans 2.516–2.521 ms, latency
+2.224–2.228 ms and training 7.139–7.144 ms. Its compilation spans
+49.647–49.793 seconds, within the unchanged 120-second limit, versus
+51.672–53.713 seconds for the default benchmarker. All three profiler inference
+modules have identical generated source, while the default modules differ.
+The feasibility probe is retained separately and excluded from these medians.
+Evidence is in `../inferena-results/slowdown-quality-20261014/`, under
+`v26-b570-smolvla-profiler-feasibility` and `v26-b570-smolvla-benchmarker-controls`.
+The latter contains raw quality receipts, clock traces, generated code, selected
+configurations and the independently recomputed analysis.
+
+The v27 collector and PyTorch runner v16 declare the XPU policy for both strict
+and accelerated. The wrapper selects it before the runner imports torch; each
+compiled result reports the actual instantiated benchmarker and both controlling
+settings. The collector verifies those receipts and rejects inherited method
+overrides. Eager diagnostics remain outside the compilation policy. CUDA and
+other backends retain the pinned default method. No quality threshold changes.
+
+Both runner suites pass 39 tests, including GPU replay checks, and all 28
+collector tests pass. New regression coverage checks that the wrapper overrides
+conflicting inherited settings before launching the runner, and that the
+collector rejects missing or wrong benchmarker receipts, including an XPU run
+that still used the default method. Historical campaign versions remain readable
+and cannot be pooled with v27. Full five-model validation on both GPUs is still
+required; SmolVLA controls alone do not establish cohort readiness.
+
 ## V26 full local collection (October 15, 2026)
 
 The frozen collection uses Inferena `a220bf3`, Meganeura `b344d49`, paired

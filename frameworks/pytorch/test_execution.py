@@ -445,13 +445,15 @@ class CampaignTest(unittest.TestCase):
             } for mode in ("Inference", "Training")],
         }}
         pt = {**copy.deepcopy(base), "framework": "pytorch", "backend": "CUDA",
-              "protocol": {**copy.deepcopy(base["protocol"]), "name": "inferena-graph-replay-v15"},
+              "protocol": {**copy.deepcopy(base["protocol"]), "name": "inferena-graph-replay-v16"},
               "torch_version": TORCH_VERSION,
               "environment": {"torch_git_version": TORCH_REVISION, "python_version": PYTHON_VERSION,
                               "triton_backend": "nvidia"},
               "execution": {
                   "stream_policy": "single dedicated preparation/run stream",
                   "requested_mode": "default", "compiled": True,
+                  "kernel_benchmarking": {"implementation": "InductorBenchmarker",
+                      "use_experimental_benchmarker": True, "use_torch_profiler_benchmarker": False},
                   "sdpa_compile": "compiled",
                   "sdpa_policy": "auto", "sdpa_enabled_backends": sorted(SDPA_BACKENDS),
                   "compile_budget_seconds": args.compile_seconds, "compile_budget_enforced": True,
@@ -571,7 +573,7 @@ class CampaignTest(unittest.TestCase):
         # the failed primary or enter its timing population.
         eager = copy.deepcopy(pt)
         eager["protocol"]["diagnostic"] = True
-        eager["execution"].update(requested_mode="eager", compiled=False,
+        eager["execution"].update(requested_mode="eager", compiled=False, kernel_benchmarking=None,
                                    sdpa_policy="math", sdpa_enabled_backends=["MATH"], sdpa_compile="eager")
         eager["execution"]["graph_replay"]["requested"] = False
         for report in eager["execution"]["graph_replay"]["phases"].values():
@@ -651,6 +653,10 @@ class CampaignTest(unittest.TestCase):
             (1, ("execution", "sdpa_compile"), "eager"),
             (1, ("execution", "sdpa_enabled_backends"), ["MATH"]),
             (1, ("execution", "compile_budget_enforced"), False),
+            (1, ("execution", "kernel_benchmarking"), None),
+            (1, ("execution", "kernel_benchmarking", "implementation"), "TorchProfilerBenchmarker"),
+            (1, ("execution", "kernel_benchmarking", "use_experimental_benchmarker"), False),
+            (1, ("execution", "kernel_benchmarking", "use_torch_profiler_benchmarker"), True),
             (1, ("execution", "compiler_options", "max_autotune"), True),
             (1, ("execution", "graph_replay", "requested"), False),
             (1, ("execution", "graph_replay", "phases", "training", "api"), "torch.xpu.XPUGraph"),
@@ -693,6 +699,18 @@ class CampaignTest(unittest.TestCase):
         rocm["execution"]["sdpa_policy"] = "auto"
         rocm["execution"]["sdpa_enabled_backends"] = sorted(SDPA_BACKENDS)
         check([mg, rocm])
+        args.backend = "xpu"
+        xpu = copy.deepcopy(pt)
+        xpu["backend"] = "XPU"
+        xpu["environment"]["triton_backend"] = "intel"
+        xpu["execution"].update(sdpa_policy="math", sdpa_enabled_backends=["MATH"])
+        for phase in xpu["execution"]["graph_replay"]["phases"].values():
+            phase["api"] = "torch.xpu.XPUGraph"
+        with self.assertRaisesRegex(ValueError, "kernel benchmarker"):
+            check([mg, xpu])
+        xpu["execution"]["kernel_benchmarking"].update(
+            implementation="TorchProfilerBenchmarker", use_torch_profiler_benchmarker=True)
+        check([mg, xpu])
         args.backend = "cuda"
 
         from bench import _measure_call

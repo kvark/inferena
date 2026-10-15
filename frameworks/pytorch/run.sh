@@ -20,11 +20,23 @@ else
     unset TORCH_ALLOW_TF32_CUBLAS_OVERRIDE
 fi
 
-# Check torch is importable.
-if ! "$PYTHON" -c "import torch" 2>/dev/null; then
+# Resolve the device in the existing interpreter preflight. The actual runner
+# is a fresh process, so its public Inductor settings take effect before torch
+# imports and constructs the shared kernel benchmarker.
+if ! BENCHMARK_DEVICE="$("$PYTHON" -c 'import sys; sys.path.insert(0, sys.argv[1]); from bench import detect_device; print(detect_device())' "$SCRIPT_DIR")"; then
     ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-    echo "[pytorch] torch not importable with $PYTHON. Run: bash $ROOT_DIR/scripts/setup.sh <wheel-backend>" >&2
+    echo "[pytorch] device probe failed with $PYTHON. Check the requested backend and bash $ROOT_DIR/scripts/setup.sh <wheel-backend>" >&2
     exit 1
+fi
+
+# XPU event-based microbenchmarks selected materially different launch configs
+# for identical generated programs. Use PyTorch's built-in device profiler for
+# autotuning on that backend. This does not profile the final timing interval.
+export TORCHINDUCTOR_USE_EXPERIMENTAL_BENCHMARKER=1
+if [[ "$BENCHMARK_DEVICE" == xpu:* ]]; then
+    export TORCHINDUCTOR_USE_TORCH_PROFILER_BENCHMARKER=1
+else
+    export TORCHINDUCTOR_USE_TORCH_PROFILER_BENCHMARKER=0
 fi
 
 PREFIX=()

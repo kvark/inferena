@@ -4,6 +4,9 @@ from contextlib import ExitStack, redirect_stdout
 import io
 import json
 import os
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -16,6 +19,35 @@ from execution import QualificationError, capture_phase, compare_tensors
 
 
 class ExecutionTests(unittest.TestCase):
+    def test_wrapper_owns_autotuner_settings_before_starting_runner(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            wrapper = directory / "run.sh"
+            shutil.copyfile(Path(bench.__file__).with_name("run.sh"), wrapper)
+            interpreter = directory / "python-probe"
+            interpreter.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
+if sys.argv[1] == "-c":
+    print(os.environ["TEST_BENCHMARK_DEVICE"])
+else:
+    assert sys.argv[1].endswith("/budget.py")
+    assert sys.argv[2].endswith("/bench.py")
+    print(json.dumps({key: os.environ.get(key) for key in (
+        "TORCHINDUCTOR_USE_EXPERIMENTAL_BENCHMARKER",
+        "TORCHINDUCTOR_USE_TORCH_PROFILER_BENCHMARKER")}))
+''')
+            interpreter.chmod(0o755)
+            for device, expected in (("xpu:0", "1"), ("cuda:0", "0"), ("cpu", "0"), ("mps", "0")):
+                with self.subTest(device=device):
+                    environment = dict(os.environ, PYTHON=str(interpreter), TEST_BENCHMARK_DEVICE=device,
+                        TORCHINDUCTOR_USE_EXPERIMENTAL_BENCHMARKER="0",
+                        TORCHINDUCTOR_USE_TORCH_PROFILER_BENCHMARKER="0" if expected == "1" else "1")
+                    environment.pop("INFERENA_NSYS", None)
+                    result = subprocess.run(["bash", str(wrapper), "test-model"], env=environment,
+                                            text=True, capture_output=True, check=True)
+                    actual = json.loads(result.stdout)
+                    self.assertEqual(actual["TORCHINDUCTOR_USE_EXPERIMENTAL_BENCHMARKER"], "1")
+                    self.assertEqual(actual["TORCHINDUCTOR_USE_TORCH_PROFILER_BENCHMARKER"], expected)
+
     def test_qualification_checks_outputs_and_backward(self):
         model = torch.nn.Linear(4, 3)
         inputs = torch.arange(8, dtype=torch.float32).reshape(2, 4) / 8

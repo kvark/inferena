@@ -420,7 +420,7 @@ class AmpTest(unittest.TestCase):
                 _bench("test", {"type": "whisper"}, "cpu", None)
             record = json.loads(output.getvalue())
         self.assertEqual(record["status"], "ok")
-        self.assertEqual(record["protocol"]["name"], "inferena-graph-replay-v15")
+        self.assertEqual(record["protocol"]["name"], "inferena-graph-replay-v16")
         self.assertEqual(record["precision"]["comparison_class"], "accelerated")
         self.assertEqual(record["correctness_reference"]["precision"], "strict-f32")
         self.assertIsNotNone(record["correctness_reference"]["outputs"]["grad_norm"])

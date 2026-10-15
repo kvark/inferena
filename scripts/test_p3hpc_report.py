@@ -10,7 +10,7 @@ from p3hpc_report import campaign_rows, cohort_rows
 
 class PairedReport(unittest.TestCase):
     def campaign(self, root):
-        manifest = dict(protocol="p3hpc-paired-campaign-v26", source="revision",
+        manifest = dict(protocol="p3hpc-paired-campaign-v27", source="revision",
             status="complete-with-failures", runs=[],
             args=dict(replicates=3, collect=True, inference_only=False,
                       models=["Good", "Bad"], precisions=["accelerated"], gpu="GPU", backend="cuda"),
@@ -77,7 +77,7 @@ class PairedReport(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manifests = []
-            for version in (18, 19, 20, 21, 22, 23, 24):
+            for version in (18, 19, 20, 21, 22, 23, 24, 25, 26, 27):
                 folder = root / str(version)
                 manifest = self.campaign(folder)
                 manifest["protocol"] = f"p3hpc-paired-campaign-v{version}"

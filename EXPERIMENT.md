@@ -1,6 +1,6 @@
 # P3HPC paired collection
 
-The development collector uses **v26**, with exactly two profiles: `strict`
+The development collector uses **v27**, with exactly two profiles: `strict`
 and `accelerated` (practical). The October 11 cohort below remains frozen at
 **v18**. V19 introduced AMP; v20 changed accelerated training qualification.
 V21 adds a native F32 arithmetic reference and refreshes search inputs to match
@@ -14,16 +14,33 @@ SmolVLA's shorter action sequence. No quality threshold changes.
 V26 replaces the one-token FP16/F32 wrapper with ordinary F32, retaining the
 capability-selected dtype for prefill and training. Keep these protocols' records
 separate.
+V27 uses PyTorch's built-in profiler benchmarker for XPU kernel autotuning and
+records the actual benchmarker in every compiled result. Other backends retain
+the pinned default event-based benchmarker. Search and compilation budgets,
+numerical acceptance, final step timers and the two-profile matrix are unchanged.
 
-## Development v26: two profiles
+## Development v27: two profiles
 
 The full local v26 collection qualifies all 60 publication cells and 180 phase
 checks across B570 and RTX 5070. Two B570 timing flags remain in the primary
 report. Follow-up controls reproduce an 11.19% SmolVLA inference difference
 solely by changing PyTorch's selected Triton configurations under identical
-source and graph; these seeded-cache controls do not enter the cohort. Numerical
-readiness is established locally, while default-reference timing stability
-remains under investigation. See the [full results and controls](ANALYSIS.md#v26-full-local-collection-october-15-2026).
+source and graph; these seeded-cache controls do not enter the cohort.
+The subsequent fresh-cache default/profiler comparison improves inference,
+latency and training by 8.98%, 9.84% and 7.06%, with all quality gates passing.
+The v27 implementation requires a fresh full local collection before readiness
+is claimed. See the [repair and controls](ANALYSIS.md#xpu-kernel-autotuning-repair-october-15-2026).
+
+The wrapper resolves the actual backend during its interpreter preflight, then
+sets `TORCHINDUCTOR_USE_TORCH_PROFILER_BENCHMARKER=1` for XPU before starting the
+runner process. It sets that flag to zero elsewhere and explicitly retains
+`TORCHINDUCTOR_USE_EXPERIMENTAL_BENCHMARKER=1`, the pinned default. The runner
+records the instantiated benchmarker class and both settings. The collector
+rejects inherited overrides and compiled receipts that disagree with its
+declared backend policy. Eager oracles do not use a kernel benchmarker.
+Profiling is limited to compiler/autotuner microbenchmarks; the final timing
+interval, fresh compiler caches, default shape padding and available kernel
+choices remain intact. Both strict and accelerated XPU use the same policy.
 
 The current native pin is Meganeura `b344d49` on `fix/search-program-identity`
 ([PR #260](https://github.com/kvark/meganeura/pull/260)),

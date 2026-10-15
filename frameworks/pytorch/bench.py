@@ -1397,6 +1397,18 @@ def compiler_options(mode):
     return options
 
 
+def kernel_benchmarking(mode):
+    """Record the actual shared autotuner, which is selected at import time."""
+    if mode == "eager":
+        return None
+    from torch._inductor.runtime import benchmarking
+    return {
+        "implementation": type(benchmarking.benchmarker).__name__,
+        "use_experimental_benchmarker": bool(torch._inductor.config.use_experimental_benchmarker),
+        "use_torch_profiler_benchmarker": bool(torch._inductor.config.use_torch_profiler_benchmarker),
+    }
+
+
 def attention_policy(device, model_type=None):
     # The pinned XPU fused attention waits on an event during graph capture.
     # Keep one public SDPA policy for both replay and its uncaptured ablation.
@@ -1482,6 +1494,7 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
     execution = {
         "requested_mode": mode,
         "compiled": False,
+        "kernel_benchmarking": kernel_benchmarking(mode),
         "sdpa_policy": attention_policy(dev, model_type),
         "sdpa_compile": "eager" if mode == "eager" else sdpa_compile,
         "sdpa_enabled_backends": [backend.name for backend in torch.nn.attention._cur_sdpa_kernel_backends()],

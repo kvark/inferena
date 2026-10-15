@@ -53,6 +53,14 @@ class NumericalMismatch(ValueError):
     pass
 
 
+def reference_kernel_benchmarking(backend, mode):
+    if mode == "eager":
+        return None
+    profiler = backend == "xpu"
+    return {"implementation": "TorchProfilerBenchmarker" if profiler else "InductorBenchmarker",
+            "use_experimental_benchmarker": True, "use_torch_profiler_benchmarker": profiler}
+
+
 def cpu_frequency_policies():
     """Read Linux policy settings, not transient sampled clock frequencies."""
     policies = {}
@@ -425,6 +433,8 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
         raise ValueError("reference compilation budget changed")
     if execution.get("compile_budget_enforced") is not True:
         raise ValueError("reference compilation watchdog was not active")
+    if execution.get("kernel_benchmarking") != reference_kernel_benchmarking(args.backend, mode):
+        raise ValueError("reference kernel benchmarker differs from the declared backend policy")
     if mode != "eager":
         options = execution["compiler_options"]
         if (options["max_autotune"] != (mode == "max-autotune")
@@ -729,6 +739,7 @@ def main():
     overrides = [key for key in os.environ if key.startswith("MEGANEURA_") or key in (
         "INFERENA_MEGANEURA_PATH", "INFERENA_PROFILE_DIR", "INFERENA_DRY_RUN", "INFERENA_NSYS",
         "TORCH_LOGS", "TORCH_TRACE", "CARGO_TARGET_DIR",
+        "TORCHINDUCTOR_USE_EXPERIMENTAL_BENCHMARKER", "TORCHINDUCTOR_USE_TORCH_PROFILER_BENCHMARKER",
         "INFERENA_TORCH_MODE", "INFERENA_GRAPH_REPLAY", "INFERENA_CUDA_GRAPHS",
         "INFERENA_TUNE_SECONDS", "INFERENA_COMPILE_SECONDS", "INFERENA_PREPARATION_REPORT", "INFERENA_BUDGET_ENFORCED",
         "INFERENA_MAX_SUBMISSION_CHUNKS", "INFERENA_WARMUP_SECONDS",
@@ -811,7 +822,7 @@ def main():
                INFERENA_WARMUP_SECONDS=str(WARMUP_SECONDS))
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v26", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v27", "source": revision,
         "started_at": started_at,
         "host": {"name": socket.gethostname(), "os": platform.system(),
                  "kernel": platform.release(), "platform": platform.platform(), "arch": platform.machine(),
@@ -857,6 +868,10 @@ def main():
         "run_watchdog_seconds": args.run_seconds,
         "warmup": {"minimum_runs": 5, "minimum_seconds": WARMUP_SECONDS},
         "reference_sdpa_policy": sdpa,
+        "reference_kernel_benchmarking": {
+            mode: reference_kernel_benchmarking(args.backend, mode)
+            for mode, _ in selected_conditions
+        },
         "reference_sdpa_compile": {
             model: "eager" if args.eager else "compiled"
             for model in args.models

@@ -17,6 +17,14 @@ separate.
 
 ## Development v26: two profiles
 
+The full local v26 collection qualifies all 60 publication cells and 180 phase
+checks across B570 and RTX 5070. Two B570 timing flags remain in the primary
+report. Follow-up controls reproduce an 11.19% SmolVLA inference difference
+solely by changing PyTorch's selected Triton configurations under identical
+source and graph; these seeded-cache controls do not enter the cohort. Numerical
+readiness is established locally, while default-reference timing stability
+remains under investigation. See the [full results and controls](ANALYSIS.md#v26-full-local-collection-october-15-2026).
+
 The current native pin is Meganeura `b344d49` on `fix/search-program-identity`
 ([PR #260](https://github.com/kvark/meganeura/pull/260)),
 based on merged `99e3de2` ([rectangular BF16 support](https://github.com/kvark/meganeura/pull/259)),

@@ -87,18 +87,82 @@ driver machine code or runtime autotuner choices: the diagnostic archive did
 not retain `.zebin` or `.best_config` files. Latency varies within each source
 at the same observed 2,750 MHz, so clocks alone do not explain that variation.
 
-The **supplemental inference flag remains open**. It persists at the same observed
+The **supplemental inference flag requires separate controls**. It persists at the same observed
 2,750 MHz. Unlike latency, the generated inference plans differ across fresh
 processes, including within the same source revision: they contain 249, 265 or
 281 Triton calls alongside the same 115 `mm`, 32 `bmm` and one `addmm` calls.
 V26's second and third processes generate identical inference modules and run
 at 2.818 and 2.827 ms. V22 also has a slower 2.857 ms process, but its median is
 2.625 ms. This identifies compiler plan variability; it does not yet establish
-why the plans differ or rule out a source-dependent bias. The full primary
-cohort still has only the two original flags. Neither successful quality gates
-nor the disappearance of those flags in controls establishes universal absence
-of performance regressions. Further inference-plan controls are needed before
-closing performance readiness.
+why the plans differ or rule out a source-dependent bias. Subsequent controls
+below identify two compiler mechanisms and establish the effect of kernel
+selection. The full primary cohort still has only the two original flags.
+Neither successful quality gates nor the disappearance of those flags in
+controls establishes universal absence of performance regressions.
+
+### SmolVLA: compiler choices cause repeatable timing differences
+
+Fixing `PYTHONHASHSEED=0` does not stabilize the inference graph. Three further
+processes per source all qualify, but inference medians are 2.563/2.852 ms
+(+11.27%); latency is 2.459/2.235 ms (-9.14%). These unfavorable inference
+results are retained in `v26-b570-smolvla-pytorch-hashseed0` under the same
+diagnostic root. Hash seed is not a production repair.
+
+A separate old/new compiler-IR pair identifies a difference before fusion:
+Inductor's shape-padding pass sometimes expands 50-row matmuls to 56 rows, then
+slices their outputs. The captured pair differs by 16 such padding operations
+across the transformer layers. The pass benchmarks each shape and reuses its
+decision; model inputs and parameters have identical graph argument signatures.
+`v26-b570-smolvla-compiler-ir/padding-ir-finding.json` binds the IR evidence.
+This explains varying graph construction, but does not by itself establish its
+full-model cost.
+
+Six same-source v26 controls compare default padding with the public
+`shape_padding=False` option. All 18 phase checks pass. Disabling padding changes
+the inference median from 2.587 to 2.599 ms (+0.46%), latency from 2.242 to
+2.243 ms (+0.03%) and training from 7.664 to 7.254 ms (-5.36%). It does not
+consistently improve inference. The three padding-off inference modules have
+identical complete Python ASTs, including embedded Triton definitions, yet take
+2.822, 2.507 and 2.599 ms. The retained `.best_config` files reveal differing
+Triton block sizes and warp counts despite identical generated source.
+
+A controlled intervention then freezes those choices. Both variants use the
+same v26 source, padding disabled, BF16, XPU graph replay, 120-second compile
+budget, ten-second warmup, twenty samples and every v26 numerical gate. Each
+fresh compiler cache is seeded **only with the 19 inference kernel choice
+records** from the first or second padding-off process. No generated source,
+machine code or tensors are seeded, and PyTorch's cache validation stays enabled.
+Thirteen choices differ between these two sets. The six processes alternate
+order and produce the following inference times:
+
+| Seeded choices | Process 1 (ms) | Process 2 (ms) | Process 3 (ms) | Median (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| Padding-off process 1 | 2.822 | 2.835 | 2.820 | 2.822 |
+| Padding-off process 2 | 2.505 | 2.506 | 2.508 | 2.506 |
+
+All 18 phase checks pass. All six inference modules and their 28 kernel source
+ASTs match; each process retains its expected 19 selected configurations and
+matching compiled artifacts. All measured blocks have the same observed
+2,750 MHz. This establishes a repeatable **11.19% reduction from changing the
+selected kernel configurations**, with less than 0.6% spread within either
+set. It is stronger evidence than a graph-count or clock correlation.
+`v26-b570-smolvla-fixed-configs/causal-finding.json` records the checks and binds
+the raw measurements and artifact analysis. Other phases still tune normally;
+their timings are retained, without attributing their variation to this
+inference intervention.
+
+These controls establish a cause of substantial within-source variation. They
+do not measure how much of either earlier old/new inference gap came from each
+compiler choice, or exclude a source-dependent bias in autotuning. The installed
+PyTorch uses `InductorBenchmarker` for those choices, with its experimental
+event-based benchmarker enabled and profiler-based benchmarking disabled.
+Default-reference timing stability remains the open investigation. Production
+still uses its declared fresh compiler caches and default padding/tuning policy;
+it does not adopt a hand-selected fast cache, discard a slower qualified run,
+or replace any primary timing. Numerical qualification on both GPUs is complete;
+blanket performance clearance is not claimed.
+
+### Executable provenance
 
 The enclosing two-GPU supervisor reports a final native binary hash failure,
 although both device campaigns completed. Exact cached Cargo reproduction

@@ -63,6 +63,16 @@ class PairedReport(unittest.TestCase):
             write_json(root / "campaign.json", manifest)
             self.assertTrue(all(r["native_ms"] is None for r in campaign_rows(root) if r["model"] == "Good"))
 
+    def test_final_provenance_failure_withholds_previously_valid_timings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.campaign(root)
+            manifest.update(status="incomplete", error="runner binary changed final_binary_check")
+            write_json(root / "campaign.json", manifest)
+            rows = campaign_rows(root)
+            self.assertTrue(all(row["status"] == "incomplete-or-failed" for row in rows))
+            self.assertTrue(all(row["native_ms"] is None and row["reference_ms"] is None for row in rows))
+
     def test_versions_are_readable_but_never_pooled(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

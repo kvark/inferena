@@ -611,6 +611,57 @@ def input_hashes(models):
     return hashes
 
 
+def runner_hashes():
+    suffix = ".exe" if sys.platform == "win32" else ""
+    hashes = {}
+    for name in ("inferena", "inferena-meganeura"):
+        path = ROOT / "target/release" / (name + suffix)
+        try:
+            with path.open("rb") as data:
+                hashes[name] = hashlib.file_digest(data, "sha256").hexdigest()
+        except FileNotFoundError:
+            hashes[name] = None
+    return hashes
+
+
+def verify_runner_binaries(provenance, receipt, stage):
+    actual = runner_hashes()
+    expected = {name: item["sha256"] for name, item in provenance["binaries"].items()}
+    receipt[stage] = {"checked_at": datetime.now(timezone.utc).isoformat(),
+                      "sha256": actual, "status": "pass" if actual == expected else "fail"}
+    if actual != expected:
+        changed = ", ".join(name for name in expected if actual.get(name) != expected[name])
+        raise ValueError(f"runner binary changed {stage}: {changed}; preserve this campaign and inspect its build logs")
+
+
+def build_runners(destination):
+    # run.sh builds both crates together, but the native wrapper builds only
+    # its own crate. Cargo can select different cached executables for these
+    # feature unions even when both invocations report a completely fresh build.
+    common = ["cargo", "build", "--release", "--manifest-path", str(ROOT / "Cargo.toml")]
+    commands = [common + ["--locked", "-p", "inferena-harness", "-p", "inferena-meganeura"],
+                common + ["-p", "inferena-meganeura", "--locked"]]
+    build_env = dict(os.environ, CARGO_BUILD_JOBS=os.environ.get("CARGO_BUILD_JOBS", "1"))
+    for command in commands:
+        subprocess.run(command, cwd=ROOT, env=build_env, check=True)
+    directory = destination / "binaries"
+    directory.mkdir()
+    provenance = {"policy": "locked-runner-binaries-v1", "build_commands": commands, "binaries": {}}
+    suffix = ".exe" if sys.platform == "win32" else ""
+    for name, digest in runner_hashes().items():
+        if digest is None:
+            raise FileNotFoundError(f"build did not produce {name}")
+        archived = directory / (name + suffix)
+        shutil.copy2(ROOT / "target/release" / archived.name, archived)
+        with archived.open("rb") as data:
+            if hashlib.file_digest(data, "sha256").hexdigest() != digest:
+                raise ValueError(f"{name} changed while archiving")
+        provenance["binaries"][name] = {"sha256": digest, "path": str(archived.relative_to(destination)),
+                                         "size_bytes": archived.stat().st_size}
+    verify_runner_binaries(provenance, provenance, "after_archive")
+    return provenance
+
+
 def create_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results-dir", type=Path, help="new directory; default: ../inferena-results/<host>-<UTC>-<source>")
@@ -842,11 +893,10 @@ def main():
     save()
     print(f"Campaign: {destination}", flush=True)
     try:
-        # Finish compilation before the first paired process; later wrapper
-        # builds are locked no-ops, outside the timed engine calls.
+        # Prepare both wrapper build recipes before probing or archiving the
+        # executables. Later builds remain outside the timed engine calls.
         build_started = time.monotonic()
-        subprocess.run(["cargo", "build", "--release", "--locked", "-p", "inferena-harness", "-p", "inferena-meganeura"],
-                       cwd=ROOT, env=dict(os.environ, CARGO_BUILD_JOBS=os.environ.get("CARGO_BUILD_JOBS", "1")), check=True)
+        manifest["runner_binaries"] = build_runners(destination)
         manifest["runner_build_seconds"] = time.monotonic() - build_started
         executable = ROOT / "target/release" / ("inferena-meganeura.exe" if sys.platform == "win32" else "inferena-meganeura")
         devices = json.loads(subprocess.check_output([str(executable), "--list-devices"], cwd=ROOT, env=env, text=True, encoding="utf-8"))
@@ -894,6 +944,8 @@ def main():
                                    "watchdog": "watchdog.json",
                                    "preparation_policy": "native-searched/reference-" + mode, "status": "running"}
                             manifest["runs"].append(run)
+                            run["binary_checks"] = {}
+                            verify_runner_binaries(manifest["runner_binaries"], run["binary_checks"], "before")
                             save()
                             print(run["path"], flush=True)
                             run_env = dict(env, INFERENA_TORCH_MODE=mode,
@@ -917,6 +969,7 @@ def main():
                                                           stderr=subprocess.STDOUT, env=run_env)
                                 finally:
                                     run["elapsed_seconds"] = time.monotonic() - run_started
+                                    verify_runner_binaries(manifest["runner_binaries"], run["binary_checks"], "after")
                             run["returncode"] = result.returncode
                             if result.returncode:
                                 raise RuntimeError(f"runner failed; inspect {folder / 'runner.log'}")
@@ -937,8 +990,11 @@ def main():
                             if run["status"] != "valid" and mode != "eager":
                                 run["eager_diagnostic"] = {"path": "diagnostic-eager", "status": "running"}
                                 save()
-                                run["eager_diagnostic"] = eager_diagnostic(
-                                    command, run_env, folder, model, args, count, revision, precision)
+                                try:
+                                    run["eager_diagnostic"] = eager_diagnostic(
+                                        command, run_env, folder, model, args, count, revision, precision)
+                                finally:
+                                    verify_runner_binaries(manifest["runner_binaries"], run["binary_checks"], "after_diagnostic")
                             if stage == "measurement" and phases.get("training", {}).get("status") == "valid":
                                 key = (precision, model, mode, graphs)
                                 measurement_pairs.setdefault(key, []).append(pair)
@@ -948,6 +1004,7 @@ def main():
                 measurement_pairs, args.replicates
             )
             save()
+        verify_runner_binaries(manifest["runner_binaries"], manifest, "final_binary_check")
         if input_hashes(args.models) != hashes:
             raise ValueError("input changed during collection")
         manifest["phase_coverage"] = {

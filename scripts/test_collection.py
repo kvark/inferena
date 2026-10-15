@@ -1,5 +1,6 @@
 """CPU-only failure injection for campaign persistence and process cleanup."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,49 @@ import unittest
 from unittest.mock import patch
 
 from collection import run_recorded, write_json
+from p3hpc import build_runners, verify_runner_binaries
+
+
+class RunnerProvenanceTest(unittest.TestCase):
+    def test_archive_matches_native_wrapper_feature_union(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            release = root / "target/release"
+            release.mkdir(parents=True)
+            destination = root / "campaign"
+            destination.mkdir()
+            suffix = ".exe" if sys.platform == "win32" else ""
+
+            def cargo(command, **kwargs):
+                if "inferena-harness" in command:
+                    (release / ("inferena" + suffix)).write_bytes(b"combined harness")
+                    native = b"combined native"
+                else:
+                    native = b"native-only feature union"
+                (release / ("inferena-meganeura" + suffix)).write_bytes(native)
+
+            with patch("p3hpc.ROOT", root), patch("p3hpc.subprocess.run", side_effect=cargo) as build:
+                provenance = build_runners(destination)
+                self.assertEqual(build.call_count, 2)
+                for name, contents in (("inferena", b"combined harness"),
+                                       ("inferena-meganeura", b"native-only feature union")):
+                    item = provenance["binaries"][name]
+                    self.assertEqual(item["sha256"], hashlib.sha256(contents).hexdigest())
+                    self.assertEqual((destination / item["path"]).read_bytes(), contents)
+                receipt = {}
+                verify_runner_binaries(provenance, receipt, "before")
+                self.assertEqual(receipt["before"]["status"], "pass")
+                native = release / ("inferena-meganeura" + suffix)
+                native.write_bytes(b"replaced during pair")
+                with self.assertRaisesRegex(ValueError, "runner binary changed after: inferena-meganeura"):
+                    verify_runner_binaries(provenance, receipt, "after")
+                self.assertEqual(receipt["after"]["status"], "fail")
+                self.assertEqual(receipt["after"]["sha256"]["inferena-meganeura"],
+                                 hashlib.sha256(b"replaced during pair").hexdigest())
+                native.unlink()
+                with self.assertRaisesRegex(ValueError, "runner binary changed final"):
+                    verify_runner_binaries(provenance, receipt, "final")
+                self.assertIsNone(receipt["final"]["sha256"]["inferena-meganeura"])
 
 
 class CollectionTest(unittest.TestCase):

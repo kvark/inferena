@@ -398,7 +398,8 @@ latter statuses permits retrying until favorable or hiding failures.
 
 The collector automatically writes **`../inferena-results/latest.tgz`** for a
 finished or caught-failure campaign, including qualification runs. Send that
-file: it contains only the current run's directory, manifest, records and logs.
+file: it contains only the current run's directory, manifest, records, logs and
+the archived harness/native executables.
 Each archive replaces the previous `latest.tgz`; original result directories
 remain untouched. With `--results-dir`, the archive sits beside that directory.
 If archiving fails, a warning is printed and the previous archive is left intact.
@@ -599,6 +600,15 @@ pair is still incomplete. File errors stop collection instead of reporting a
 successful save. The manifest records host/kernel identity before benchmarking;
 native device selection records driver name/info (including Mesa's version)
 before the first paired run, and native results retain their environment receipts.
+
+Before device probing, the collector builds both the harness/native pair and
+the native wrapper's single-package recipe. Cargo feature unification can select
+different cached native executables for those recipes without recompiling.
+The final harness and wrapper-selected native executable are copied to
+`binaries/`; `runner_binaries` records their SHA-256 hashes and build commands.
+Hashes are checked before and after every pair, after any separate eager
+diagnostic, and at campaign completion. A changed or missing executable stops
+collection with the actual hashes retained. These checks are outside timing.
 
 Qualify the frozen source on B570 first, then collect its campaign before the
 other devices. Preserve every attempt. Following a watchdog timeout, inspect

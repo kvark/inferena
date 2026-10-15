@@ -54,9 +54,13 @@ Profiling is limited to compiler/autotuner microbenchmarks; the final timing
 interval, fresh compiler caches, default shape padding and available kernel
 choices remain intact. Both strict and accelerated XPU use the same policy.
 
-The current native pin is Meganeura `b344d49` on `fix/search-program-identity`
-([PR #260](https://github.com/kvark/meganeura/pull/260)),
-based on merged `99e3de2` ([rectangular BF16 support](https://github.com/kvark/meganeura/pull/259)),
+The current native pin is merged Meganeura `f648a45`
+([PR #260](https://github.com/kvark/meganeura/pull/260)), whose complete source
+tree is identical to the tested `b344d49` revision
+(`851852374f1ed8102396be76e0d6acedad70d6c6`). The frozen v27 collection retains
+its original Inferena `f587313` and Meganeura `b344d49` identities; the merged
+pin is for subsequent builds, not a relabeling of existing measurements.
+This includes `99e3de2` ([rectangular BF16 support](https://github.com/kvark/meganeura/pull/259)),
 with Blade `96c1dc7` and Naga `a97559b6`. BF16
 is permitted by the accelerated arithmetic contract, including explicitly
 declared mixed f32/BF16 storage. Strict still forbids it. Meganeura's `Auto`

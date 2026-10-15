@@ -118,7 +118,10 @@ jobs:
           python-version-file: .python-version
       - run: pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
       - run: pip install numpy coverage huggingface-hub==1.26.0
-      - run: cargo test --locked -p inferena-harness -p inferena-meganeura
+      # Independent builds must retain receipt precision without Cargo feature
+      # unification borrowing serde_json/float_roundtrip from another package.
+      - run: cargo test --locked -p inferena-harness
+      - run: cargo test --locked -p inferena-meganeura
       - run: python -m coverage run --source=frameworks/pytorch -m unittest discover -s frameworks/pytorch -p 'test_*.py'
       - run: python -m unittest discover -s scripts -p 'test_*.py'
       - run: python scripts/check_environment.py --backend cpu

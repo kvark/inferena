@@ -50,6 +50,23 @@ that still used the default method. Historical campaign versions remain readable
 and cannot be pooled with v27. Full five-model validation on both GPUs is still
 required; SmolVLA controls alone do not establish cohort readiness.
 
+Production-wrapper SmolLM2 preflights also pass all three phases and the full
+256-update real-text gate on both GPUs. XPU uses `TorchProfilerBenchmarker` and
+compiles in 89.598 seconds; CUDA retains `InductorBenchmarker` and compiles in
+52.772 seconds. Their inference/latency/training timings are
+4.344/1.776/12.587 ms and 2.944/1.639/8.838 ms, respectively. These remain
+single-process diagnostics in `xpu-benchmarker-integration`.
+
+The final standalone harness check catches a separate dependency declaration
+bug before collection: building the harness alone loses
+`serde_json/float_roundtrip`, changing a retained F64 probe-loss ratio by one ULP.
+Its existing exact-receipt test fails in that build. The combined harness/native
+build used for earlier collections already enables that feature through the
+native package, masking the missing declaration. The harness now inherits the
+workspace's explicit JSON feature, and CI tests the two crates separately.
+This preserves the original failed test and prepared source evidence; no v27
+cohort had started at that point.
+
 ## V26 full local collection (October 15, 2026)
 
 The frozen collection uses Inferena `a220bf3`, Meganeura `b344d49`, paired

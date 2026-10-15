@@ -5,6 +5,127 @@ post-OOM offline analysis separates inefficient resident kernels from
 weight-representation and memory-placement costs; it does not establish a
 removable barrier-cost percentage or contain new speed measurements.
 
+## V26 full local collection (October 15, 2026)
+
+The frozen collection uses Inferena `a220bf3`, Meganeura `b344d49`, paired
+protocol v26 and PyTorch runner v15. Both GPUs complete all five models,
+strict and accelerated, with three independent processes per condition:
+**60/60 publication cells, 180/180 phase checks and 20/20 repeated-gradient
+groups pass**. B570 takes 102.3 minutes and RTX 5070 takes 77.8 minutes.
+SmolLM2 uses declared F32 one-token latency and BF16 prefill/training. Native
+Auto selects no BF16 sessions, so these results do not establish a native BF16
+performance benefit. Numerical thresholds and search budgets are unchanged.
+
+The complete records, raw quality audit and comparison to frozen v22 are in
+`../inferena-results/accelerated-v26-20261015/`, especially `cohort.md`,
+`audit.json` and `quality-evidence.json`. The v22 SmolLM2 BF16 latency exclusions
+remain exclusions; a missing old cell cannot establish a speedup.
+
+Native Whisper accelerated inference/latency improve 11.0%/10.9% on B570 and
+5.6%/6.1% on RTX. B570 training is unchanged within 0.2%; RTX training improves
+3.5%. The selected search receipts confirm that formerly skipped layouts now
+receive timing comparisons. Every RTX phase in both profiles stays within the
+predeclared 5% regression limit. B570 has two remaining flags:
+
+| Engine and accelerated phase | v22 (ms) | v26 (ms) | Change |
+| --- | ---: | ---: | ---: |
+| Meganeura diffusion training | 11.499 | 12.149 | +5.66% |
+| PyTorch SmolVLA latency | 2.318 | 2.459 | +6.09% |
+
+These are medians of three process medians. They remain in the primary report;
+supplemental controls cannot replace them. The native diffusion processes select
+graph 2, graph 2 and graph 13, with held-out training times 12.149, 13.147 and
+11.476 ms. The second search reaches and qualifies graph 13, but its paired gain
+of 0.268 ms falls just below the unchanged 0.273 ms noise-aware acceptance bound.
+Its incumbent drifts from 10.270 ms when selected to 13.217 ms in the later
+comparison. Coverage alone therefore does not explain this flag.
+
+Three alternating old/new controls per engine are retained in
+`../inferena-results/slowdown-quality-20261014/v26-b570-diffusion-controls/` and
+`v26-b570-smolvla-pytorch-controls/`. Native controls retain full plans and
+40-second traces; PyTorch controls use each archived source, fresh compiler
+caches and the ordinary ten-second warmup. Both record clocks without changing
+power or frequency settings. Read-only clock matching alone cannot establish
+causality, and the older PyTorch controls lack v26's independent latency F32 gate.
+
+All six native controls pass the original-F32 and preserved cross-engine checks:
+
+| Diffusion control phase | Merged `99e3de2` (ms) | Fixed `b344d49` (ms) | Change |
+| --- | ---: | ---: | ---: |
+| Inference | 5.264 | 5.105 | -3.03% |
+| Latency | 4.855 | 5.650 | +16.39% |
+| Training | 11.443 | 11.653 | +1.84% |
+
+The training flag does not repeat at the 5% level. Old and fixed searches both
+select graphs 2 and 13, with differing private convolution kernel decisions;
+the graph label alone does not establish an identical program. The supplemental
+latency gap is retained too: the longer warmup reaches different clock states.
+Stable frequency bins present in at least two processes of each variant give
+old/new latency medians of 5.632/5.762 ms at 1,300 MHz and 4.860/4.981 ms at
+1,550 MHz (+2.31%/+2.48%). These warmup comparisons support clock variation as a
+contributor, but cannot substitute for the held-out observations or identify its
+driver/firmware cause. Training has no frequency with two processes of each
+variant, so its individual clock matches remain diagnostic. The original
+cohort's training flag remains visible; this study does not reproduce a
+consistent material regression from the search change.
+
+All six PyTorch controls pass their archived qualification policies:
+
+| SmolVLA control phase | v22 (ms) | v26 (ms) | Change |
+| --- | ---: | ---: | ---: |
+| Inference | 2.625 | 2.818 | +7.37% |
+| Latency | 2.314 | 2.282 | -1.40% |
+| Training | 7.287 | 7.467 | +2.48% |
+
+The original latency flag does not reproduce. All six generated latency modules,
+their launch methods and all 26 embedded Triton definitions have identical
+Python ASTs, including their numerical constants, decorators and compiler/launch
+settings. Only comments and source positions are removed, including those in
+embedded Triton source. `latency-code-identity.json` retains source hashes and
+the comparison method. This proves generated source identity, not identical
+driver machine code or runtime autotuner choices: the diagnostic archive did
+not retain `.zebin` or `.best_config` files. Latency varies within each source
+at the same observed 2,750 MHz, so clocks alone do not explain that variation.
+
+The **supplemental inference flag remains open**. It persists at the same observed
+2,750 MHz. Unlike latency, the generated inference plans differ across fresh
+processes, including within the same source revision: they contain 249, 265 or
+281 Triton calls alongside the same 115 `mm`, 32 `bmm` and one `addmm` calls.
+V26's second and third processes generate identical inference modules and run
+at 2.818 and 2.827 ms. V22 also has a slower 2.857 ms process, but its median is
+2.625 ms. This identifies compiler plan variability; it does not yet establish
+why the plans differ or rule out a source-dependent bias. The full primary
+cohort still has only the two original flags. Neither successful quality gates
+nor the disappearance of those flags in controls establishes universal absence
+of performance regressions. Further inference-plan controls are needed before
+closing performance readiness.
+
+The enclosing two-GPU supervisor reports a final native binary hash failure,
+although both device campaigns completed. Exact cached Cargo reproduction
+resolves this as a provenance bug: a combined harness/native build selects
+SHA-256 `51db385e736a7abcdf786fb627e7c1a2bbf3e93353216aceef29f536a01be41f`,
+whereas the native wrapper's single-package build selects
+`eee1fd3d672355a796db7076dbc122f5c0bd6e68c9d8144d34d601161c4ce60a`.
+The feature union adds `bitflags/std` only to the combined build. Both cached
+artifacts predate the collection; all 60 native wrapper invocations use the
+single-package recipe and show no compilation. The harness hash is unchanged.
+Per-process executable hashes were not originally captured; native identity is
+reconstructed from the wrapper logs, preserved Cargo fingerprints, clean frozen
+source and exact artifact reproduction. `binary-provenance-resolution.json`
+records this limitation and binds the audit evidence. The original failed
+supervisor states and initial source receipt remain unchanged.
+
+The collector repair prepares both build recipes before device probing,
+archives the wrapper-selected executables and checks their hashes around every
+pair and at campaign completion. A provenance failure keeps the campaign
+incomplete and withholds its publication timings. All 28 collector tests pass,
+including injected feature-union replacement and missing-binary failures and
+publication exclusion after a final provenance failure. Running the repaired
+build/archive helper against the frozen source selects byte-identical measured
+executables; `collector-provenance-check/result.json` records the proof. This
+repair changes collection metadata and build preparation, not timed binaries,
+quality thresholds or benchmark settings.
+
 ## Simpler SmolLM2 latency policy (October 15, 2026)
 
 The v25 attempt at `1787ddc` exposed avoidable cost in the FP16/F32 projection

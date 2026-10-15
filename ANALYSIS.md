@@ -5,6 +5,131 @@ post-OOM offline analysis separates inefficient resident kernels from
 weight-representation and memory-placement costs; it does not establish a
 removable barrier-cost percentage or contain new speed measurements.
 
+## V27 full local validation (October 15, 2026)
+
+The repaired accelerated profile passes the complete local matrix: **60/60
+publication cells, 180/180 phase checks and 20/20 repeated-gradient groups**.
+Both B570 and RTX 5070 run five models, strict and accelerated, with three fresh
+processes per condition. B570 takes 101.3 minutes and RTX 5070 takes 77.8 minutes.
+The frozen measurement source is Inferena `f587313`, Meganeura `b344d49`, paired
+protocol v27 and PyTorch runner v16. Later report-only commits do not change that
+measurement identity; use the frozen revision when extending this collection.
+
+Independent audits recompute the phase and repeated-gradient checks, accelerated
+loss/KL/learning arithmetic, and publication eligibility. They also verify all
+124 executable guards, archived binaries and source, input hashes, actual
+compiler benchmarkers, and the 20 empty initial model/profile kernel memos.
+Subsequent repeats reuse their declared native memo; PyTorch compiler caches are
+fresh per process, and driver cache state remains uncontrolled. There are 168
+constructed native sessions: Whisper uses its qualified forward session for
+both inference and latency. All 180 timed phase checks are still required.
+
+Evidence is in `../inferena-results/accelerated-v27-20261015-r2/`, especially
+`audit.json`, `quality-evidence.json`, `completion-evidence.json`, `cohort.md` and
+`summary-for-report.json`. The original records and separate v22/v26 comparisons
+are retained. No current phase median exceeds the 5% review threshold against
+the frozen v22 baseline. The previously excluded v22 SmolLM2 latency cells have
+no old timing and cannot establish speedups.
+
+The XPU profiler repair carries into the primary collection. B570 PyTorch
+SmolVLA inference/latency/training medians are **2.517/2.223/7.142 ms**, versus
+**2.584/2.459/7.304 ms** in v26: changes of **-2.58%/-9.58%/-2.22%**. Each
+phase's three process medians span less than 0.2%. These primary deltas are
+separate from the earlier alternating benchmarker controls below.
+
+The native search repair retains the Whisper improvement over merged `99e3de2`:
+
+| GPU | Phase | v22 (ms) | v27 (ms) | Change |
+| --- | --- | ---: | ---: | ---: |
+| B570 | Inference | 13.791 | 12.367 | -10.3% |
+| B570 | Latency | 13.798 | 12.301 | -10.8% |
+| B570 | Training | 61.823 | 61.417 | -0.7% |
+| RTX 5070 | Inference | 4.835 | 4.498 | -7.0% |
+| RTX 5070 | Latency | 4.868 | 4.523 | -7.1% |
+| RTX 5070 | Training | 23.840 | 23.023 | -3.4% |
+
+The separate v26 comparison retains two B570 native flags: accelerated diffusion
+inference **4.823 to 5.793 ms (+20.12%)**, and strict ResNet latency **5.460 to
+6.143 ms (+12.50%)**. Every comparable RTX phase stays below the review threshold against
+both baselines. The native executable is byte-identical between v26 and v27
+(using the v26 build-provenance reconstruction documented below);
+selected programs and operating clocks can still differ. These flags remain
+visible even though they do not appear against v22. Single-choice, qualified
+program-replay controls now complete the timing review below.
+
+### Native timing controls
+
+Both campaigns run the same native executable. Selected tuning receipts expose
+one changed convolution class in each flagged phase: diffusion changes its
+16-wide convolution's K stage from 16 to 32; ResNet changes a 32-wide, K16
+convolution from contiguous to interleaved columns. The latter class appears in
+five dispatches. The controls capture qualified programs, lock their complete
+execution plans, and change only those kernel fields. Actual pipeline keys
+confirm exactly one changed diffusion dispatch or five changed ResNet
+dispatches, with every other phase and dispatch identical between variants.
+
+Each variant runs in three fresh processes, alternating order. All **36 replay
+phase checks and six capture phase checks pass** against original F32. Every
+process also passes the retained strict PyTorch output/loss/gradient-norm
+comparison. Every replay preserves its complete supplied execution plan.
+The retained instrumented binary uses Meganeura `b344d49`; its native runner
+source matches `f587313` apart from trace
+and replay instrumentation. These diagnostics use 40 seconds of traced warmup
+and 20 held-out samples, so they remain separate from the primary 10-second
+warmup measurements. No clocks, power limits or primary samples are changed.
+
+| Controlled phase | v26 kernel choice (ms) | v27 kernel choice (ms) | Change |
+| --- | ---: | ---: | ---: |
+| Diffusion accelerated inference | 5.632 | 5.114 | -9.19% |
+| ResNet strict latency | 6.174 | 6.365 | +3.10% |
+
+These are medians of all three process medians. Diffusion process medians span
+5.000–5.640 ms with the earlier choice and 4.960–5.644 ms with the current one.
+At observed clocks repeated in at least two processes per variant, diffusion's
+warmup-trace differences are -0.92% at 1350 MHz, -1.14% at 1500 MHz and +0.26%
+at 2750 MHz. ResNet's are +1.27% at 2100 MHz and -0.85% at 2750 MHz.
+
+The same fixed diffusion program has stable one-second bins around 3.32 ms at
+2750 MHz and 5.78 ms at 1300 MHz. ResNet likewise moves from about 5.26 ms at
+2750 MHz to 6.37 ms at 2100 MHz. This exposes operating-state variation large
+enough to affect the cohort comparisons. Neither single-choice intervention
+reproduces its original slowdown. Clock matching uses warmup iterations,
+requires equal nonzero readings bracketing each complete bin and no throttle
+flag or sensor gap above 0.5 seconds, and remains observational. It supplies no
+frequency-normalized replacement timings or exact decomposition of the
+historical flags. The unchanged-phase controls stay within 1.74% in their
+process medians.
+
+The first diffusion capture selected a different attention layout for inference.
+Its qualified latency plan matches the intended layout and has identical
+inputs, parameters, buffers and original-F32 reference outputs; that plan is
+the common inference replay background. The initial identity-check failure is
+retained. A diagnostic reader also initially assumed that strict records carried
+the accelerated-only reference field; fixing the reader rechecks the completed
+ResNet capture. Neither GPU capture is repeated or selected by its timing.
+Evidence, original failures, source hashes, complete plans, per-step traces and
+the final independent audit are in
+`../inferena-results/slowdown-quality-20261014/v27-b570-native-choice-controls/`,
+especially `analysis.json` and `manifest.json`.
+
+The quality policy is unchanged. RTX search rejects 186 candidates under its
+existing numerical checks; B570 rejects 13 for scratch limits. All 186 RTX
+failures are the tighter search-anchor raw-output check, so the count must not
+be described as 186 failures of the broader language-model KL/loss contract.
+Every selected program passes its original-F32 gate. No native session selects
+BF16, so this collection establishes BF16 permission and qualified PyTorch AMP,
+not a native BF16 performance benefit. The 256-update real-text learning check
+applies to PyTorch SmolLM2; native training retains full-gradient qualification
+and the separate cross-engine convergence study. Other models' repeated
+synthetic updates are numerical checks, not real-data convergence evidence.
+
+The local profile is qualified and ready for collection under the frozen
+protocol, with the timing variability and both v26 flags retained. H100, M3 and
+the integrated GPUs still need their own runs; these results do not certify
+those devices or prove equivalence on untested data. Qualification and reference
+construction remain outside step timing, with their costs reported separately.
+There are still only two profiles and 30 pairs per GPU.
+
 ## XPU kernel autotuning repair (October 15, 2026)
 
 The fixed-configuration intervention below establishes that Triton launch
@@ -47,8 +172,8 @@ collector tests pass. New regression coverage checks that the wrapper overrides
 conflicting inherited settings before launching the runner, and that the
 collector rejects missing or wrong benchmarker receipts, including an XPU run
 that still used the default method. Historical campaign versions remain readable
-and cannot be pooled with v27. Full five-model validation on both GPUs is still
-required; SmolVLA controls alone do not establish cohort readiness.
+and cannot be pooled with v27. The full five-model validation above now passes
+on both GPUs; its separate native timing flags have qualified replay controls.
 
 Production-wrapper SmolLM2 preflights also pass all three phases and the full
 256-update real-text gate on both GPUs. XPU uses `TorchProfilerBenchmarker` and

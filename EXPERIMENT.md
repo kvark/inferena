@@ -21,15 +21,27 @@ numerical acceptance, final step timers and the two-profile matrix are unchanged
 
 ## Development v27: two profiles
 
-The full local v26 collection qualifies all 60 publication cells and 180 phase
-checks across B570 and RTX 5070. Two B570 timing flags remain in the primary
-report. Follow-up controls reproduce an 11.19% SmolVLA inference difference
-solely by changing PyTorch's selected Triton configurations under identical
-source and graph; these seeded-cache controls do not enter the cohort.
-The subsequent fresh-cache default/profiler comparison improves inference,
-latency and training by 8.98%, 9.84% and 7.06%, with all quality gates passing.
-The v27 implementation requires a fresh full local collection before readiness
-is claimed. See the [repair and controls](ANALYSIS.md#xpu-kernel-autotuning-repair-october-15-2026).
+The full local v27 collection from frozen Inferena `f587313` qualifies all
+60 publication cells, 180 phase checks and 20 repeated-gradient groups across
+B570 and RTX 5070. It takes 101.3 and 77.8 minutes, respectively. No phase median
+exceeds the 5% review threshold against v22. Two native B570 timing flags against
+the separate v26 baseline remain reported. Qualified single-choice replays
+give diffusion -9.19% and ResNet +3.10%, with repeated observed-clock matches
+within -1.14% to +1.27%; they expose substantial operating-state variation and
+do not replace the primary timings. Every RTX comparison is
+below the threshold against both baselines. Keep all original samples and
+protocols separate. Use the frozen measurement revision when extending this
+collection to other devices; later report-only commits are not its source ID.
+The local profile is qualified for collection; other devices still need their
+own runs. See the [full validation and limitations](ANALYSIS.md#v27-full-local-validation-october-15-2026).
+
+Same-source controls reproduce an 11.19% SmolVLA inference difference solely by
+changing PyTorch's selected Triton configurations. The subsequent fresh-cache
+default/profiler comparison improves inference, latency and training by 8.98%,
+9.84% and 7.06%, with all quality gates passing. These diagnostic controls never
+replace primary samples. In the new primary collection, B570 SmolVLA latency
+improves from 2.459 to 2.223 ms against v26, with all three processes agreeing
+within 0.2%. See the [repair and controls](ANALYSIS.md#xpu-kernel-autotuning-repair-october-15-2026).
 
 The wrapper resolves the actual backend during its interpreter preflight, then
 sets `TORCHINDUCTOR_USE_TORCH_PROFILER_BENCHMARKER=1` for XPU before starting the
@@ -91,8 +103,10 @@ budgets limit distribution/loss drift on the tested inputs; they do not establis
 identical generation or universal task accuracy. Non-language outputs and
 training scalar losses retain the full-tensor maximum/RMS bounds of
 `1e-6 + 0.02 * reference magnitude`.
-The existing, tighter within-search anchor check also remains. This catches
-precision errors that would be shared by the first reduced-precision program.
+The independent original-F32 check catches precision errors shared by the first
+reduced-precision program and its challengers. The existing, tighter
+within-search anchor check also remains and may reject a challenger even when
+it satisfies the broader language-model distribution/loss budget.
 Both the searched path and graph1 diagnostics enforce it before benchmark timing.
 The collector requires `native-f32-full-tensor-v2` evidence for every session.
 

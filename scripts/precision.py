@@ -18,10 +18,16 @@ def check_arithmetic_policy(record, expected):
 def check_forward_quality(forward, *, language_model=False, shape=None, require_pass=True):
     if forward["rtol"] != 0.02 or forward["atol"] != 1e-6 or forward["elements"] < 1:
         raise ValueError("wrong accelerated forward gate")
+    actual_shape = forward.get("output_shape")
+    if (not isinstance(actual_shape, list) or not actual_shape
+            or any(type(n) is not int or n <= 0 for n in actual_shape)
+            or math.prod(actual_shape) != forward["elements"]
+            or shape is not None and actual_shape != shape):
+        raise ValueError("accelerated quality covers the wrong output shape")
     for metric in ("rms", "max_abs"):
         error, bound = forward[f"{metric}_error"], forward[f"{metric}_bound"]
         if (not math.isfinite(error) or not math.isfinite(bound) or error < 0 or bound < 0
-                or not language_model and error > bound):
+                or require_pass and not language_model and error > bound):
             raise ValueError("failed accelerated forward gate claims success")
     if language_model:
         report = check_language_model_report(forward["language_model"], require_pass=require_pass)
@@ -58,22 +64,26 @@ def check_precision_qualification(record, *, diagnostic=False):
     shape = record["outputs"]["output_shape"]
     check_forward_quality(gate["forward"], language_model=language_model, shape=shape)
     latency_status = "pass"
-    if language_model:
-        latency = gate["latency_forward"]
-        if latency.get("status") == "failed":
-            latency_status = "failed"
-            failure = latency["failure"]
-            if (failure.get("kind") != "numerical" or not failure.get("message")
-                    or record["timings"].get("latency_ms") is not None
-                    or record["timing_samples_ms"].get("latency") is not None
-                    or record["status"] != "partial" or execution.get("latency_precision_failure") != latency):
-                raise ValueError("failed accelerated latency supplies timing or lacks its failure receipt")
-            if "metrics" in failure:
-                check_forward_quality(failure["metrics"], language_model=True, shape=[1, 1, shape[-1]], require_pass=False)
-                if failure["metrics"]["language_model"]["status"] != "failed":
-                    raise ValueError("latency failure disagrees with quality evidence")
-        else:
-            check_forward_quality(latency, language_model=True, shape=[1, 1, shape[-1]])
+    latency_shape = ([1, 1, shape[-1]] if language_model or record["model"] == "SmolVLA"
+                     else [1, shape[-1]] if record["model"] == "ResNet-50" else shape)
+    latency = gate["latency_forward"]
+    if latency.get("status") == "failed":
+        latency_status = "failed"
+        failure = latency["failure"]
+        if (failure.get("kind") != "numerical" or not failure.get("message")
+                or record["timings"].get("latency_ms") is not None
+                or record["timing_samples_ms"].get("latency") is not None
+                or record["status"] != "partial" or execution.get("latency_precision_failure") != latency):
+            raise ValueError("failed accelerated latency supplies timing or lacks its failure receipt")
+        if "metrics" in failure:
+            metrics = failure["metrics"]
+            check_forward_quality(metrics, language_model=language_model, shape=latency_shape, require_pass=False)
+            failed = (metrics["language_model"]["status"] == "failed" if language_model else
+                      any(metrics[f"{kind}_error"] > metrics[f"{kind}_bound"] for kind in ("rms", "max_abs")))
+            if not failed:
+                raise ValueError("latency failure disagrees with quality evidence")
+    else:
+        check_forward_quality(latency, language_model=language_model, shape=latency_shape)
     training = record["protocol"]["training_requested"]
     request = record["protocol"].get("training_gate")
     if request not in ("auto", "repeated-synthetic"):

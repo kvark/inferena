@@ -26,7 +26,7 @@ class QualityTest(unittest.TestCase):
             language_model_report([math.nan], [1.0], [1.0], 2)
 
     def test_tensor_failure_is_only_diagnostic_for_language_models(self):
-        report = dict(elements=2, rtol=0.02, atol=1e-6, rms_error=10.0, rms_bound=0.02,
+        report = dict(elements=2, output_shape=[1, 1, 2], rtol=0.02, atol=1e-6, rms_error=10.0, rms_bound=0.02,
                       max_abs_error=10.0, max_abs_bound=0.02, raw_logits_role="diagnostic",
                       language_model=language_model_report([0.0], [1.0], [1.0], 2))
         check_forward_quality(report, language_model=True, shape=[1, 1, 2])

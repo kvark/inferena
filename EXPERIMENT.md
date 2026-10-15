@@ -1,6 +1,6 @@
 # P3HPC paired collection
 
-The development collector uses **v24**, with exactly two profiles: `strict`
+The development collector uses **v25**, with exactly two profiles: `strict`
 and `accelerated` (practical). The October 11 cohort below remains frozen at
 **v18**. V19 introduced AMP; v20 changed accelerated training qualification.
 V21 adds a native F32 arithmetic reference and refreshes search inputs to match
@@ -8,10 +8,12 @@ measurement. V22 applies language-model distribution/loss gates and removes the
 additional curve-L2 veto. V23 introduced a model-specific SmolLM2 autocast recipe
 and fixed native search coverage. Its full-model FP16 trial was stopped before
 collection completed because it unnecessarily slowed already-qualified training.
-V24 restricts the FP16/F32 recipe to one-token latency. No quality threshold changes.
+V24 restricts the FP16/F32 recipe to one-token latency. V25 also checks each
+non-language latency workload against F32, including ResNet's smaller batch and
+SmolVLA's shorter action sequence. No quality threshold changes.
 Keep these protocols' records separate.
 
-## Development v24: two profiles
+## Development v25: two profiles
 
 The current native pin is Meganeura `b344d49` on `fix/search-program-identity`
 ([PR #260](https://github.com/kvark/meganeura/pull/260)),
@@ -99,12 +101,19 @@ Both changes retain the 30-second, 16-graph and 64-program limits and all existi
 candidate correctness gates.
 
 Every accelerated PyTorch setting, **including `off`/TF32**, now has the same
-untimed forward and training qualification. SmolLM2 uses the distribution/loss
+untimed inference, latency and training qualification. SmolLM2 uses the distribution/loss
 contract above for both prefill and one-token latency; other outputs retain their
 full-tensor bounds. The eager strict-f32
-oracle runs before candidate compilation with TF32 disabled, then restores
+oracle runs both forward workloads before candidate compilation with TF32 disabled, then restores
 weights, buffers, RNG and arithmetic flags. Its initial output/loss/gradient
 receipt remains the cross-engine correctness reference.
+Compilation, qualification and timing share one latency input definition:
+one token for SmolLM2, a zero image at batch one for ResNet, one action position
+with all 16 VLM context positions for SmolVLA, and the ordinary inference inputs
+for diffusion and Whisper. The collector requires separate latency quality
+evidence and verifies its output shape. Replay agreement with the same AMP
+computation cannot replace the F32 comparison. The extra eager forward and
+candidate check are untimed and included in recorded preparation costs.
 
 For **SmolLM2-135M**, training qualification uses the frozen
 [data/smollm2-real-text-v1.json](data/smollm2-real-text-v1.json) fixture:

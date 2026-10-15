@@ -324,7 +324,7 @@ def forward_quality(actual, reference, labels=None):
     import numpy as np
     a, r = actual.numpy(), reference.numpy()
     error = a.astype(np.float64) - r
-    report = {"elements": actual.numel(), "rtol": FORWARD_RTOL, "atol": CURVE_ATOL,
+    report = {"elements": actual.numel(), "output_shape": list(actual.shape), "rtol": FORWARD_RTOL, "atol": CURVE_ATOL,
               "rms_error": float(np.sqrt(np.mean(error * error))),
               "rms_bound": CURVE_ATOL + FORWARD_RTOL * float(np.sqrt(np.mean(np.square(r, dtype=np.float64)))),
               "max_abs_error": float(np.abs(error).max()),
@@ -371,13 +371,16 @@ def qualify(model, candidate, forward, loss_fn, inputs, policy, *, training=True
         report = {"status": "pass", "forward": forward_report, "training": None,
                   "reference": "eager strict f32", "candidate": "requested execution mode",
                   "scope": "untimed full-output and declared SGD workload; state restored"}
-        if language_model:
-            if latency_inputs is None or "latency_output" not in prepared:
-                raise QualificationError("missing language-model latency reference")
+        if language_model and latency_inputs is None:
+            raise QualificationError("missing language-model latency inputs")
+        if latency_inputs is not None:
+            if "latency_output" not in prepared:
+                raise QualificationError("missing latency F32 reference")
             try:
                 with torch.no_grad(), (latency_policy or policy).context():
                     actual_latency = forward(candidate, latency_inputs)
-                report["latency_forward"] = forward_quality(actual_latency, prepared["latency_output"], latency_inputs["labels"])
+                report["latency_forward"] = forward_quality(actual_latency, prepared["latency_output"],
+                                                            latency_inputs["labels"] if language_model else None)
             except QualificationError as error:
                 report["status"] = "partial"
                 report["latency_forward"] = {"status": "failed", "failure": error.details}

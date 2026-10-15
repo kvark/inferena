@@ -11,6 +11,69 @@ from execution import QualificationError, compare_tensors
 
 
 class AmpTest(unittest.TestCase):
+    def test_non_language_latency_error_is_excluded_without_losing_other_phases(self):
+        from contextlib import redirect_stdout
+        import copy
+        import io
+        import json
+        from bench import _bench
+        from precision import check_precision_qualification
+
+        class Model(torch.nn.Module):
+            def __init__(self, kind):
+                super().__init__()
+                self.kind = kind
+                self.projection = torch.nn.Linear(3, 2)
+                with torch.no_grad():
+                    self.projection.weight.fill_(.125)
+                    self.projection.bias.fill_(.25)
+
+            def forward(self, images=None, noisy_actions=None, timestep=None, vlm_kv=None):
+                values = images.mean((-2, -1)) if self.kind == "resnet" else noisy_actions
+                output = self.projection(values)
+                if values.shape[-2] == 1 and torch.is_autocast_enabled("cpu"):
+                    output = output + 1
+                return output
+
+        def measure(fn, *_, before=None):
+            if before is not None:
+                before()
+            return fn(), [1.0] * 20, {"runs": 5, "seconds": 10.0}
+
+        env = {"INFERENA_AUTOCAST": "bf16", "INFERENA_STRICT": "0",
+               "INFERENA_TORCH_MODE": "eager", "INFERENA_GRAPH_REPLAY": "0"}
+        for name, kind, inputs in [
+                ("ResNet-50", "resnet", dict(images=torch.ones(4, 3, 2, 2), labels=torch.zeros(4, dtype=torch.long))),
+                ("SmolVLA", "smolvla", dict(noisy_actions=torch.ones(1, 4, 3),
+                                          timestep=torch.zeros(1, 1, 3), vlm_kv=torch.ones(1, 16, 3)))]:
+            with self.subTest(model=name), patch.dict(os.environ, env), \
+                    patch("bench.load_model", return_value=Model(kind)), \
+                    patch("bench.prepare_inputs", return_value=inputs), \
+                    patch("bench._measure_call", side_effect=measure):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    _bench(name, {"type": kind}, "cpu", None)
+                record = json.loads(output.getvalue())
+                self.assertEqual(record["status"], "partial")
+                self.assertEqual(check_precision_qualification(record),
+                                 {"inference": "pass", "latency": "failed", "training": "pass"})
+                self.assertIsNone(record["timings"]["latency_ms"])
+                self.assertIsNone(record["timing_samples_ms"]["latency"])
+                self.assertEqual(len(record["timing_samples_ms"]["inference"]), 20)
+                self.assertEqual(len(record["timing_samples_ms"]["training"]), 20)
+                forged = copy.deepcopy(record)
+                forged["timings"]["latency_ms"] = 1.0
+                with self.assertRaisesRegex(ValueError, "latency supplies timing"):
+                    check_precision_qualification(forged)
+                forged = copy.deepcopy(record)
+                gate = forged["execution"]["precision_qualification"]
+                gate["latency_forward"] = copy.deepcopy(gate["forward"])
+                with self.assertRaisesRegex(ValueError, "wrong output shape"):
+                    check_precision_qualification(forged)
+                del gate["latency_forward"]
+                with self.assertRaises(KeyError):
+                    check_precision_qualification(forged)
+
     def test_bad_latency_keeps_qualified_prefill_and_training(self):
         from contextlib import redirect_stdout
         from types import SimpleNamespace
@@ -356,7 +419,7 @@ class AmpTest(unittest.TestCase):
                 _bench("test", {"type": "whisper"}, "cpu", None)
             record = json.loads(output.getvalue())
         self.assertEqual(record["status"], "ok")
-        self.assertEqual(record["protocol"]["name"], "inferena-graph-replay-v13")
+        self.assertEqual(record["protocol"]["name"], "inferena-graph-replay-v14")
         self.assertEqual(record["precision"]["comparison_class"], "accelerated")
         self.assertEqual(record["correctness_reference"]["precision"], "strict-f32")
         self.assertIsNotNone(record["correctness_reference"]["outputs"]["grad_norm"])

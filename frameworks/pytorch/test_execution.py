@@ -445,7 +445,7 @@ class CampaignTest(unittest.TestCase):
             } for mode in ("Inference", "Training")],
         }}
         pt = {**copy.deepcopy(base), "framework": "pytorch", "backend": "CUDA",
-              "protocol": {**copy.deepcopy(base["protocol"]), "name": "inferena-graph-replay-v13"},
+              "protocol": {**copy.deepcopy(base["protocol"]), "name": "inferena-graph-replay-v14"},
               "torch_version": TORCH_VERSION,
               "environment": {"torch_git_version": TORCH_REVISION, "python_version": PYTHON_VERSION,
                               "triton_backend": "nvidia"},

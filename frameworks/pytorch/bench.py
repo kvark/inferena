@@ -983,28 +983,28 @@ def _benchmark_loss(model_type: str, outputs, inputs: dict):
     )
 
 
-def _benchmark_latency_call(model_type: str, model, inputs: dict, dev: str):
+def prepare_latency_inputs(model_type: str, model, inputs: dict, dev: str):
+    """One workload definition shared by compilation, F32 checks and timing."""
     if model_type == "causal_lm":
-        token = torch.tensor([[0]], device=dev, dtype=torch.long)
-        mask = torch.ones(1, 1, dtype=torch.long, device=dev)
-        return lambda: model(input_ids=token, attention_mask=mask, use_cache=False)
+        return prepare_inputs(model_type, model, dev, seq_len=1)
     if model_type == "resnet":
-        image = torch.zeros(1, 3, 224, 224, device=dev, dtype=torch.float32)
-        return lambda: model(image)
-    if model_type == "sd_unet":
-        return lambda: _sd_forward(model, inputs)
+        return {"images": torch.zeros(1, 3, 224, 224, device=dev, dtype=torch.float32)}
     if model_type == "smolvla":
-        latency_inputs = {
+        return {
             "noisy_actions": inputs["noisy_actions"][:, :1],
             "timestep": inputs["timestep"],
             # Keep all 16 VLM context positions. Slicing every tensor to one
             # position (the legacy runner's behavior) changed the workload.
             "vlm_kv": inputs["vlm_kv"],
         }
-        return lambda: model(**latency_inputs)
-    if model_type == "whisper":
-        return lambda: model(inputs["input_features"])
+    if model_type in ("sd_unet", "whisper"):
+        return inputs
     raise AssertionError(f"no latency workload for {model_type}")
+
+
+def _benchmark_latency_call(model_type: str, model, inputs: dict, dev: str):
+    latency_inputs = prepare_latency_inputs(model_type, model, inputs, dev)
+    return lambda: _benchmark_forward(model_type, model, latency_inputs)
 
 
 def _quantile(samples, q):
@@ -1546,14 +1546,16 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
     oracle_seconds = 0.0
     if not strict:
         started = time.perf_counter()
+        reference_inputs = prepare_inputs(model_type, eager_model, dev)
         precision_reference = prepare_reference(
             eager_model,
             lambda current, batch: _benchmark_logits(model_type, _benchmark_forward(model_type, current, batch)),
             lambda output, batch: _benchmark_loss(model_type, output, batch),
-            prepare_inputs(model_type, eager_model, dev), amp, training=training_requested,
+            reference_inputs, amp, training=training_requested,
             snapshot=lambda *args: correctness_snapshot(model_type, *args), plan=gate_plan,
-            latency_inputs=prepare_inputs(model_type, eager_model, dev, seq_len=1) if model_type == "causal_lm" else None,
+            latency_inputs=prepare_latency_inputs(model_type, eager_model, reference_inputs, dev),
         )
+        del reference_inputs
         oracle_seconds = time.perf_counter() - started
         precision_reference["correctness_reference"]["prepared_before_candidate_compilation"] = True
     compile_s = 0.0
@@ -1608,7 +1610,7 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
                     reference=precision_reference, plan=gate_plan,
                     language_model=model_type == "causal_lm",
                     latency_policy=latency_amp,
-                    latency_inputs=prepare_inputs(model_type, eager_model, dev, seq_len=1) if model_type == "causal_lm" else None,
+                    latency_inputs=prepare_latency_inputs(model_type, model, inputs, dev),
                 )
         except QualificationError as error:
             error.details["elapsed_seconds"] = time.perf_counter() - qualification_started

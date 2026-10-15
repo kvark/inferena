@@ -91,7 +91,7 @@ class TrainingGateTest(unittest.TestCase):
                          "training_requested": True, "prepared_before_candidate_compilation": True},
                   "timings": {"training_ms": 1.0}, "timing_samples_ms": {"training": [1.0] * 20},
                   "execution": {"precision_qualification": {"status": "pass", "reference": "eager strict f32",
-                         "forward": {"rtol": 0.02, "atol": 1e-6, "elements": 2, "raw_logits_role": "diagnostic",
+                         "forward": {"rtol": 0.02, "atol": 1e-6, "elements": 2, "output_shape": [1, 1, 2], "raw_logits_role": "diagnostic",
                                      "language_model": language_model_report([0.0], [1.0], [1.0], 2), "rms_error": 0.0,
                                      "rms_bound": 0.02, "max_abs_error": 0.0, "max_abs_bound": 0.02}, "training": curve}}}
         gate = record["execution"]["precision_qualification"]

@@ -5,6 +5,43 @@ post-OOM offline analysis separates inefficient resident kernels from
 weight-representation and memory-placement costs; it does not establish a
 removable barrier-cost percentage or contain new speed measurements.
 
+## Accelerated latency coverage audit (October 15, 2026)
+
+The v24 collection at `d501a36` was stopped after eight completed B570 pairs.
+The first accelerated pass passed the existing checks for all five models, but
+an independent receipt audit found that those checks did not cover every latency
+shape. PyTorch compared the full ResNet batch and SmolVLA action sequence against
+F32; their batch-one and one-action latency workloads only had same-arithmetic
+replay checks. Native sessions already checked their separate latency programs.
+
+A CPU reproducer makes only the smaller-shape output incorrect. Before the fix,
+both ResNet and SmolVLA runner records incorrectly report success. The regression
+test now excludes latency timings while retaining qualified inference and
+training. Compilation, F32 qualification and timing share the latency input
+definition. The collector requires a separate receipt and checks its output
+shape, preventing an inference receipt from qualifying a different workload.
+All numerical thresholds and arithmetic recipes remain unchanged.
+
+The stopped collection and reproducer are retained in
+`../inferena-results/accelerated-v24-20261014-r2/`; its partial observations are
+diagnostics, not cohort results. This coverage correction requires fresh
+collection under paired protocol v25 / PyTorch runner v14. Native search and
+its `b344d49` pin remain unchanged. For non-language models it adds two forward
+checks per accelerated process, outside step timing, without another column or
+a larger search budget. The failing-before/passing-after CPU regression covers
+both affected shapes. All 40 Python runner tests pass on each GPU; all 26
+collector tests, the Rust harness/native suites, scoped formatting and the locked
+release build pass.
+
+Production preflights for ResNet and SmolVLA pass inference, latency, training and
+replay checks on both B570 and RTX 5070. Each uses automatic BF16, a fresh compiler
+cache, the 120-second compilation limit, ten-second phase warmup and 20 samples.
+The new latency comparisons cover `[1, 1000]` and `[1, 1, 32]` respectively; the
+largest maximum/RMS error uses 31% of its unchanged bound. Compilation takes
+19.6–54.8 seconds. These four standalone preflights are in
+`../inferena-results/slowdown-quality-20261014/qualify-latency-coverage-{xpu,cuda}`;
+they establish coverage and numerical behavior, not replicated cohort performance.
+
 ## Search slowdown and accelerated recipe (October 14, 2026)
 
 The v22 failures are retained unchanged. This investigation keeps all v22

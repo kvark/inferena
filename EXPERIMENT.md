@@ -1,6 +1,6 @@
 # P3HPC paired collection
 
-The development collector uses **v25**, with exactly two profiles: `strict`
+The development collector uses **v26**, with exactly two profiles: `strict`
 and `accelerated` (practical). The October 11 cohort below remains frozen at
 **v18**. V19 introduced AMP; v20 changed accelerated training qualification.
 V21 adds a native F32 arithmetic reference and refreshes search inputs to match
@@ -11,9 +11,11 @@ collection completed because it unnecessarily slowed already-qualified training.
 V24 restricts the FP16/F32 recipe to one-token latency. V25 also checks each
 non-language latency workload against F32, including ResNet's smaller batch and
 SmolVLA's shorter action sequence. No quality threshold changes.
-Keep these protocols' records separate.
+V26 replaces the one-token FP16/F32 wrapper with ordinary F32, retaining the
+capability-selected dtype for prefill and training. Keep these protocols' records
+separate.
 
-## Development v25: two profiles
+## Development v26: two profiles
 
 The current native pin is Meganeura `b344d49` on `fix/search-program-identity`
 ([PR #260](https://github.com/kvark/meganeura/pull/260)),
@@ -29,17 +31,14 @@ collection or change its budgets. See the
 Strict retains its f32 arithmetic and correctness contract. Accelerated permits
 AMP and bf16/fp16 arithmetic alongside existing hardware paths. PyTorch's
 `--autocast auto` selects native bf16 on CUDA/HIP/XPU when supported and fp16
-otherwise; MPS uses fp16. **SmolLM2-135M one-token latency** instead uses FP16 with
-the seven linear projections in the final decoder block kept in F32. Prefill and
+otherwise; MPS uses fp16. **SmolLM2-135M one-token latency** instead uses ordinary
+F32 with TF32 disabled. F32 is faster on both local GPUs than the qualified
+FP16/F32 projection-wrapper recipe, so that wrapper has been removed. Prefill and
 training keep the capability-selected dtype, including their original backward
-arithmetic. The frozen boundary is recorded as
-`one-token-final-decoder-linears-f32-v1`, with every module path and its latency
-scope. The projection inputs have shape `[batch, sequence, features]`; the F32
-boundary applies only when sequence length is one. Attention operations outside
-those projections still follow autocast. This branch specializes during budgeted
-compilation. The same F32 master parameters and state names are preserved.
-`--autocast bf16`, `fp16` or `off` explicitly requests ordinary autocast without
-the model boundary; `off` permits TF32/backend-high arithmetic.
+arithmetic. The manifest records this as `model-phase-policy-v4`, with explicit
+per-phase autocast and no module rewriting. Accelerated permits reduced precision;
+it does not require it. `--autocast bf16`, `fp16` or `off` explicitly requests
+ordinary autocast; `off` permits TF32/backend-high arithmetic.
 Selection happens before execution
 and never changes in response to a failed gate or a slow result. Strict and
 the graphics-only CPU oracle remain f32. The manifest declares each model's

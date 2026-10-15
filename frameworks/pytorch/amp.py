@@ -9,7 +9,7 @@ import sys
 import torch
 
 from execution import QualificationError
-from model_precision import AUTOCAST_SELECTION, SMOLLM2_LAYERS, guard_modules, latency_autocast, model_guard
+from model_precision import AUTOCAST_SELECTION, latency_autocast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from training_gate import (REAL_TEXT, CURVE_POLICY, CURVE_ATOL,
@@ -42,11 +42,9 @@ def precision_policy(device, requested, model_name, *, strict=False):
     """Resolve and declare every autocast exception without loading weights."""
     dtype = resolve_autocast(device, requested, strict=strict)
     latency_dtype = latency_autocast(model_name, requested, dtype)
-    guard = model_guard(model_name, requested, latency_dtype)
-    paths = guard_modules(SMOLLM2_LAYERS) if guard is not None else []
     return dict(autocast_requested=requested, autocast=dtype or None,
-                autocast_selection=AUTOCAST_SELECTION, model_guard=guard, f32_linear_modules=paths,
-                model_guard_phases=["latency"] if guard else [],
+                autocast_selection=AUTOCAST_SELECTION, model_guard=None, f32_linear_modules=[],
+                model_guard_phases=[],
                 phase_autocast=dict(inference=dtype or None, training=dtype or None, latency=latency_dtype or None))
 
 

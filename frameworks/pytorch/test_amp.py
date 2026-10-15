@@ -180,11 +180,10 @@ class AmpTest(unittest.TestCase):
                     stack.enter_context(patch.object(getattr(torch, device), "is_bf16_supported", return_value=True))
                 policy = precision_policy(device, "auto", "SmolLM2-135M")
                 default = "fp16" if device == "mps" else "bf16"
-                self.assertEqual(policy["phase_autocast"], dict(inference=default, training=default, latency="fp16"))
-                self.assertEqual(policy["model_guard"], "one-token-final-decoder-linears-f32-v1")
-                self.assertEqual(policy["model_guard_phases"], ["latency"])
-                self.assertEqual(len(policy["f32_linear_modules"]), 7)
-                self.assertTrue(all(p.startswith("model.layers.29.") for p in policy["f32_linear_modules"]))
+                self.assertEqual(policy["phase_autocast"], dict(inference=default, training=default, latency=None))
+                self.assertIsNone(policy["model_guard"])
+                self.assertEqual(policy["model_guard_phases"], [])
+                self.assertEqual(policy["f32_linear_modules"], [])
                 for requested, dtype in (("bf16", "bf16"), ("fp16", "fp16"), ("off", None)):
                     explicit = precision_policy(device, requested, "SmolLM2-135M")
                     self.assertEqual(explicit["autocast"], dtype)
@@ -212,14 +211,16 @@ class AmpTest(unittest.TestCase):
             return dict(x=torch.ones(1, tokens, 4), labels=torch.zeros(1, tokens, dtype=torch.long))
         def loss(output, inputs):
             return torch.nn.functional.cross_entropy(output.float().reshape(-1, 4), inputs["labels"].reshape(-1))
-        with patch.dict(os.environ, {"INFERENA_STRICT": "0"}):
-            result = qualify(model, model, forward, loss, batch(2), AmpPolicy("cpu", "bf16"),
-                             training=False, language_model=True, latency_inputs=batch(1),
-                             latency_policy=AmpPolicy("cpu", "fp16"))
-        self.assertEqual(result["status"], "pass")
-        self.assertIn((2, torch.bfloat16), calls)
-        self.assertIn((1, torch.float16), calls)
-        self.assertNotIn((1, torch.bfloat16), calls)
+        for name, expected in (("fp16", torch.float16), ("", None)):
+            calls.clear()
+            with self.subTest(latency=name or "f32"), patch.dict(os.environ, {"INFERENA_STRICT": "0"}):
+                result = qualify(model, model, forward, loss, batch(2), AmpPolicy("cpu", "bf16"),
+                                 training=False, language_model=True, latency_inputs=batch(1),
+                                 latency_policy=AmpPolicy("cpu", name))
+            self.assertEqual(result["status"], "pass")
+            self.assertIn((2, torch.bfloat16), calls)
+            self.assertIn((1, expected), calls)
+            self.assertNotIn((1, torch.bfloat16), calls)
 
     def test_scaled_backward_recovers_small_gradients_without_updating_weights(self):
         with patch.dict(os.environ, {"INFERENA_STRICT": "0"}):
@@ -419,7 +420,7 @@ class AmpTest(unittest.TestCase):
                 _bench("test", {"type": "whisper"}, "cpu", None)
             record = json.loads(output.getvalue())
         self.assertEqual(record["status"], "ok")
-        self.assertEqual(record["protocol"]["name"], "inferena-graph-replay-v14")
+        self.assertEqual(record["protocol"]["name"], "inferena-graph-replay-v15")
         self.assertEqual(record["precision"]["comparison_class"], "accelerated")
         self.assertEqual(record["correctness_reference"]["precision"], "strict-f32")
         self.assertIsNotNone(record["correctness_reference"]["outputs"]["grad_norm"])

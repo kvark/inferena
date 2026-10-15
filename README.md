@@ -112,8 +112,9 @@ Precision is part of every result:
 - The default is the practical **accelerated** configuration. It permits AMP,
   bf16/fp16 storage and arithmetic, and hardware acceleration, subject to the
   recorded numerical gates. PyTorch uses native bf16 when supported, otherwise
-  fp16. Its frozen `auto` recipe uses fp16 with F32 final-decoder projections for
-  SmolLM2-135M one-token latency; prefill and training retain the default dtype.
+  fp16. Its frozen `auto` recipe uses F32 for SmolLM2-135M one-token latency,
+  which is faster than the qualified FP16/F32 projection-wrapper recipe on both
+  local GPUs; prefill and training retain the default dtype.
   FP16 training uses gradient scaling.
   Meganeura's default `Auto` path keeps f32 storage and permits eligible f16
   cooperative inputs. Its explicit BF16 path is available for qualification
@@ -143,7 +144,7 @@ curve L2 is diagnostic. Non-language outputs retain the tensor-fidelity gate.
 Graph replay includes forward/loss/scaled backward; scaler housekeeping runs
 after replay inside the measured step.
 
-The development collection protocol is **v25**, still 30 pairs per GPU.
+The development collection protocol is **v26**, still 30 pairs per GPU.
 PyTorch qualifies both inference and latency against F32, including the smaller
 ResNet batch and shorter SmolVLA action sequence. Each receipt records the checked
 output shape; failed latency leaves its timings empty.
@@ -153,7 +154,7 @@ reference preparation time, recorded in `compile_s`, before the 30-second search
 Search refreshes inputs before each step to match benchmark execution.
 `scripts/amp_reference.py` provides optional dtype and `--repeated-batch`
 diagnostics; `scripts/convergence.py` separately compares both engines on real
-text. See the [current protocol](EXPERIMENT.md#development-v25-two-profiles).
+text. See the [current protocol](EXPERIMENT.md#development-v26-two-profiles).
 The completed October 11 v18 cohort retains its frozen source and arithmetic
 policy. Keep its records separate from the new qualification protocol.
 

@@ -5,6 +5,53 @@ post-OOM offline analysis separates inefficient resident kernels from
 weight-representation and memory-placement costs; it does not establish a
 removable barrier-cost percentage or contain new speed measurements.
 
+## Simpler SmolLM2 latency policy (October 15, 2026)
+
+The v25 attempt at `1787ddc` exposed avoidable cost in the FP16/F32 projection
+wrapper. Its first B570 SmolLM2 strict one-token result is 1.802 ms, versus
+2.857 ms for the accelerated wrapper, with the same source and hardware.
+The prior RTX strict median is 1.644 ms, versus 1.937 ms in the qualified wrapper
+preflight. Accelerated permits reduced precision; it need not require it when
+F32 is faster and passes the same quality contract.
+
+V26 therefore declares F32 for SmolLM2-135M one-token latency, with TF32 disabled,
+and retains capability-selected BF16 for prefill and training on these GPUs.
+It removes all projection wrappers and architecture-specific module paths.
+Explicit dtype requests remain unchanged. The recipe is frozen before execution;
+there is no retry after failed qualification and no quality threshold change.
+The paired protocol is v26 and the shared PyTorch runner protocol is v15.
+
+The v25 collection was stopped after seven completed B570 pairs and an interrupted
+eighth pair; RTX had not started. It is retained in
+`../inferena-results/accelerated-v25-20261015/` as incomplete diagnostic evidence.
+Its first accelerated pass qualifies all 15 phases, and native Whisper inference
+and latency improve about 10% versus v22. B570 SmolVLA latency in both engines and
+native diffusion training each show roughly 10% slower first-repeat timings.
+These need replicated confirmation and, if persistent, matched controls before
+claiming regression clearance. Their selected graph descriptions alone do not
+establish identical plans or explain their performance.
+
+Both Python runner suites pass 38 tests, the collector suite passes 26 tests,
+and the Rust harness/native suites, scoped formatting and locked release build
+pass after removing the obsolete wrapper tests. The regression tests retain
+independent latency autocast checks and reject undeclared phase arithmetic.
+
+Production preflights pass inference, latency, graph replay and all 256 matched
+real-text updates on both GPUs, with the same 120-second compile limit, fresh
+compiler cache, ten-second phase warmup and twenty samples:
+
+| GPU | Prefill (ms) | One-token latency (ms) | Training (ms) | Compilation (s) |
+| --- | ---: | ---: | ---: | ---: |
+| B570 | 4.453 | 1.813 | 12.639 | 90.64 |
+| RTX 5070 | 2.934 | 1.640 | 8.835 | 53.30 |
+
+One-token mean KL is `5.44e-11` / `1.26e-11`, against the unchanged `ln(1.01)`
+limit. B570 reference preparation and precision qualification take 18.66 and
+9.35 seconds, separate from compilation and step timing. Evidence and archived
+source are in `../inferena-results/slowdown-quality-20261014/qualify-f32-latency-{xpu,cuda}`.
+These are single-process preflights; the new full collection must establish
+replicated qualification and performance before readiness is claimed.
+
 ## Accelerated latency coverage audit (October 15, 2026)
 
 The v24 collection at `d501a36` was stopped after eight completed B570 pairs.

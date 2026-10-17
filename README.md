@@ -259,15 +259,15 @@ For a standalone comparison, install
 
 ```bash
 bash scripts/setup.sh cu130                 # or rocm7.2, xpu, mps, cpu
-source .venv-p3hpc/bin/activate
+source .venv/bin/activate
 python scripts/prepare_models.py SmolLM2-135M
 ./run.sh -f pytorch,meganeura
 ```
 
 On Windows, use `scripts/setup.ps1 cu130` (or `xpu`, `cpu`) from PowerShell,
-then `.venv-p3hpc/Scripts/python.exe scripts/prepare_models.py SmolLM2-135M`.
+then `.venv/Scripts/python.exe scripts/prepare_models.py SmolLM2-135M`.
 Run `bash run.sh -f pytorch,meganeura` through Git Bash. The wrapper finds
-`.venv-p3hpc` or `.venv`; an explicit `PYTHON` takes precedence.
+`.venv`; an explicit `PYTHON` takes precedence.
 Setup refuses to overwrite an existing environment. Pass a new path as its
 second argument to keep multiple vendor environments. Drivers and SDKs remain
 system prerequisites.
@@ -292,16 +292,16 @@ For the paired P3HPC campaign, install [uv](https://docs.astral.sh/uv/getting-st
 once, then let the setup script install Python and the pinned requirements:
 
 ```bash
-bash scripts/setup.sh cu130                 # new .venv-p3hpc; Python downloaded automatically
+bash scripts/setup.sh cu130                 # new .venv; Python downloaded automatically
 # Other wheel backends: xpu, rocm7.2, cpu; mps uses the macOS PyPI wheel.
-.venv-p3hpc/bin/python scripts/p3hpc.py
+.venv/bin/python scripts/p3hpc.py
 ```
 
 On native Windows, from PowerShell:
 
 ```powershell
 .\scripts\setup.ps1 cu130
-.\.venv-p3hpc\Scripts\python.exe scripts\p3hpc.py
+.\.venv\Scripts\python.exe scripts\p3hpc.py
 ```
 
 After activating that environment, the collection command on every platform is

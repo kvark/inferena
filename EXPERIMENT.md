@@ -202,7 +202,7 @@ real-data convergence evidence. Real datasets for those workloads remain future
 work. The earlier repeated-batch SmolLM2 test remains an optional diagnostic:
 
 ```sh
-.venv-p3hpc/bin/python scripts/amp_reference.py --backend cuda --gpu 'RTX 5070' \
+.venv/bin/python scripts/amp_reference.py --backend cuda --gpu 'RTX 5070' \
   --models SmolLM2-135M --precisions off fp16 bf16 --mode eager \
   --repeated-batch --results-dir ../accelerated-repeated-diagnostic
 ```
@@ -377,7 +377,7 @@ git fetch /path/to/inferena-cohort-0a718b6.bundle HEAD
 git worktree add --detach ../inferena-cohort-20261011 FETCH_HEAD
 cd ../inferena-cohort-20261011
 git rev-parse HEAD
-/absolute/path/to/existing/.venv-p3hpc/bin/python scripts/p3hpc.py --qualify-only
+/absolute/path/to/existing/.venv/bin/python scripts/p3hpc.py --qualify-only
 ```
 
 Verify the complete SHA above on every machine. Existing pinned environments
@@ -408,8 +408,8 @@ max-autotune by default. No existing venv is overwritten.
 | Ryzen 5 9600X iGPU on rubik, qualification only | `bash scripts/setup.sh cpu` | `python scripts/p3hpc.py --backend cpu --gpu 'AMD Ryzen 5 9600X' --qualify-only --eager` |
 
 Here `python` means the created environment's interpreter:
-`.venv-p3hpc/bin/python` on Linux/macOS or
-`.venv-p3hpc/Scripts/python.exe` on native Windows. After activation,
+`.venv/bin/python` on Linux/macOS or
+`.venv/Scripts/python.exe` on native Windows. After activation,
 `python scripts/p3hpc.py` needs no arguments on a supported single-GPU
 machine. CPU PyTorch is only a correctness oracle for graphics-only qualification,
 not a timing competitor. Keep those native GPU results as portability evidence;
@@ -425,8 +425,8 @@ do not certify this pin.
 For example, the Mac qualification is:
 
 ```sh
-.venv-p3hpc/bin/python scripts/check_environment.py --backend mps
-.venv-p3hpc/bin/python scripts/p3hpc.py --backend mps --qualify-only
+.venv/bin/python scripts/check_environment.py --backend mps
+.venv/bin/python scripts/p3hpc.py --backend mps --qualify-only
 ```
 
 Substitute that machine's backend. The Mac check is particularly important:
@@ -439,12 +439,12 @@ qualification is not a certificate for future processes.
 On the dual-GPU workstation, use separate existing environments, sequentially:
 
 ```sh
-.venv-p3hpc/bin/python scripts/p3hpc.py --backend cuda --gpu 'RTX 5070'
-.venv-p3hpc-xpu/bin/python scripts/p3hpc.py --backend xpu --gpu 'Arc B570'
+.venv/bin/python scripts/p3hpc.py --backend cuda --gpu 'RTX 5070'
+.venv-xpu/bin/python scripts/p3hpc.py --backend xpu --gpu 'Arc B570'
 ```
 
 To create the second environment:
-`bash scripts/setup.sh xpu .venv-p3hpc-xpu`.
+`bash scripts/setup.sh xpu .venv-xpu`.
 The collector selects Meganeura's matching adapter by device ID. Ambiguous
 matches or a different reference GPU stop the run. Do not run both collectors
 together. Avoid host suspension, competing GPU work and profiling.
@@ -471,7 +471,7 @@ If archiving fails, a warning is printed and the previous archive is left intact
 For the cloud GPUs only, collect the larger models separately:
 
 ```sh
-.venv-p3hpc/bin/python scripts/p3hpc.py --models SmolLM2-360M SmolLM2-1.7B
+.venv/bin/python scripts/p3hpc.py --models SmolLM2-360M SmolLM2-1.7B
 ```
 
 This includes forward/loss/backward. Use `--inference-only` only for an
@@ -898,7 +898,7 @@ historical and are not rewritten by this collector.
 
 Windows uses native x64 Python, Git for Windows / Git Bash (not WSL), Rust MSVC,
 and Visual Studio C++ Build Tools with a Windows SDK. Setup selects
-`requirements-p3hpc-cu130-windows.txt`, including pinned
+`requirements-pytorch-cu130-windows.txt`, including pinned
 `triton-windows==3.7.1.post27`. Importing Torch alone does not establish that
 Inductor works. The watchdog uses Windows process-tree termination; preserve
 both the receipt and runner log on failure.
@@ -982,7 +982,7 @@ following checks the current policy and preserves both outcomes, without
 retrying the compiled condition:
 
 ```sh
-.venv-p3hpc/bin/python scripts/p3hpc.py --backend rocm --models Whisper-tiny --qualify-only
+.venv/bin/python scripts/p3hpc.py --backend rocm --models Whisper-tiny --qualify-only
 ```
 
 Every numerical gate and the compilation deadline remain enabled. `--sdpa`
@@ -1013,7 +1013,7 @@ runtime workarounds:
 ```sh
 export HSA_OVERRIDE_GFX_VERSION=11.0.2
 export HSA_ENABLE_SDMA=0
-.venv-p3hpc/bin/python scripts/p3hpc.py --backend rocm
+.venv/bin/python scripts/p3hpc.py --backend rocm
 ```
 
 The cohort uses the CPU correctness oracle above on this device while its
@@ -1098,8 +1098,8 @@ barrier cost. Prefer vendor timelines for causal attribution.
 For a validated NVIDIA CUDA/Vulkan Nsight Systems pair on Linux:
 
 ```sh
-.venv-p3hpc/bin/python scripts/limited.py --memory-mib 6144 --seconds 600 -- \
-  .venv-p3hpc/bin/python scripts/nsys.py --gpu 'RTX 5070' \
+.venv/bin/python scripts/limited.py --memory-mib 6144 --seconds 600 -- \
+  .venv/bin/python scripts/nsys.py --gpu 'RTX 5070' \
   --torch-version 2.13.0+cu130 --model ResNet-50 --precision strict \
   --nsys /path/to/nsys --results-dir ../resnet-nsight
 ```
@@ -1125,7 +1125,7 @@ TF32 disabled. fp16 uses `torch.amp.GradScaler`; bf16 disables scaling.
 Native f16 activation storage is not required to collect these reference columns.
 
 ```sh
-.venv-p3hpc-xpu/bin/python scripts/amp_reference.py --backend xpu --gpu B570 \
+.venv-xpu/bin/python scripts/amp_reference.py --backend xpu --gpu B570 \
   --models SmolLM2-135M Whisper-tiny --precisions bf16 fp16 \
   --results-dir ../amp-b570
 ```
@@ -1180,7 +1180,7 @@ learning rate, without momentum, weight decay or clipping.
 ```sh
 curl --fail --location https://www.gutenberg.org/ebooks/1514.txt.utf-8 \
   --output ../pg1514.txt
-.venv-p3hpc-xpu/bin/python scripts/convergence.py --backend xpu --gpu B570 \
+.venv-xpu/bin/python scripts/convergence.py --backend xpu --gpu B570 \
   --corpus ../pg1514.txt --results-dir ../convergence-b570
 ```
 

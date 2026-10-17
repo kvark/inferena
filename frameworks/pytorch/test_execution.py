@@ -597,6 +597,7 @@ class CampaignTest(unittest.TestCase):
                 self.assertEqual(kwargs["env"]["INFERENA_GRAPH_REPLAY"], "0")
                 self.assertEqual(kwargs["env"]["INFERENA_SDPA"], "math")
                 self.assertEqual(command[command.index("-f") + 1], "pytorch")
+                self.assertIn("--no-build", command)
                 return subprocess.CompletedProcess(command, 0)
             with patch("p3hpc.run_recorded", side_effect=run_diagnostic) as run, \
                  patch("p3hpc.subprocess.check_output", return_value=json.dumps([mg, eager])):

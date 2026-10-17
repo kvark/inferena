@@ -93,6 +93,7 @@ PLATFORM_OVERRIDE=""
 STRICT=false
 INFERENCE_ONLY=false
 ALLOW_INTEGRATED_GPU=false
+SKIP_BUILD=false
 WARMUP_RUNS=5
 MEASUREMENT_RUNS=20
 PROFILE=false
@@ -155,6 +156,11 @@ while [[ $# -gt 0 ]]; do
             HAS_ARGS=true
             shift
             ;;
+        --no-build)
+            SKIP_BUILD=true
+            HAS_ARGS=true
+            shift
+            ;;
         --warmup-runs)
             WARMUP_RUNS="$2"
             HAS_ARGS=true
@@ -197,6 +203,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --strict                  Disable reduced-input fast paths for an f32 control run"
             echo "  --inference-only          Forward-only paired SmolLM2 workloads; no training allocation"
             echo "  --allow-integrated-gpu    Do not prefer a discrete GPU on hybrid systems"
+            echo "  --no-build                 Use the existing release harness; do not invoke Cargo"
             echo "  --warmup-runs <n>         Untimed runs per measurement (default: 5)"
             echo "  --measurement-runs <n>    Timed samples per measurement (default: 20)"
             echo "  --profile                 Collect separate Meganeura/PyTorch diagnostic profiles"
@@ -569,6 +576,16 @@ mkdir -p "$RESULTS_DIR"
 # Building the whole workspace compiles every framework runner regardless of
 # --frameworks. That wastes time on a two-engine run, and it is how the inferi
 # shader toolchain reaches builds that never asked for it.
+# A harness-only Cargo invocation can relink `inferena` against a different
+# feature set than the harness+meganeura build the collector hashed. Diagnostics
+# pass --no-build so they execute that same binary.
+HARNESS="$ROOT_DIR/target/release/inferena${EXE_SUFFIX}"
+if [ "$SKIP_BUILD" = true ]; then
+    if [ ! -f "$HARNESS" ]; then
+        echo "--no-build requires the existing harness at $HARNESS" >&2
+        exit 1
+    fi
+else
 echo "Building Rust crates..." >&2
 WORKSPACE_CARGO_ARGS=(
     build
@@ -643,8 +660,7 @@ fi
 cargo "${WORKSPACE_CARGO_ARGS[@]}" >&2
 restore_workspace_lockfile
 trap - EXIT
-
-HARNESS="$ROOT_DIR/target/release/inferena${EXE_SUFFIX}"
+fi
 
 # --- Run each model ---
 for MODEL in $MODELS; do

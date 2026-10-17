@@ -173,6 +173,31 @@ def duration_seconds(duration):
     return duration["secs"] + duration["nanos"] / 1e9
 
 
+def check_native_kernel_search(kernel, tuning, seconds):
+    options = kernel["options"]
+    cutoff = kernel.get("share_cutoff", False)
+    if cutoff:
+        prediction = kernel.get("predicted_plan_ms")
+        profile = kernel.get("machine_profile")
+        bandwidth = profile.get("bandwidth") if isinstance(profile, dict) else None
+        if (cutoff is not True or not isinstance(bandwidth, (int, float))
+                or not math.isfinite(bandwidth) or bandwidth <= 0
+                or not isinstance(prediction, (int, float))
+                or not math.isfinite(prediction) or prediction <= 0
+                or kernel["visited_classes"] >= kernel["eligible_classes"]):
+            raise ValueError("native kernel share cutoff lacks a calibrated plan prediction")
+    if (options.get("strategy") != "Race" or options["scope"] != "All"
+            or options["max_classes"] != tuning["max_classes"]
+            or options["min_improvement"] != tuning["min_improvement"]
+            or options["max_scratch_bytes"] != TUNE_SCRATCH_BYTES
+            or not 0 <= duration_seconds(options["max_time"]) <= seconds
+            or kernel["class_limit_reached"]
+            or not 0 <= kernel["visited_classes"] <= kernel["eligible_classes"]
+            or (kernel["visited_classes"] < kernel["eligible_classes"]
+                and not kernel["time_budget_exhausted"] and not cutoff)):
+        raise ValueError("native kernel search stopped outside the declared limits")
+
+
 def check_native_search(session, seconds, max_submission_chunks, kernel_memo=False, android=False,
                         language_model=False, output_shape=None):
     search = session.get("search")
@@ -200,6 +225,7 @@ def check_native_search(session, seconds, max_submission_chunks, kernel_memo=Fal
             or memory["plan_fraction_of_available"] != 0.75
             or options["max_plan_bytes"] != available // 4 * 3
             or options["max_plan_bytes"] <= 0
+            or tuning.get("strategy") != "Race"
             or tuning["scope"] != "All" or tuning["max_classes"] != 2 * sys.maxsize + 1
             or tuning["min_improvement"] != 0.05
             or duration_seconds(tuning["max_time"]) != seconds
@@ -222,15 +248,7 @@ def check_native_search(session, seconds, max_submission_chunks, kernel_memo=Fal
         kernel = trial["kernel_tuning"]
         if kernel is None:
             continue
-        if (kernel["options"]["scope"] != "All"
-                or kernel["options"]["max_classes"] != tuning["max_classes"]
-                or kernel["options"]["min_improvement"] != tuning["min_improvement"]
-                or kernel["options"]["max_scratch_bytes"] != TUNE_SCRATCH_BYTES
-                or not 0 <= duration_seconds(kernel["options"]["max_time"]) <= seconds
-                or kernel["class_limit_reached"]
-                or not 0 <= kernel["visited_classes"] <= kernel["eligible_classes"]
-                or kernel["visited_classes"] < kernel["eligible_classes"] and not kernel["time_budget_exhausted"]):
-            raise ValueError("native kernel search stopped outside the declared limits")
+        check_native_kernel_search(kernel, tuning, seconds)
     qualification = session["qualification"]
     if (qualification["policy"] != "fixed-full-tensor-v4"
             or qualification["reference"] != "first checked program"
@@ -822,7 +840,7 @@ def main():
                INFERENA_WARMUP_SECONDS=str(WARMUP_SECONDS))
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v27", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v28", "source": revision,
         "started_at": started_at,
         "host": {"name": socket.gethostname(), "os": platform.system(),
                  "kernel": platform.release(), "platform": platform.platform(), "arch": platform.machine(),
@@ -853,6 +871,7 @@ def main():
                           "max_submission_chunks": args.max_submission_chunks,
                           "program_min_improvement": 0.01, "kernel_min_improvement": 0.05,
                           "scope": "All", "class_limit": None,
+                          "kernel_strategy": "Race", "negligible_plan_share_cutoff": 0.001,
                           "max_scratch_bytes": TUNE_SCRATCH_BYTES,
                           "kernel_seconds_per_program": args.tune_seconds,
                           "max_graphs": 16, "max_programs": 64, "plan_fraction_of_available": 0.75,

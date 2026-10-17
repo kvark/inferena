@@ -19,7 +19,7 @@ from p3hpc import (ROOT, MODELS, PHASES, SMOLLM2_PINS, SYNTHETIC_PARAMETER_INIT,
                   archive_results, check_native_search, gpu_matches, input_hashes,
                   select_native_device)
 
-PROTOCOL = "p3hpc-android-campaign-v8"
+PROTOCOL = "p3hpc-android-campaign-v9"
 TARGET = "aarch64-linux-android"
 
 
@@ -229,7 +229,7 @@ def collect(args, parser, packages, started_at, started):
     remote = f"/data/local/tmp/inferena-{stamp}-{revision[:8]}"
     executable = remote + "/inferena-meganeura"
     import torch
-    manifest = dict(protocol=PROTOCOL, paired_protocol="p3hpc-paired-campaign-v27", source=revision,
+    manifest = dict(protocol=PROTOCOL, paired_protocol="p3hpc-paired-campaign-v28", source=revision,
                     started_at=started_at, platform="Quest 3S", backend="android-vulkan",
                     meganeura=dependency, python=sys.version, packages=packages,
                     torch=dict(version=torch.__version__, git_version=torch.version.git_version,
@@ -240,6 +240,7 @@ def collect(args, parser, packages, started_at, started):
                     reference=dict(framework="pytorch", device="host CPU", dtype="float64", attention="eager",
                                    role="correctness-only", timing_competitor=False, rtol=1e-4, atol=1e-6),
                     arithmetic_note="No cooperative matrices on Quest; both classes execute f32 and use strict tensor bounds",
+                    native_policy=dict(kernel_strategy="Race", negligible_plan_share_cutoff=0.001),
                     warmup=dict(minimum_runs=5, minimum_seconds=2),
                     measurement_runs=20 if args.collect else 1,
                     planned_runs=(args.replicates if args.collect else 1) * len(args.models) * len(args.precisions),

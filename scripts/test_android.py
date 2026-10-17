@@ -17,7 +17,7 @@ from p3hpc_report import campaign_rows
 class AndroidContract(unittest.TestCase):
     def test_memory_fallback_is_bounded_and_android_only(self):
         import sys
-        tuning = dict(scope="All", max_classes=2 * sys.maxsize + 1, min_improvement=0.05,
+        tuning = dict(scope="All", strategy="Race", max_classes=2 * sys.maxsize + 1, min_improvement=0.05,
                       max_time=dict(secs=30, nanos=0), max_scratch_bytes=TUNE_SCRATCH_BYTES)
         session = dict(mode="Training", cooperative_matrix_policy="NativeF32",
             search_input_policy="refresh before each step, outside timing",

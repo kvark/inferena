@@ -4,7 +4,10 @@
 //! using the meganeura crate (e-graph optimized NN on blade-graphics).
 
 use meganeura::data::safetensors::SafeTensorsModel;
-use meganeura::{CoopPolicy, Graph, Mode, Session, SessionConfig, train, tune::TuneOptions};
+use meganeura::{
+    CoopPolicy, Graph, Mode, Session, SessionConfig, train,
+    tune::{TuneOptions, TuneStrategy},
+};
 use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
@@ -144,6 +147,7 @@ fn build_session_with_quality(
             // This is a logical-plan bound, not a measured heap peak.
             max_plan_bytes: (available / 4 * 3) as usize,
             tuning: TuneOptions {
+                strategy: TuneStrategy::Race,
                 max_classes: usize::MAX,
                 max_time: Duration::from_secs_f64(seconds),
                 max_scratch_bytes: 1024 * 1024 * 1024,

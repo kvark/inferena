@@ -1,6 +1,6 @@
 # P3HPC paired collection
 
-The development collector uses **v27**, with exactly two profiles: `strict`
+The development collector uses **v28**, with exactly two profiles: `strict`
 and `accelerated` (practical). The October 11 cohort below remains frozen at
 **v18**. V19 introduced AMP; v20 changed accelerated training qualification.
 V21 adds a native F32 arithmetic reference and refreshes search inputs to match
@@ -19,7 +19,7 @@ records the actual benchmarker in every compiled result. Other backends retain
 the pinned default event-based benchmarker. Search and compilation budgets,
 numerical acceptance, final step timers and the two-profile matrix are unchanged.
 
-## Development v27: two profiles
+## Development v28: two profiles
 
 The October 17 integration combines the approved collector from `22bd70f`
 with current main's portable regression tests and tensor comparison utility.
@@ -30,6 +30,17 @@ cooperative kernels and report subgroup shapes separately from workgroup tiles.
 The measurements below retain their original source revisions; they do not
 qualify the updated stack by themselves. Collect fresh evidence before freezing
 this integration for the final cohort.
+
+V28 pins kernel search to `Race` and accepts the explicit `share_cutoff` receipt
+from merged Meganeura #262: classes predicted to contribute less than 0.1% of
+the whole plan may remain unvisited. The receipt must include calibration and
+a finite positive plan prediction. Unexplained incomplete coverage, class caps
+and changed budgets still fail validation. Whole-program timing and numerical
+gates remain unchanged. Android uses its corresponding v9 protocol. The initial
+integration's B570 SmolVLA run exposed this receipt incompatibility; its records
+remain separate from the fresh v28 qualification.
+
+## Earlier v27 validation
 
 The full local v27 collection from frozen Inferena `f587313` qualifies all
 60 publication cells, 180 phase checks and 20 repeated-gradient groups across

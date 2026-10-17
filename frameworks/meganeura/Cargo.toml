@@ -12,7 +12,7 @@ path = "src/main.rs"
 [dependencies]
 meganeura = { workspace = true }
 # Use the same adapter enumeration and timing API as the pinned Meganeura.
-blade-graphics = { version = "0.9", git = "https://github.com/kvark/blade", rev = "56f05651cca73659130e924e497dda633f839d40" }
+blade-graphics = { version = "0.9", git = "https://github.com/kvark/blade", rev = "96c1dc731b1d5e133a6c0a8a020014619ff2e434" }
 hf-hub = { version = "0.4", default-features = false, features = ["ureq", "native-tls"] }
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 serde = { workspace = true }

@@ -18,6 +18,7 @@ thread_local! {
 mod convergence;
 mod initialization;
 mod qualification;
+mod replay;
 mod search_cache;
 
 fn warmup_time() -> Duration {
@@ -54,9 +55,43 @@ fn build_session(
     let mut preparation = serde_json::json!({
         "mode": format!("{mode:?}"),
         "cooperative_matrix_policy": policy,
+        "search_input_policy": "refresh-before-step-v1",
         "search": null,
     });
-    let session = if meganeura::config::TUNE.bool_or(true) {
+    let session_index = SESSION_PREPARATION.with_borrow(|reports| reports.len());
+    let session = if let Some(dir) = std::env::var_os("INFERENA_REPLAY_DIR") {
+        let frozen =
+            replay::read(&std::path::PathBuf::from(dir).join(format!("{session_index}.json")));
+        let mut session = Session::with_context_opts(
+            frozen.plan.clone(),
+            config.gpu.clone().unwrap(),
+            config.runtime.clone(),
+        );
+        assert!(
+            session.plan() == &frozen.plan,
+            "replay changed the selected execution plan"
+        );
+        assert!(
+            session.dispatch_pipeline_keys() == frozen.pipelines,
+            "replay changed pipelines"
+        );
+        assert_eq!(
+            session.num_groups(),
+            frozen.groups,
+            "replay changed barriers"
+        );
+        session.set_submission_chunks(frozen.chunks);
+        initialize_parameters(&mut session);
+        initialize_inputs(&mut session);
+        session.step();
+        session.wait();
+        assert!(
+            replay::hashes(graph, &session) == frozen.hashes,
+            "replay outputs/gradients changed"
+        );
+        preparation["replay"] = serde_json::json!({"exact_plan":true,"exact_pipelines":true,"exact_outputs_and_gradients":true,"submission_chunks":frozen.chunks});
+        session
+    } else if meganeura::config::TUNE.bool_or(true) {
         let seconds = std::env::var("INFERENA_TUNE_SECONDS")
             .unwrap_or_else(|_| "30".to_owned())
             .parse::<f64>()
@@ -108,7 +143,7 @@ fn build_session(
         )
         .expect("cannot load kernel memo");
         options.kernel_memo = Some(cache.memo.clone());
-        let (session, report) = train::build_measured(
+        let (session, report) = train::build_measured_with_inputs(
             graph,
             config,
             options,
@@ -123,6 +158,12 @@ fn build_session(
                 if !reused {
                     initialize_parameters(session);
                 }
+                initialize_inputs(session);
+                Ok(())
+            },
+            |session| {
+                // Match bench_session: host uploads affect subsequent execution
+                // even though their own time is outside the step timer.
                 initialize_inputs(session);
                 Ok(())
             },
@@ -160,6 +201,27 @@ fn build_session(
             .filter(|dispatch| dispatch.use_coop())
             .count()
     );
+    preparation["kernel_pipelines"] = serde_json::json!(session.dispatch_pipeline_keys());
+    if let Some(dir) = std::env::var_os("INFERENA_DUMP_PLANS_DIR") {
+        let chunks = preparation["search"]["selected"]
+            .as_u64()
+            .map_or(1, |selected| {
+                preparation["search"]["trials"][selected as usize]["description"]
+                    .as_str()
+                    .unwrap()
+                    .rsplit_once("submission_chunks=")
+                    .unwrap()
+                    .1
+                    .parse()
+                    .unwrap()
+            });
+        replay::save(
+            &std::path::PathBuf::from(dir).join(format!("{session_index}.json")),
+            graph,
+            &session,
+            chunks,
+        );
+    }
     SESSION_PREPARATION.with_borrow_mut(|reports| reports.push(preparation));
     session
 }
@@ -428,6 +490,9 @@ fn bench_session(
     session: &mut meganeura::Session,
     set_inputs: &dyn Fn(&mut meganeura::Session),
 ) -> BenchStats {
+    if std::env::var_os("INFERENA_REPLAY_INTERACTIVE").is_some() {
+        return replay::interactive(phase, session, set_inputs);
+    }
     let (warmups, samples) = benchmark_counts();
     let warmup_time = warmup_time();
     let warmup_range = nsys_range(&format!("meganeura/{phase}/warmup"));

@@ -546,6 +546,9 @@ def eager_diagnostic(command, env, folder, model, args, count, revision, precisi
     command = list(command)
     for flag, value in (("-f", "pytorch"), ("--measurement-runs", "1"), ("--results-dir", str(diagnostic))):
         command[command.index(flag) + 1] = value
+    # The collector already hashed target/release/inferena. A pytorch-only
+    # run.sh otherwise rebuilds the harness alone and replaces that binary.
+    command.append("--no-build")
     environment = dict(env, INFERENA_TORCH_MODE="eager", INFERENA_GRAPH_REPLAY="0", INFERENA_SDPA="math",
                        INFERENA_REFERENCE_DIAGNOSTIC="1",
                        INFERENA_PREPARATION_REPORT=str(diagnostic / "torch-preparation.json"))

@@ -5,6 +5,43 @@ post-OOM offline analysis separates inefficient resident kernels from
 weight-representation and memory-placement costs; it does not establish a
 removable barrier-cost percentage or contain new speed measurements.
 
+## Quest SmolLM2 CPU-oracle loss precision (October 17, 2026)
+
+The v9 Quest qualification at Inferena `663e419` reported SmolLM2-135M training
+mismatches in both arithmetic classes. Prefill, one-token latency, training loss,
+and aggregate gradients passed. Four of 272 individual parameter gradients
+failed only the maximum-error bound: layer 19 K projection, layer 19 input
+RMSNorm, layer 27 input RMSNorm, and layer 29 post-attention RMSNorm. All RMS
+bounds passed. Earlier `bce7adf` and `3a0129a` campaigns reproduce these errors
+exactly; the failures were not transient device state or precision selection.
+
+The CPU comparator called `bench._benchmark_loss`, which deliberately converts
+logits to float32 for the timed AMP benchmark. Consequently the nominal float64
+oracle injected float32 cross-entropy rounding into its backward pass. A small
+scalar-loss difference concealed larger errors in some individual gradients.
+
+`scripts/diagnose_android_lm.py` reproduces the original oracle and changes one
+precision boundary at a time, using the identical saved native tensors:
+
+| CPU-reference change | Failed parameter gradients |
+| --- | ---: |
+| Original float64 model with float32 loss | 4 |
+| Float64 RMSNorm only | 4 |
+| Float64 attention softmax only | 4 |
+| Float64 rotary embeddings only | 4 |
+| Float64 cross-entropy only | 0 |
+| All four operations in float64 | 0 |
+
+Promoting only the loss reduces aggregate gradient RMS error from `7.4556e-8`
+to `2.3077e-8`, across 134,515,008 elements. Every individual gradient passes
+the original `atol=1e-6, rtol=1e-4` maximum and RMS bounds. Diagnostic receipts
+are in `../inferena-results/smollm2-root-cause-20261017/oracle-*.json`.
+
+The correction gives both CPU tensor comparators a reference loss that preserves
+their selected dtype. It does not change timed benchmark arithmetic. Android v10
+receipts explicitly record and validate the loss dtype and policy; v9 failures
+remain preserved. Fresh device qualification is required before cohort collection.
+
 ## PR #257 on current main (October 15, 2026)
 
 PR [#257](https://github.com/kvark/meganeura/pull/257) at `056562b` is stacked

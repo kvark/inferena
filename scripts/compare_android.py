@@ -11,6 +11,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from cpu_reference import LOSS_POLICY, reference_loss
+
 # Inferena's strict full-tensor policy, fixed independently of measured errors.
 ATOL, RTOL = 1e-6, 1e-4
 
@@ -132,9 +134,11 @@ def main():
         parameters[canonical] = (parameter, transpose)
     report = dict(model=name, reference='fresh PyTorch CPU', torch=torch.__version__,
                   reference_dtype=args.dtype, attention=args.attention,
+                  loss_dtype=args.dtype, loss_policy=LOSS_POLICY,
                   host=platform.platform(), threads=args.threads,
                   bench_sha256=hashlib.sha256(Path(bench.__file__).read_bytes()).hexdigest(),
                   comparator_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                  loss_source_sha256=hashlib.sha256(Path(__file__).with_name('cpu_reference.py').read_bytes()).hexdigest(),
                   policy=dict(atol=ATOL, rtol=RTOL, metrics=['maximum absolute error', 'RMS error'],
                               scope='each full output/loss/gradient tensor',
                               elementwise_allclose='diagnostic only'), phases={})
@@ -168,7 +172,8 @@ def main():
         with torch.set_grad_enabled(phase == 'training'):
             output = bench._benchmark_forward(kind, model, inputs)
             if phase == 'training':
-                loss = bench._benchmark_loss(kind, output, inputs)
+                loss = reference_loss(kind, bench._benchmark_logits(kind, output), inputs)
+                assert loss.dtype == reference_dtype
                 loss.backward()
                 refs['loss'] = loss.detach().numpy()
                 checks['loss'] = compare(manifest['loss'], refs['loss'])

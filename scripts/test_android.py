@@ -12,6 +12,7 @@ from p3hpc import create_parser, check_native_search, TUNE_SCRATCH_BYTES
 from p3hpc_android import (PROTOCOL, Device, battery_info, check_battery, check_native,
                            measurement_environment, validate_oracle, write_json, sha256)
 from p3hpc_report import campaign_rows
+from cpu_reference import LOSS_POLICY
 
 
 class AndroidContract(unittest.TestCase):
@@ -127,7 +128,8 @@ class AndroidContract(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "cpu-float64-eager").mkdir()
-            report = dict(reference_dtype="float64", attention="eager", policy=dict(atol=1e-6, rtol=1e-4), phases={}, passed=True)
+            report = dict(reference_dtype="float64", attention="eager", loss_dtype="float64", loss_policy=LOSS_POLICY,
+                          policy=dict(atol=1e-6, rtol=1e-4), phases={}, passed=True)
             for phase in ("inference", "latency", "training"):
                 capture = dict(phase=phase, precision="strict-f32", tuning=True, cooperative_dispatches=0,
                                gradients={"a": {}, "b": {}})
@@ -139,6 +141,13 @@ class AndroidContract(unittest.TestCase):
                     reference_sha256=sha256(reference), compared_elements=10, passed=True,
                     checks={key: dict(passed=True, finite=True) for key in keys}, all_gradients=dict(passed=True))
             self.assertEqual(validate_oracle(root, report, "strict")["training"]["status"], "valid")
+            for key, value in (("loss_dtype", "float32"), ("loss_policy", "legacy")):
+                with self.subTest(key=key), self.assertRaises(ValueError):
+                    validate_oracle(root, dict(report, **{key: value}), "strict")
+                legacy = dict(report)
+                del legacy[key]
+                with self.assertRaises(ValueError):
+                    validate_oracle(root, legacy, "strict")
             missing = copy.deepcopy(report)
             del missing["phases"]["training"]["checks"]["gradient:b"]
             with self.assertRaises(ValueError):

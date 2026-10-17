@@ -54,7 +54,7 @@ class RunnerTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             receipt = Path(temporary) / "preparation.json"
-            env = {"INFERENA_TORCH_MODE": "eager", "INFERENA_GRAPH_REPLAY": "0",
+            env = {"INFERENA_TORCH_MODE": "eager", "INFERENA_GRAPH_REPLAY": "0", "INFERENA_STRICT": "1",
                    "INFERENA_PREPARATION_REPORT": str(receipt), "INFERENA_REFERENCE_DIAGNOSTIC": "1"}
             def measure(fn, *_, **__):
                 return fn(), [1.0], {"runs": 5, "seconds": 2.0}
@@ -286,7 +286,7 @@ class RunnerTest(unittest.TestCase):
         # MPS must attempt compilation, not report an eager result with zero
         # compile time. A mock checks routing, not real Metal backend support.
         from bench import _bench
-        with patch.dict(os.environ, {"INFERENA_TORCH_MODE": "default", "INFERENA_GRAPH_REPLAY": "0"}), \
+        with patch.dict(os.environ, {"INFERENA_TORCH_MODE": "default", "INFERENA_GRAPH_REPLAY": "0", "INFERENA_STRICT": "1"}), \
              patch("bench.load_model"), patch("bench.synchronize"), \
              patch("bench.device_name", return_value="test MPS"), \
              patch("torch.compile", side_effect=RuntimeError("compiler failure")) as compile:

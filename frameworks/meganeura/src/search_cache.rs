@@ -1,4 +1,4 @@
-//! Reusable kernel decisions, never saved tensors or measured programs.
+//! Campaign-local kernel decisions, never saved tensors or measured programs.
 use meganeura::{runtime::KernelMemo, train::BuildSearchReport};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -8,7 +8,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-pub const POLICY: &str = "kernel-memo-v1";
+pub const POLICY: &str = "campaign-kernel-memo-v1";
 
 pub struct Cache {
     pub memo: Arc<Mutex<KernelMemo>>,
@@ -151,9 +151,9 @@ mod tests {
         graph.set_outputs(vec![loss]);
         let options = train::BuildSearchOptions {
             max_graphs: 1,
-            // The first program is an untuned fallback. A second trial
-            // measures kernel choices beside it, including memo reuse.
+            // The ordinary fallback and its tuned challenger each need a slot.
             max_programs: 2,
+            min_improvement: 0.99,
             max_time: Duration::from_secs(30),
             tuning: TuneOptions {
                 max_time: Duration::from_secs(30),
@@ -174,12 +174,25 @@ mod tests {
                     ..Default::default()
                 };
                 config.runtime.coop = CoopPolicy::Disabled;
-                let mut qualification = crate::qualification::Qualification::new(&graph, mode);
                 // Changing both tensors proves the memo restores decisions,
                 // never old weights, inputs or a qualification result.
                 let input = (run + 1) as f32 * 0.25;
                 let weight = (run + 1) as f32 * 0.125;
-                let (session, report) = train::build_measured_with_inputs(
+                let mut reference_config = SessionConfig {
+                    mode,
+                    gpu: Some(gpu.clone()),
+                    ..Default::default()
+                };
+                reference_config.runtime.coop = CoopPolicy::NativeF32;
+                let mut reference = meganeura::build(&graph, reference_config).0;
+                reference.set_input("x", &[input; 33 * 17]);
+                reference.set_parameter("w", &[weight; 17 * 65]);
+                reference.step();
+                reference.wait();
+                let mut qualification =
+                    crate::qualification::Qualification::new(&graph, mode, &reference).unwrap();
+                drop(reference);
+                let (session, report) = train::build_measured(
                     &graph,
                     config,
                     train::BuildSearchOptions {
@@ -187,11 +200,8 @@ mod tests {
                         ..options.clone()
                     },
                     |session, _| {
-                        session.set_parameter("w", &[weight; 17 * 65]);
-                        Ok(())
-                    },
-                    |session| {
                         session.set_input("x", &[input; 33 * 17]);
+                        session.set_parameter("w", &[weight; 17 * 65]);
                         Ok(())
                     },
                     |session| {
@@ -209,10 +219,13 @@ mod tests {
                 let receipt = cache.finish(&report).unwrap();
                 assert!(!cache.memo.lock().unwrap().is_empty());
                 assert_eq!(receipt["load"], if run == 0 { "miss" } else { "hit" });
-                let selected = &report.trials[report.selected];
-                assert!(selected.outcome.qualified);
-                assert!(report.trials[0].kernel_tuning.is_none());
-                let tuning = report.trials[1].kernel_tuning.as_ref().unwrap();
+                // A memo contains private decisions, even when whole-program
+                // timing retains the untuned fallback instead of installing them.
+                let tuning = report
+                    .trials
+                    .iter()
+                    .find_map(|trial| trial.kernel_tuning.as_ref())
+                    .unwrap();
                 assert!(!tuning.time_budget_exhausted);
                 if run == 0 {
                     assert!(!tuning.outcomes.is_empty());
@@ -221,6 +234,7 @@ mod tests {
                     assert!(!tuning.reused_classes.is_empty());
                     assert_eq!(receipt["new_comparisons"], 0);
                 }
+                assert!(report.trials.iter().all(|trial| trial.outcome.qualified));
                 assert_eq!(
                     qualification.report()["qualified_calls"],
                     report

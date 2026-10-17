@@ -3,6 +3,12 @@
 [![CI](https://github.com/kvark/inferena/actions/workflows/ci.yml/badge.svg)](https://github.com/kvark/inferena/actions/workflows/ci.yml)
 
 Single-GPU ML systems benchmark for matched inference and training workloads.
+
+The collection workflow adds validated whole-phase GPU graph replay to the
+PyTorch comparison and includes Quest 3S through Android Vulkan. See the
+[protocol, controls and scaling results](EXPERIMENT.md). Generated records
+stay outside Git; submitted results remain reproducible at `paper-arxiv-1`.
+
 PyTorch and Meganeura currently report the complete timing, precision,
 environment, output, and gradient metadata used for strict cross-engine
 validation. Other runners remain available while their reporting is brought
@@ -42,7 +48,7 @@ links in the results tables always point to the exact revision tested.
 
 | Framework | Linux | macOS | Windows |
 |-----------|:-----:|:-----:|:-------:|
-| PyTorch | CUDA, ROCm, XPU, CPU | MPS, CPU | CUDA, CPU |
+| PyTorch | CUDA, ROCm, XPU, CPU | MPS, CPU | CUDA, XPU, CPU |
 | ONNX Runtime | CUDA, TensorRT, CPU | CoreML, CPU | DirectML, CPU |
 | JAX | CUDA, TPU, CPU | CPU | CPU |
 | MAX | CUDA, CPU | CPU | — |
@@ -61,6 +67,13 @@ Frameworks that can't run on a given platform are reported as `✗` in the resul
 Each model has its own page with architecture details, benchmark caveats,
 and results tables.
 
+The paired runners also support pinned **SmolLM2-360M and SmolLM2-1.7B** base
+checkpoints. These opt-in scaling workloads are not part of the historical
+results table. Use `--inference-only` for the same forward-only protocol across
+sizes when f32 training does not fit; absent training is not a validated result.
+The measured 1.7B workload exposes host-backed buffer placement on the RTX 5070;
+see the experiment notes before treating it as an all-VRAM scaling point.
+
 | Model | Type | Params | Results |
 |-------|------|-------:|---------|
 | [SmolLM2-135M](models/SmolLM2-135M.md) | Text LLM | 135M | [results](models/SmolLM2-135M.md#results) |
@@ -75,8 +88,9 @@ For each instrumented framework and model, Inferena records:
 
 1. **Compile** — Graph/compiler specialization and executable preparation
    (seconds). The JSON describes the scope: Meganeura includes parameter/input
-   upload and optional qualified graph/kernel/submission search; PyTorch includes first specializations
-   of the requested phases. PyTorch reports capture and validation separately.
+   upload, calibrated search and construction qualification; PyTorch includes
+   first specializations of the requested phases. PyTorch reports capture and
+   validation separately.
 2. **Inference** — A no-gradient full forward pass with fixed deterministic
    input (milliseconds). For decoder LLMs this is explicitly the 128-token
    prefill measurement.
@@ -95,66 +109,110 @@ a result, and inference and training validity are recorded independently.
 
 Precision is part of every result:
 
-- The default is the practical accelerated configuration. It keeps f32
-  storage/output but permits documented reduced-input, f32-accumulate hardware
-  paths. PyTorch may use TF32; Meganeura may use f16 cooperative-matrix
-  inputs.
+- The default is the practical **accelerated** configuration. It permits AMP,
+  bf16/fp16 storage and arithmetic, and hardware acceleration, subject to the
+  recorded numerical gates. PyTorch uses native bf16 when supported, otherwise
+  fp16. Its frozen `auto` recipe uses F32 for SmolLM2-135M one-token latency,
+  which is faster than the qualified FP16/F32 projection-wrapper recipe on both
+  local GPUs; prefill and training retain the default dtype.
+  FP16 training uses gradient scaling.
+  Meganeura's default `Auto` path keeps f32 storage and permits eligible f16
+  cooperative inputs. Its explicit BF16 path is available for qualification
+  experiments. Every result records the arithmetic actually used.
 - `--strict` disables those paths for an f32 control run. PyTorch TF32 and
   Meganeura f16 cooperative-matrix paths are disabled. Native f32 cooperative
   matrices remain allowed.
 
-The two configurations are separate comparison classes because TF32 and f16
-are not numerically equivalent.
+These are the only two collection profiles. Accelerated permits each engine's
+available optimizations; it does not require identical internal dtypes.
+BF16 permission does not force a conversion or add a collection column.
+Mixed storage receipts list their actual dtypes; strict mode rejects BF16.
+The collector's `--autocast bf16`, `--autocast fp16` or `--autocast off` fixes
+ordinary PyTorch autocast before collection; the default `auto` selects a declared model/backend recipe,
+with no retry in another dtype after a numerical or compilation failure. Strict remains f32. CPU-only
+correctness references remain f32 and supply no GPU comparison timings.
+
+Accelerated PyTorch uses a strict-f32 forward oracle and a common training
+gate for TF32, BF16 and FP16. SmolLM2-135M runs 256 matched real-text updates,
+with fixed probe and held-out checks; other models retain the 32-update
+synthetic numerical check. Qualification restores the checkpoint before timing.
+Each engine's original f32 oracle supplies the cross-engine output and gradient
+checks. Accelerated pretrained language-model outputs must preserve the full
+probability distribution and labelled loss against that oracle; raw-logit error
+is diagnostic. Every training/probe/held-out loss must meet the 2% bound;
+curve L2 is diagnostic. Non-language outputs retain the tensor-fidelity gate.
+Graph replay includes forward/loss/scaled backward; scaler housekeeping runs
+after replay inside the measured step.
+
+The development collection protocol is **v26**, still 30 pairs per GPU.
+PyTorch qualifies both inference and latency against F32, including the smaller
+ResNet batch and shorter SmolVLA action sequence. Each receipt records the checked
+output shape; failed latency leaves its timings empty.
+Native candidates also pass a full-output/gradient check against the original
+graph in F32, including the first candidate and cached decisions. This adds
+reference preparation time, recorded in `compile_s`, before the 30-second search.
+Search refreshes inputs before each step to match benchmark execution.
+`scripts/amp_reference.py` provides optional dtype and `--repeated-batch`
+diagnostics; `scripts/convergence.py` separately compares both engines on real
+text. See the [current protocol](EXPERIMENT.md#development-v26-two-profiles).
+The completed October 11 v18 cohort retains its frozen source and arithmetic
+policy. Keep its records separate from the new qualification protocol.
+
+Native precision experiments use `INFERENA_MEGANEURA_PRECISION`:
+`auto` preserves the normal path; `fp16` also permits reduced derivative
+kernels; `bf16-forward` converts supported forward matrices/convolutions;
+`bf16` also narrows eligible dense derivatives; `bf16-inputs` keeps matrix
+results in f32 while narrowing operands. Parameters, accumulation, losses and
+master gradients remain f32. BF16 requires native storage and 16×16×16 or
+8×16×16 BF16/F32 cooperative matrices (the latter enables B570). Conversion
+costs are included in every step.
+
+```sh
+INFERENA_MEGANEURA_PRECISION=bf16-inputs MEGANEURA_TUNE=0 \
+  frameworks/meganeura/run.sh Whisper-tiny
+```
+
+These overrides emit diagnostic receipts and the paired collector rejects
+them. They must pass the original-graph F32 check before timing; that arithmetic
+check does not establish training convergence or an independent implementation
+comparison. The optional experiments add no columns. The
+[BF16 investigation](ANALYSIS.md#rectangular-bf16-and-cohort-qualification-october-14-2026)
+records the current evidence for choosing candidates.
 
 PyTorch uses `torch.compile` in `default` mode, including on Windows and MPS.
 CUDA, HIP and XPU runs use explicit whole-phase graph replay by default.
 MPS and CPU have no equivalent replay API here. Before timing, the runner
 checks repeated outputs and every participating gradient, then checks replay
-against ordinary execution. This is a repeatability check, not an eager oracle.
-Cross-engine validation still uses output samples and canonical gradient norms.
+against ordinary execution. This repeatability check is separate from
+cross-engine validation and Quest's full-tensor host CPU oracle.
 
-A requested compiler or backend failure is an error, never an eager/CPU timing
-under the same label. A training qualification failure preserves already-qualified
-inference as `status: partial`; failed and unattempted phases have null timings.
-Runtime failures such as OOM and device loss remain errors with their tracebacks.
-For diagnosis, request eager explicitly in a separate results directory:
+A requested compiler or backend failure is an error. A training qualification
+failure preserves already-qualified inference as `status: partial`; failed and
+unattempted phases have null timings. Runtime failures such as OOM and device
+loss remain errors with their tracebacks. For diagnosis, request eager explicitly
+in a separate results directory:
 
 ```bash
 INFERENA_TORCH_MODE=eager INFERENA_GRAPH_REPLAY=0 INFERENA_REFERENCE_DIAGNOSTIC=1 \
   ./run.sh -m Whisper-tiny -f pytorch --results-dir ../eager-diagnostic
 ```
 
-`INFERENA_TORCH_MODE=max-autotune` opts into PyTorch's longer search.
-`MEGANEURA_TUNE=1` opts into Meganeura's measured graph/kernel/submission search.
-Each candidate must pass full-tensor checks against the first checked program;
-this construction check is separate from cross-engine validation. Search defaults
-to a 30-second budget per session, configurable with `INFERENA_TUNE_SECONDS`.
-`INFERENA_MAX_SUBMISSION_CHUNKS` sets the upper submission count (1–64).
-Set `INFERENA_KERNEL_MEMO_DIR` to reuse kernel decisions for the same dependency,
-device, driver and tuning configuration; fresh program measurements and
-qualification still run. These choices and search receipts are recorded.
-
-Search refreshes inputs before every qualification, warmup and timed step,
-matching the benchmark's host uploads. Uploads stay outside execution samples
-but consume the search budget and appear in `input_refresh_time`. Session
-receipts identify this behavior as `search_input_policy: refresh-before-step-v1`.
-
-PyTorch compilation has no deadline by default. Set `INFERENA_COMPILE_SECONDS`
-to enable a watchdog that terminates the compiler process tree on expiry.
-`INFERENA_PREPARATION_REPORT` optionally preserves compilation and qualification
-failure details. A timeout produces an error, never a substituted eager timing.
-
-`INFERENA_SDPA=math|efficient|auto` overrides the recorded attention policy.
-XPU defaults to math attention because the pinned fused implementation can hang
-during graph capture. For XPU language-model training, the runner probes dense
-embedding backward and uses a separately qualified `index_add` implementation
-only if the native operation fails that probe.
-
 ## Prerequisites
 
 - **Rust** toolchain (for Candle, Burn, Luminal, Meganeura)
-- **Python** (managed automatically by the setup scripts below)
+- **uv** for automatic installation of the Python version in `.python-version`
 - **GPU drivers** for your hardware
+
+### RunPod setup
+
+Based on Ubuntu-22 template:
+```bash
+apt update
+apt install vulkan-tools libvulkan-dev glslang-tools libssl-dev pkg-config nvidia-cuda-toolkit
+curl -LsSf https://astral.sh/uv/install.sh | sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.bashrc
+```
 
 ### Ubuntu/Debian system packages
 
@@ -181,12 +239,14 @@ sudo apt install nvidia-cuda-toolkit        # nvcc — needed for Candle, Lumina
 # rocprofiler-sdk, roctracer, rocm-core (ROCm-compatible but unmanaged).
 
 # Intel GPU (Arc, Data Center GPU, Xe iGPU):
-# sudo apt install libze-intel-gpu1 libze1 intel-opencl-icd
+# sudo apt install libze-intel-gpu1 libze1 intel-opencl-icd intel-ocloc
+# intel-opencl-icd supplies the shared IGC compiler used by Level Zero; this
+# benchmark does not submit OpenCL work. intel-ocloc is needed by Triton XPU.
 # SYCL/oneMKL runtime libs ship as dependencies of the torch+xpu wheel.
 
 # Enable torch.compile on CPU (Inductor needs Python headers + g++):
 # sudo apt install python3-dev g++
-# Missing compiler dependencies are reported as errors, not eager timings.
+# Requested compilation fails explicitly if these are missing; no eager fallback.
 ```
 
 Run `./run.sh --check` after setup to verify what's working and get
@@ -194,43 +254,127 @@ install hints for anything missing.
 
 ## Quick start
 
-For a PyTorch/Meganeura comparison, install
+For a standalone comparison, install
 [uv](https://docs.astral.sh/uv/getting-started/installation/) and run:
 
 ```bash
 bash scripts/setup.sh cu130                 # or rocm7.2, xpu, mps, cpu
-source .venv/bin/activate
+source .venv-p3hpc/bin/activate
 python scripts/prepare_models.py SmolLM2-135M
 ./run.sh -f pytorch,meganeura
 ```
 
-Setup downloads the Python version in `.python-version`, installs only the
-comparison dependencies, and probes compiled forward/backward on the requested
-backend. It refuses to overwrite an existing environment; pass a new path as
-its second argument to keep multiple vendor environments. Setup does not
-install GPU drivers or CUDA/HIP SDKs.
+On Windows, use `scripts/setup.ps1 cu130` (or `xpu`, `cpu`) from PowerShell,
+then `.venv-p3hpc/Scripts/python.exe scripts/prepare_models.py SmolLM2-135M`.
+Run `bash run.sh -f pytorch,meganeura` through Git Bash. The wrapper finds
+`.venv-p3hpc` or `.venv`; an explicit `PYTHON` takes precedence.
+Setup refuses to overwrite an existing environment. Pass a new path as its
+second argument to keep multiple vendor environments. Drivers and SDKs remain
+system prerequisites.
 
-On Windows, use PowerShell for setup and Git Bash for the harness:
+### Full cohort collection
+
+The collection source is maintained on one branch while the protocol settles.
+The provisional collection tags were removed; use the same full branch revision
+on every machine, and check the current readiness finding before collecting:
+
+```sh
+git fetch origin
+git switch experiment/p3hpc-cuda-graphs
+git pull --ff-only
+```
+
+Read the [current protocol and readiness notes](EXPERIMENT.md) before starting
+a cohort. Qualify the pinned revision on each platform first; previous-cohort
+success does not qualify a new compiler.
+
+For the paired P3HPC campaign, install [uv](https://docs.astral.sh/uv/getting-started/installation/)
+once, then let the setup script install Python and the pinned requirements:
+
+```bash
+bash scripts/setup.sh cu130                 # new .venv-p3hpc; Python downloaded automatically
+# Other wheel backends: xpu, rocm7.2, cpu; mps uses the macOS PyPI wheel.
+.venv-p3hpc/bin/python scripts/p3hpc.py
+```
+
+On native Windows, from PowerShell:
 
 ```powershell
 .\scripts\setup.ps1 cu130
-.\.venv\Scripts\python.exe scripts\prepare_models.py SmolLM2-135M
+.\.venv-p3hpc\Scripts\python.exe scripts\p3hpc.py
 ```
 
-Then run `bash run.sh -f pytorch,meganeura`. The wrapper finds `.venv`
-automatically. An explicit `PYTHON` takes precedence over an activated venv.
+After activating that environment, the collection command on every platform is
+simply **`python scripts/p3hpc.py`**. Run it from a clean checkout of the same
+collection revision on each machine. It prepares missing pinned 135M weights,
+or verifies/adopts an exact legacy cache, detects the reference backend and
+matching native GPU, and validates all five common models in both precision
+classes inside three fresh-process measurement replicates
+per condition (at least 5 warmup calls and 10 seconds, then 20 samples). No CPU/eager timing substitution, automatic model
+exclusion, discarded sample, or retry is allowed. Strict gradients must pass
+the 5% gate in every process. Accelerated gradients retain every sample under
+a 10% safety ceiling, then require the median cross-engine error to remain
+below 5% across the three processes. Every raw result remains in the campaign.
+The primary matrix has 30 paired processes per device. Meganeura always uses
+qualified calibrated graph/kernel/submission search, with submission counts
+from 1 through 64 (powers of two) available on every GPU.
+The v18 native policy retains up to 16 graph/schedule forms and compares
+qualified programs after two warmup pairs and at least 250 ms, within the
+shared 30-second per-session budget. A campaign-local kernel memo lets runs 2/3
+reuse completed kernel comparisons; whole-program search and fresh numerical
+checks still run. Receipts distinguish cold and warm preparation. Use
+`--no-kernel-memo` for an independent-search study. Qualify the new pin before
+collection; do not mix v18 records with earlier campaigns.
+Quest 3S joins through `--backend android --adb-serial <IP>:5555 --android-ndk <NDK-r27>`.
+It uses the same native search/measurement policy and a full-tensor host CPU f64
+correctness oracle. Its timings have no paired PyTorch GPU ratio. See the
+[Quest setup and collection instructions](EXPERIMENT.md#quest-3s).
+PyTorch uses default compilation
+with a 120-second compilation deadline, not max-autotune. CUDA, ROCm and XPU
+use qualified whole-phase graph replay; MPS compiles without an equivalent
+public replay API. No `--no-max-autotune` argument is needed. Optional search
+and replay ablations are separate overrides, not the primary matrix.
+ROCm Whisper uses ordinary compiled automatic SDPA, with HIP graph replay
+enabled; the eager-efficient SDPA workaround did not restore repeatability.
+No `--sdpa` argument is needed. Classified numerical failures are retained
+per phase, and the remaining planned conditions continue. One separate eager,
+uncaptured, same-GPU math-attention diagnostic can validate native outputs,
+but its timings never replace failed compiled timings. Unknown execution or
+configuration errors still stop the campaign. See [the failure policy](EXPERIMENT.md#failed-references-and-the-separate-eager-diagnostic).
 
-For other frameworks, the broader existing requirements files are still
-available:
+The printed `../inferena-results/<host>-<UTC>-<source>/` directory contains the
+manifest, records and logs. Records are written atomically after each completed
+engine. A 1,200-second watchdog bounds each paired process and its workers;
+`watchdog.json` preserves timeouts, which stop collection without retrying.
+Use `--run-seconds N` to declare a different process safety limit.
+Keep that whole directory; `campaign.json` must say
+`"status": "complete"` for all gates to have passed. `complete-with-failures`
+means all planned conditions were attempted, with failures preserved and
+exit code 1. Incomplete phase replicate groups are not aggregate timings. Nothing is
+added to Git; `../inferena-results/latest.tgz` is replaced with an archive of
+the latest run, while older result directories remain intact. Copy that archive
+before another run. Optional `--qualify-only --models ResNet-50
+--precisions strict` provides a short new-device check; it does not collect
+publication timings. Larger SmolLM2 sizes are a separate opt-in
+cloud-GPU-only collection: `python scripts/p3hpc.py --models SmolLM2-360M SmolLM2-1.7B`.
+
+Windows still needs Git for Windows: the Python collector locates Git Bash for
+the underlying runners. CUDA setup also installs the matching Windows Triton
+compiler; it is not included by the PyTorch wheel. Existing environments are
+never replaced; pass a second argument to choose a new path. Setup verifies the
+common PyTorch source and runs a small
+forward/backward probe in each reference mode, including CUDA Graph replay.
+GPU drivers and Rust's platform build tools remain system prerequisites.
+See [Windows collection](EXPERIMENT.md#windows-nvidia) and
+[XPU and Nsight instructions](EXPERIMENT.md).
+
+Requirements files cannot select/install an interpreter by themselves. For
+the broader, non-paper runner dependencies, `uv venv .venv` also reads
+`.python-version` and downloads Python, then install the desired requirements:
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements-nvidia.txt       # NVIDIA CUDA
-# pip install -r requirements-amd.txt        # AMD ROCm
-# pip install -r requirements-intel.txt      # Intel XPU (Arc / Xe iGPU)
-# pip install -r requirements-apple.txt      # Apple Metal
-# pip install -r requirements-cpu.txt        # CPU only
-python scripts/prepare_models.py SmolLM2-135M
+uv venv .venv && source .venv/bin/activate
+uv pip install -r requirements-nvidia.txt    # NVIDIA CUDA; other vendor files are separate cohorts
 ./run.sh                                     # practical defaults, all models/frameworks
 ./run.sh -m SmolLM2-135M                     # single model
 ./run.sh -m SmolLM2-135M -f pytorch          # single model + framework
@@ -241,8 +385,8 @@ python scripts/prepare_models.py SmolLM2-135M
 ./run.sh -f meganeura -m Whisper-tiny --profile --profile-samples 5
 ```
 
-`--profile` retains the ordinary timing as the reported benchmark,
-then asks Meganeura to collect repeated GPU pass timestamps for
+`--profile` retains the ordinary grouped-pass timing as the reported benchmark,
+then asks Meganeura to collect repeated per-dispatch hardware timestamps for
 inference, latency, and training. Structured JSON sidecars are written under
 `<results-dir>/profiles/` and referenced by the Meganeura result artifact.
 They include the selected pipeline variants, phase and kernel-family
@@ -266,13 +410,12 @@ INFERENA_NSYS="$(command -v nsys)" INFERENA_NSYS_DIR="$(cd ../nsys-smollm && pwd
   ./run.sh -m SmolLM2-135M -f pytorch,meganeura --results-dir ../nsys-smollm
 ```
 
-Those runs are marked diagnostic, excluded from charts, and cannot use
+These runs are marked diagnostic, excluded from charts, and cannot use
 `--update`. Their timings must not replace ordinary measurements.
 
 ### Select a backend or larger model
 
-Set `INFERENA_TORCH_BACKEND=cuda|rocm|xpu|mps|cpu` to require that backend;
-it cannot fall back to CPU. Without it, the runner keeps automatic discovery.
+Set `INFERENA_TORCH_BACKEND=cuda|rocm|xpu|mps|cpu` to require that backend.
 On multi-GPU machines, use the vendor's visibility variables for PyTorch and
 `MEGANEURA_DEVICE_ID` for Meganeura. List native adapters with:
 
@@ -280,10 +423,9 @@ On multi-GPU machines, use the vendor's visibility variables for PyTorch and
 cargo run --release --locked -p inferena-meganeura -- --list-devices
 ```
 
-The wrapper no longer hides non-NVIDIA Vulkan drivers. Use
+The wrapper leaves Vulkan driver visibility unchanged. Use
 `--allow-integrated-gpu` to disable the harness's discrete-GPU preference.
-
-The larger SmolLM2 models are opt-in, not part of `--model all`:
+Larger SmolLM2 models are opt-in:
 
 ```bash
 python scripts/prepare_models.py SmolLM2-360M SmolLM2-1.7B
@@ -291,9 +433,9 @@ python scripts/prepare_models.py SmolLM2-360M SmolLM2-1.7B
 ./run.sh -m SmolLM2-1.7B -f pytorch,meganeura --inference-only
 ```
 
-`--inference-only` avoids the training allocation and reports training as
-unrequested, not as zero time. `INFERENA_WARMUP_SECONDS` optionally adds a
-minimum warmup duration to both runners; the default remains five warmup calls.
+`--inference-only` reports training as unrequested. Standalone runs can override
+the two-second minimum warmup with `INFERENA_WARMUP_SECONDS`; cohort collection
+rejects this override to preserve its fixed protocol.
 
 Inferena normally builds the Meganeura revision pinned in `Cargo.toml`. When
 developing both sibling repositories, opt into the local working tree
@@ -311,10 +453,9 @@ python scripts/prepare_models.py SmolLM2-135M
 ```
 
 This downloads an immutable revision, verifies file hashes and writes
-`models/<name>/source.json`. Existing mismatched files are rejected, not
-overwritten. `./run.sh --download` uses the same helper. SmolLM2-360M now uses
-the base checkpoint, not the old downloader's Instruct checkpoint; move old
-weights aside explicitly before preparing that model.
+`models/<name>/source.json`. Existing mismatched files are rejected.
+`./run.sh --download` uses the same helper. SmolLM2-360M uses the base
+checkpoint; move old Instruct weights aside before preparing that model.
 
 Or generate random-init weights locally (no network needed):
 
@@ -322,70 +463,23 @@ Or generate random-init weights locally (no network needed):
 python3 models/generate_weights.py SmolLM2-135M
 ```
 
-The paired Meganeura/PyTorch runners use `name-index-uniform-v1` synthetic
-parameters for SmolVLA, diffusion, ResNet and Whisper. This avoids the low-rank
-sine fixture while matching parameter bits and native matrix layouts. Diffusion
-uses exact GELU, and native SmolLM2/ResNet training uses indexed labels instead
-of allocating one-hot targets. These changes advance the paired result contract
-to `inferena-v3`; do not combine earlier fixture results with new measurements.
-
-### Full-tensor correctness checks
-
-Set `INFERENA_TENSOR_EXPORT` to a fresh directory named after the model to save
-Meganeura's inputs, source parameters, outputs, loss and canonical gradients
-outside the timed regions. Check those tensors against a fresh CPU float64 run:
-
-```bash
-INFERENA_TENSOR_EXPORT=../captures/Whisper-tiny \
-  ./run.sh -m Whisper-tiny -f meganeura --strict --results-dir ../tensor-check
-python scripts/compare_tensors.py ../captures/Whisper-tiny
-```
-
-The comparator checks all three phases with fixed maximum and RMS error bounds,
-saves per-tensor findings, and returns failure when a bound is exceeded. For
-SmolLM2 it reads the local model config, or accepts `--config`. It requires strict
-arithmetic when cooperative matrices are used; these bounds do not certify a
-reduced-input cooperative run. Exported timing records remain ordinary runner
-results; numerical agreement is reported separately by the comparator.
-
-The same native runner builds for Quest 3S with Android NDK r27 and Rust target
-`aarch64-linux-android`. Set `CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER` and
-`CC_aarch64_linux_android` to the NDK's `aarch64-linux-android29-clang` executable
-(`.cmd` on Windows), and `AR_aarch64_linux_android` to its `llvm-ar` executable:
-
-```bash
-rustup target add aarch64-linux-android
-cargo build --locked --release --target aarch64-linux-android -p inferena-meganeura
-adb shell mkdir -p /data/local/tmp/inferena
-adb push target/aarch64-linux-android/release/inferena-meganeura /data/local/tmp/inferena/runner
-adb shell chmod +x /data/local/tmp/inferena/runner
-adb shell 'cd /data/local/tmp/inferena && INFERENA_STRICT=1 INFERENA_TENSOR_EXPORT=Whisper-tiny ./runner Whisper-tiny' > quest-whisper.json
-mkdir -p ../captures
-adb pull /data/local/tmp/inferena/Whisper-tiny ../captures/
-python scripts/compare_tensors.py ../captures/Whisper-tiny
-```
-
-The pinned Blade includes the Qualcomm pipeline compiler serialization fix.
-On Android without Vulkan memory-budget reporting, tuning bounds logical plans
-using available system memory capped at 3 GiB. Device deployment and collection
-are manual here; cohort scheduling, replicate policies and battery management
-remain on the experiment branch.
-
-Saved JSON results can also be compared with `inferena --compare-results a.json
-b.json`. For Nsight SQLite exports, `python scripts/nsys_report.py capture.sqlite`
-reports measured GPU intervals; `--launches` separates CUDA graph nodes.
+Synthetic SmolVLA, diffusion, ResNet and Whisper parameters use the shared
+`name-index-uniform-v1` initializer. Earlier sine-fixture results belong to a
+different workload and must not be mixed into a new cohort.
 
 ### Fast regression checks
 
 ```bash
 cargo test --locked -p inferena-harness -p inferena-meganeura
 python -m unittest discover -s frameworks/pytorch -p 'test_*.py'
+python -m unittest discover -s scripts -p 'test_android.py'
 python scripts/check_environment.py --backend cpu
 ```
 
-These use small CPU fixtures, not model benchmarks. CI also publishes Python
-coverage for the runners. GPU replay remains a backend-specific qualification;
-run the environment probe with your actual backend before collecting data.
+CI publishes Python coverage for the runners. GPU replay still requires a
+backend-specific qualification; run the environment probe with your actual
+backend before collecting data. `--mode eager --no-replay` is available for
+an explicit diagnostic probe.
 
 ## Project structure
 

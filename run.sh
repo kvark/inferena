@@ -21,7 +21,7 @@ fi
 
 # --- Pick a Python interpreter ---
 # 1. Honor explicit $PYTHON, then an activated $VIRTUAL_ENV.
-# 2. Prefer this repository's .venv.
+# 2. Prefer the paper environment, then the legacy .venv.
 # 3. On Windows, prefer `python` — venvs don't ship a `python3` shim, so
 #    `python3` falls through to the Store shim, which has none of our packages.
 # 4. On Linux/macOS, prefer `python3`.
@@ -33,7 +33,11 @@ if [ -z "${PYTHON:-}" ] && [ -n "${VIRTUAL_ENV:-}" ]; then
     fi
 fi
 if [ -z "${PYTHON:-}" ]; then
-    if [ -x "$ROOT_DIR/.venv/bin/python" ]; then
+    if [ -x "$ROOT_DIR/.venv-p3hpc/bin/python" ]; then
+        PYTHON="$ROOT_DIR/.venv-p3hpc/bin/python"
+    elif [ -x "$ROOT_DIR/.venv-p3hpc/Scripts/python.exe" ]; then
+        PYTHON="$ROOT_DIR/.venv-p3hpc/Scripts/python.exe"
+    elif [ -x "$ROOT_DIR/.venv/bin/python" ]; then
         PYTHON="$ROOT_DIR/.venv/bin/python"
     elif [ -x "$ROOT_DIR/.venv/Scripts/python.exe" ]; then
         PYTHON="$ROOT_DIR/.venv/Scripts/python.exe"

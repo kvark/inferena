@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """PyTorch benchmark runner for inferena.
 
-Runs a fake training step (forward + backward) on a given model and prints
-a JSON result to stdout matching the BenchResult schema.
+Times forward and forward/loss/backward on a given model and prints a JSON
+result matching BenchResult. Qualification optimizer updates belong to untimed qualification.
 
 Features inspired by meganeura's bench/compare.sh (PR #30):
 - torch.compile with fresh inductor cache for fair compile-time measurement
@@ -30,6 +30,9 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from execution import QualificationError, capture_phase, graph_backend, profile_phase, synchronize, nsys_range
 from budget import compilation_budget, save
+from amp import AmpPolicy, BenchmarkBackward, qualify as qualify_precision, prepare_reference, precision_policy, training_plan
+
+PROTOCOL = Path(__file__).with_name("PROTOCOL").read_text().strip()
 
 
 # --- Conditioned latent-diffusion U-Net (matches meganeura::models::sd_unet) ---
@@ -440,37 +443,51 @@ def _index_add_embedding_forward(embedding, indices):
     return _IndexAddEmbeddingBackward.apply(indices, embedding.weight)
 
 
-def qualify_embedding_backward(model, dev: str):
+def qualify_embedding_backward(model, dev: str, probe_indices=None):
     """Probe the native dense backward and select an equivalent safe path."""
     embedding = model.get_input_embeddings()
     if not isinstance(embedding, nn.Embedding):
         return {"status": "not-applicable", "reason": "input module is not nn.Embedding"}
 
-    rows = min(128, embedding.num_embeddings)
+    rows = min(128, embedding.num_embeddings) if probe_indices is None else embedding.num_embeddings
     width = embedding.embedding_dim
+    indices = (torch.arange(rows, dtype=torch.long) if probe_indices is None
+               else torch.tensor(probe_indices, dtype=torch.long))
+    expected = indices.bincount(minlength=rows).to(device=dev, dtype=embedding.weight.dtype).unsqueeze(1)
+    indices = indices.to(dev)
 
     def probe(forward):
         weight = torch.zeros(
             rows, width, dtype=embedding.weight.dtype, device=dev, requires_grad=True
         )
-        indices = torch.arange(rows, device=dev)
         forward(indices, weight).sum().backward()
         synchronize(dev)
         grad = weight.grad.detach()
-        matching = int((grad == 1).sum().cpu())
+        matching = int((grad == expected).sum().cpu())
         finite = bool(torch.isfinite(grad).all().cpu())
         return matching, finite
 
     total = rows * width
-    matching, finite = probe(lambda indices, weight: F.embedding(indices, weight))
+    native_error = None
+    try:
+        matching, finite = probe(lambda indices, weight: F.embedding(indices, weight))
+    except RuntimeError as error:
+        # The pinned XPU dense backward can reject repeated real-text indices
+        # with a negative temporary dimension. Device faults still propagate.
+        if not dev.startswith("xpu") or "Trying to create tensor with negative dimension" not in str(error):
+            raise
+        native_error = str(error)
+        matching, finite = 0, False
     native_matching = matching
     report = {
         "probe_shape": [rows, width],
+        "probe_indices": "unique contiguous rows" if probe_indices is None else "first real training batch, including repeated rows",
         "native_dense": {
             "status": "pass" if matching == total and finite else "fail",
             "matching_elements": matching,
             "total_elements": total,
             "finite": finite,
+            "error": native_error,
         },
         "selected": "native-dense",
     }
@@ -949,7 +966,8 @@ def _benchmark_logits(model_type: str, outputs):
 
 
 def _benchmark_loss(model_type: str, outputs, inputs: dict):
-    logits = _benchmark_logits(model_type, outputs)
+    # Loss reductions stay f32 even when the forward used autocast.
+    logits = _benchmark_logits(model_type, outputs).float()
     if model_type == "sd_unet":
         return F.mse_loss(logits, inputs["noise_target"])
     if model_type == "smolvla":
@@ -964,28 +982,28 @@ def _benchmark_loss(model_type: str, outputs, inputs: dict):
     )
 
 
-def _benchmark_latency_call(model_type: str, model, inputs: dict, dev: str):
+def prepare_latency_inputs(model_type: str, model, inputs: dict, dev: str):
+    """One workload definition shared by compilation, F32 checks and timing."""
     if model_type == "causal_lm":
-        token = torch.tensor([[0]], device=dev, dtype=torch.long)
-        mask = torch.ones(1, 1, dtype=torch.long, device=dev)
-        return lambda: model(input_ids=token, attention_mask=mask, use_cache=False)
+        return prepare_inputs(model_type, model, dev, seq_len=1)
     if model_type == "resnet":
-        image = torch.zeros(1, 3, 224, 224, device=dev, dtype=torch.float32)
-        return lambda: model(image)
-    if model_type == "sd_unet":
-        return lambda: _sd_forward(model, inputs)
+        return {"images": torch.zeros(1, 3, 224, 224, device=dev, dtype=torch.float32)}
     if model_type == "smolvla":
-        latency_inputs = {
+        return {
             "noisy_actions": inputs["noisy_actions"][:, :1],
             "timestep": inputs["timestep"],
             # Keep all 16 VLM context positions. Slicing every tensor to one
             # position (the legacy runner's behavior) changed the workload.
             "vlm_kv": inputs["vlm_kv"],
         }
-        return lambda: model(**latency_inputs)
-    if model_type == "whisper":
-        return lambda: model(inputs["input_features"])
+    if model_type in ("sd_unet", "whisper"):
+        return inputs
     raise AssertionError(f"no latency workload for {model_type}")
+
+
+def _benchmark_latency_call(model_type: str, model, inputs: dict, dev: str):
+    latency_inputs = prepare_latency_inputs(model_type, model, inputs, dev)
+    return lambda: _benchmark_forward(model_type, model, latency_inputs)
 
 
 def _quantile(samples, q):
@@ -1009,9 +1027,9 @@ def _timing_summary(samples):
     }
 
 
-WARMUP_SECONDS = float(os.environ.get("INFERENA_WARMUP_SECONDS", "0"))
-if not math.isfinite(WARMUP_SECONDS) or WARMUP_SECONDS < 0:
-    raise ValueError("INFERENA_WARMUP_SECONDS must be finite and non-negative")
+WARMUP_SECONDS = float(os.environ.get("INFERENA_WARMUP_SECONDS", "10"))
+if not math.isfinite(WARMUP_SECONDS) or WARMUP_SECONDS <= 0:
+    raise ValueError("INFERENA_WARMUP_SECONDS must be a positive number")
 
 
 def _measure_call(fn, warmup_runs: int, measurement_runs: int, device, phase, before=None):
@@ -1316,8 +1334,8 @@ def _process_device_memory(dev: str):
     return None, None
 
 
-def _configure_benchmark_precision(dev: str, strict: bool):
-    if strict:
+def _configure_benchmark_precision(dev: str, strict: bool, amp=None):
+    if strict or amp is not None and amp.dtype is not None:
         torch.set_float32_matmul_precision("highest")
         if dev.startswith("cuda"):
             # `highest` is documented as equivalent to this assignment, but
@@ -1325,6 +1343,8 @@ def _configure_benchmark_precision(dev: str, strict: bool):
             # effective contract instead of relying on a default.
             torch.backends.cuda.matmul.allow_tf32 = False
             torch.backends.cudnn.allow_tf32 = False
+        if amp is not None and amp.dtype is not None:
+            return amp.metadata()
         return {
             "comparison_class": "strict-f32",
             "tensor_storage": "f32",
@@ -1334,14 +1354,15 @@ def _configure_benchmark_precision(dev: str, strict: bool):
             "output": "f32",
             "reduced_precision_allowed": False,
         }
-    torch.set_float32_matmul_precision("high")
+    torch.set_float32_matmul_precision("highest" if dev.startswith("cpu") else "high")
     if dev.startswith("cuda"):
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
     return {
-        "comparison_class": "reduced-input-f32-accumulate",
+        "comparison_class": "accelerated",
+        "autocast": None,
         "tensor_storage": "f32",
-        "matmul_inputs": "TF32 or backend high-precision algorithm",
+        "matmul_inputs": "f32 CPU correctness oracle" if dev.startswith("cpu") else "TF32 or backend high-precision algorithm",
         "convolution_inputs": "TF32 when supported",
         "accumulation": "f32",
         "output": "f32",
@@ -1367,9 +1388,25 @@ def compiler_options(mode):
         raise ValueError(f"unknown INFERENA_TORCH_MODE: {mode}")
     torch._dynamo.config.suppress_errors = False
     options = dict(modes[mode])
+    options.setdefault("max_autotune", False)
+    options.setdefault("coordinate_descent_tuning", False)
+    options.setdefault("max_autotune_gemm", False)
+    options.setdefault("max_autotune_pointwise", False)
     # One explicit replay owner, including the uncaptured comparison.
     options["triton.cudagraphs"] = False
     return options
+
+
+def kernel_benchmarking(mode):
+    """Record the actual shared autotuner, which is selected at import time."""
+    if mode == "eager":
+        return None
+    from torch._inductor.runtime import benchmarking
+    return {
+        "implementation": type(benchmarking.benchmarker).__name__,
+        "use_experimental_benchmarker": bool(torch._inductor.config.use_experimental_benchmarker),
+        "use_torch_profiler_benchmarker": bool(torch._inductor.config.use_torch_profiler_benchmarker),
+    }
 
 
 def attention_policy(device, model_type=None):
@@ -1386,6 +1423,22 @@ def attention_context(device, model_type=None):
     backend = {"math": SDPBackend.MATH, "efficient": SDPBackend.EFFICIENT_ATTENTION}.get(
         attention_policy(device, model_type))
     return sdpa_kernel(backend) if backend is not None else nullcontext()
+
+
+def correctness_snapshot(model_type, model, output, loss, training):
+    """Untimed strict-f32 oracle, kept separate from the measured accelerated outputs."""
+    values = output.detach().float().cpu().flatten()
+    count = min(256, values.numel())
+    samples = (values.tolist() if count == values.numel() else
+               [values[i * (values.numel() - 1) // (count - 1)].item() for i in range(count)])
+    norms = {_gradient_parameter_name(model_type, name): float(parameter.grad.detach().float().square().sum()) ** 0.5
+             for name, parameter in model.named_parameters() if training and parameter.grad is not None}
+    return {"precision": "strict-f32", "scope": "untimed eager forward/loss/backward at the initial checkpoint",
+            "training_requested": training,
+            "outputs": {"logits_hash": sha256_f32_tensor(output), "output_shape": list(output.shape),
+                        "logits_sample": [round(v, 6) for v in samples], "loss": round(float(loss.detach()), 6),
+                        "grad_norm": round(math.sqrt(sum(v * v for v in norms.values())), 6) if training else None,
+                        "gradient_norms": {name: round(value, 9) for name, value in sorted(norms.items())}}}
 
 
 def bench(model_name: str, spec: dict):
@@ -1406,7 +1459,7 @@ def bench(model_name: str, spec: dict):
         api.current_stream(dev).wait_stream(stream)
 
 
-def _bench(model_name, spec, dev, stream):
+def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
     dev_name = device_name(dev)
     backend = backend_name(dev)
     model_type = spec["type"]
@@ -1414,12 +1467,20 @@ def _bench(model_name, spec, dev, stream):
     if not training_requested and model_type != "causal_lm":
         raise ValueError("inference-only currently supports SmolLM2 workloads")
     strict = os.environ.get("INFERENA_STRICT", "0") == "1"
-    precision_mode = "strict-f32" if strict else "accelerated-f32"
+    requested_autocast = os.environ.get("INFERENA_AUTOCAST", "auto")
+    declared_policy = precision_policy(dev, requested_autocast, model_name, strict=strict)
+    amp = AmpPolicy(dev, declared_policy["autocast"] or "")
+    latency_amp = AmpPolicy(dev, declared_policy["phase_autocast"]["latency"] or "")
+    precision_mode = "strict-f32" if strict else "accelerated"
+    protocol = PROTOCOL
     warmup_runs = int(os.environ.get("INFERENA_WARMUP_RUNS", "5"))
     measurement_runs = int(os.environ.get("INFERENA_MEASUREMENT_RUNS", "20"))
     if warmup_runs < 0 or measurement_runs < 1:
         raise ValueError("warmups must be >= 0 and measurement runs must be >= 1")
-    precision = _configure_benchmark_precision(dev, strict)
+    precision = _configure_benchmark_precision(dev, strict, amp)
+    precision.update(declared_policy)
+    if latency_amp.name != amp.name:
+        precision["matmul_inputs"] = f"{amp.name or 'f32'} prefill/training; {latency_amp.name or 'f32'} latency"
     mode = os.environ.get("INFERENA_TORCH_MODE", "default")
     options = compiler_options(mode)
     graph_capable = torch.device(dev).type in ("cuda", "xpu")
@@ -1433,10 +1494,11 @@ def _bench(model_name, spec, dev, stream):
     execution = {
         "requested_mode": mode,
         "compiled": False,
+        "kernel_benchmarking": kernel_benchmarking(mode),
         "sdpa_policy": attention_policy(dev, model_type),
-        "sdpa_compile": "eager" if mode == "eager" else "compiled",
+        "sdpa_compile": "eager" if mode == "eager" else sdpa_compile,
         "sdpa_enabled_backends": [backend.name for backend in torch.nn.attention._cur_sdpa_kernel_backends()],
-        "compile_budget_seconds": float(os.environ["INFERENA_COMPILE_SECONDS"]) if "INFERENA_COMPILE_SECONDS" in os.environ else None,
+        "compile_budget_seconds": float(os.environ.get("INFERENA_COMPILE_SECONDS", "120")),
         "compile_budget_enforced": os.environ.get("INFERENA_BUDGET_ENFORCED") == "1",
         "stream_policy": "single dedicated preparation/run stream" if stream is not None else "backend default",
         "determinism": {
@@ -1449,7 +1511,7 @@ def _bench(model_name, spec, dev, stream):
     }
 
     print(
-        f"[pytorch] inferena-v3: {precision_mode}, at least {warmup_runs} warmups / {WARMUP_SECONDS}s, "
+        f"[pytorch] {protocol}: {precision_mode}, at least {warmup_runs} warmups / {WARMUP_SECONDS}s, "
         f"{measurement_runs} samples",
         file=sys.stderr,
     )
@@ -1470,6 +1532,7 @@ def _bench(model_name, spec, dev, stream):
         eager_model.train()
     synchronize(dev)
     load_s = time.perf_counter() - load_start
+    backward = BenchmarkBackward(eager_model, amp) if amp.dtype is not None else lambda loss: loss.backward()
 
     execution["embedding_backward"] = (
         qualify_embedding_backward(eager_model, dev)
@@ -1481,7 +1544,29 @@ def _bench(model_name, spec, dev, stream):
         }
     )
 
+    gate_request = os.environ.get("INFERENA_TRAINING_GATE", "auto")
+    if gate_request not in ("auto", "repeated-synthetic"):
+        raise ValueError("INFERENA_TRAINING_GATE must be auto or repeated-synthetic")
+    gate_plan = (training_plan(model_name, prepare_inputs(model_type, eager_model, dev), dev,
+                               repeated=gate_request == "repeated-synthetic")
+                 if not strict and training_requested else None)
     model = eager_model
+    precision_reference = None
+    oracle_seconds = 0.0
+    if not strict:
+        started = time.perf_counter()
+        reference_inputs = prepare_inputs(model_type, eager_model, dev)
+        precision_reference = prepare_reference(
+            eager_model,
+            lambda current, batch: _benchmark_logits(model_type, _benchmark_forward(model_type, current, batch)),
+            lambda output, batch: _benchmark_loss(model_type, output, batch),
+            reference_inputs, amp, training=training_requested,
+            snapshot=lambda *args: correctness_snapshot(model_type, *args), plan=gate_plan,
+            latency_inputs=prepare_latency_inputs(model_type, eager_model, reference_inputs, dev),
+        )
+        del reference_inputs
+        oracle_seconds = time.perf_counter() - started
+        precision_reference["correctness_reference"]["prepared_before_candidate_compilation"] = True
     compile_s = 0.0
     if mode != "eager":
         compile_start = time.perf_counter()
@@ -1493,14 +1578,17 @@ def _bench(model_name, spec, dev, stream):
 
                 if training_requested:
                     candidate.zero_grad(set_to_none=True)
-                    train_outputs = _benchmark_forward(model_type, candidate, compile_inputs)
-                    _benchmark_loss(model_type, train_outputs, compile_inputs).backward()
+                    with amp.context():
+                        train_outputs = _benchmark_forward(model_type, candidate, compile_inputs)
+                        train_loss = _benchmark_loss(model_type, train_outputs, compile_inputs)
+                    backward(train_loss)
                     synchronize(dev)
                     candidate.zero_grad(set_to_none=True)
                     del train_outputs
 
-                with torch.no_grad():
+                with torch.no_grad(), amp.context():
                     _benchmark_forward(model_type, candidate, compile_inputs)
+                with torch.no_grad(), latency_amp.context():
                     _benchmark_latency_call(
                         model_type, candidate, compile_inputs, dev
                     )()
@@ -1517,9 +1605,46 @@ def _bench(model_name, spec, dev, stream):
         execution["compile_skipped"] = "explicit eager mode"
 
     inputs = prepare_inputs(model_type, model, dev)
+    if not strict:
+        qualification_started = time.perf_counter()
+        try:
+            # All phase specializations must have been compiled within the
+            # declared budget; varying token values may not trigger more work.
+            with torch.compiler.set_stance("fail_on_recompile") if execution["compiled"] else nullcontext():
+                execution["precision_qualification"] = qualify_precision(
+                    eager_model, model,
+                    lambda current, batch: _benchmark_logits(model_type, _benchmark_forward(model_type, current, batch)),
+                    lambda output, batch: _benchmark_loss(model_type, output, batch),
+                    inputs, amp, training=training_requested,
+                    reference=precision_reference, plan=gate_plan,
+                    language_model=model_type == "causal_lm",
+                    latency_policy=latency_amp,
+                    latency_inputs=prepare_latency_inputs(model_type, model, inputs, dev),
+                )
+        except QualificationError as error:
+            error.details["elapsed_seconds"] = time.perf_counter() - qualification_started
+            error.details["reference_preparation_seconds"] = oracle_seconds
+            if path := os.environ.get("INFERENA_PRECISION_REPORT"):
+                save(Path(path), {"status": "failed", **error.details})
+            if path := os.environ.get("INFERENA_PREPARATION_REPORT"):
+                path = Path(path)
+                preparation = json.loads(path.read_text()) if path.exists() else {}
+                preparation["qualification_failure"] = {**error.details, "phase": "inference"}
+                save(path, preparation)
+            raise
+        execution["precision_qualification"]["elapsed_seconds"] = time.perf_counter() - qualification_started
+        execution["precision_qualification"]["reference_preparation_seconds"] = oracle_seconds
+        del precision_reference
+        if path := os.environ.get("INFERENA_PRECISION_REPORT"):
+            save(Path(path), execution["precision_qualification"])
+        if training_requested and execution["precision_qualification"]["training"]["status"] != "pass":
+            execution["training_precision_failure"] = execution["precision_qualification"]["training"]
+        if execution["precision_qualification"].get("latency_forward", {}).get("status") == "failed":
+            execution["latency_precision_failure"] = execution["precision_qualification"]["latency_forward"]
+    del gate_plan
 
     def inference_call():
-        with torch.no_grad():
+        with torch.no_grad(), amp.context():
             return _benchmark_logits(model_type, _benchmark_forward(model_type, model, inputs))
 
     def prepare_phase(name, fn, training_model=None):
@@ -1527,9 +1652,12 @@ def _bench(model_name, spec, dev, stream):
             execution["graph_replay"]["phases"][name] = {"status": "not-attempted"}
             return None
         try:
+            if training_model is not None and amp.name == "fp16":
+                execution["benchmark_scaling_preparation"] = backward.prepare(fn)
             fn, report = capture_phase(fn, training_model, stream=stream,
                                        reduced_precision=precision["reduced_precision_allowed"],
-                                       device=dev, capture=use_graphs)
+                                       device=dev, capture=use_graphs,
+                                       after=backward.finish if training_model is not None and amp.dtype is not None else None)
         except QualificationError as error:
             failure = {**error.details, "phase": name}
             execution["failure"] = failure
@@ -1561,13 +1689,24 @@ def _bench(model_name, spec, dev, stream):
     loss = float(loss.item())
 
     def train_call():
-        outputs = _benchmark_forward(model_type, model, inputs)
-        step_loss = _benchmark_loss(model_type, outputs, inputs)
-        step_loss.backward()
+        with amp.context():
+            outputs = _benchmark_forward(model_type, model, inputs)
+            step_loss = _benchmark_loss(model_type, outputs, inputs)
+        if amp.dtype is not None:
+            backward.capture_backward(step_loss)
+        else:
+            backward(step_loss)
         return _benchmark_logits(model_type, outputs), step_loss
 
     training_samples = None
-    if training_requested:
+    if "training_precision_failure" in execution:
+        train_call = None
+        execution["graph_replay"]["phases"]["training"] = {
+            "status": "failed", "failure": {"kind": "numerical", "phase": "training",
+                "message": "accelerated training precision gate failed; checkpoint restored",
+                "gate": execution["training_precision_failure"]},
+        }
+    elif training_requested:
         train_call = prepare_phase("training", train_call, model)
         if train_call is not None:
             _reset_peak_memory(dev)
@@ -1591,10 +1730,16 @@ def _bench(model_name, spec, dev, stream):
     latency_call = _benchmark_latency_call(model_type, model, inputs, dev)
 
     def no_grad_latency():
-        with torch.no_grad():
+        with torch.no_grad(), latency_amp.context():
             return _benchmark_logits(model_type, latency_call())
 
-    no_grad_latency = prepare_phase("latency", no_grad_latency)
+    if "latency_precision_failure" in execution:
+        no_grad_latency = None
+        execution["graph_replay"]["phases"]["latency"] = {
+            "status": "failed", "failure": {**execution["latency_precision_failure"]["failure"], "phase": "latency"},
+        }
+    else:
+        no_grad_latency = prepare_phase("latency", no_grad_latency)
     latency_samples = None
     if no_grad_latency is not None:
         _reset_peak_memory(dev)
@@ -1606,6 +1751,9 @@ def _bench(model_name, spec, dev, stream):
     inference_summary = _timing_summary(inference_samples)
     training_summary = _timing_summary(training_samples) if training_samples is not None else None
     latency_summary = _timing_summary(latency_samples) if latency_samples is not None else None
+    for phase in ("training", "latency"):
+        if f"{phase}_precision_failure" in execution and "failure" not in execution:
+            execution["failure"] = execution["graph_replay"]["phases"][phase]["failure"]
     precision["torch_float32_matmul_precision"] = (
         torch.get_float32_matmul_precision()
     )
@@ -1669,6 +1817,7 @@ def _bench(model_name, spec, dev, stream):
         "torch_git_version": torch.version.git_version,
         "torch_build_config": torch.__config__.show(),
         "inductor_compile_threads": os.environ.get("TORCHINDUCTOR_COMPILE_THREADS"),
+        "inductor_compile_threads_effective": torch._inductor.config.compile_threads,
         "triton_backend": os.environ.get("TRITON_DEFAULT_BACKEND"),
         "cuda_version": torch.version.cuda,
         "hip_version": torch.version.hip,
@@ -1692,6 +1841,8 @@ def _bench(model_name, spec, dev, stream):
     if execution["compiled"] and dev.startswith(("cuda", "xpu")):
         from torch._inductor.utils import is_big_gpu
         environment["inductor_is_big_gpu"] = is_big_gpu(torch.device(dev))
+    if amp.dtype is not None:
+        execution["gradient_scaler"] = backward.metadata()
     profiles = {}
     if profile_dir := os.environ.get("INFERENA_PROFILE_DIR"):
         samples = int(os.environ.get("INFERENA_PROFILE_SAMPLES", "3"))
@@ -1710,7 +1861,7 @@ def _bench(model_name, spec, dev, stream):
             profiles[name] = profile_phase(fn, path, samples, before, device=dev)
 
     result = {
-        "status": "partial" if "failure" in execution else "ok",
+        "status": "partial" if "failure" in execution or "training_precision_failure" in execution else "ok",
         "framework": "pytorch",
         "framework_rev": torch.__version__,
         "model": model_name,
@@ -1722,7 +1873,7 @@ def _bench(model_name, spec, dev, stream):
         "execution": execution,
         "profile_artifacts": profiles,
         "protocol": {
-            "name": "inferena-v3",
+            "name": protocol,
             "synthetic_parameter_init": SYNTHETIC_PARAMETER_INIT,
             "warmup_runs": warmup_runs,
             "warmup_seconds": WARMUP_SECONDS,
@@ -1730,9 +1881,14 @@ def _bench(model_name, spec, dev, stream):
             "measurement_runs": measurement_runs,
             "statistic": "median",
             "training_requested": training_requested,
-            "training_scope": "forward + loss + backward; no optimizer update" if training_requested else None,
-            "diagnostic": "INFERENA_NSYS" in os.environ or os.environ.get("INFERENA_REFERENCE_DIAGNOSTIC") == "1",
-            "timing_scope": "synchronized host wall time; resident inputs; no readback",
+            "training_scope": (("forward + f32 loss + scaled backward + GradScaler housekeeping; no optimizer update"
+                                if amp.name == "fp16" else "forward + loss + backward; no optimizer update")
+                               if training_requested else None),
+            "diagnostic": ("INFERENA_NSYS" in os.environ or os.environ.get("INFERENA_REFERENCE_DIAGNOSTIC") == "1"
+                           or gate_request == "repeated-synthetic"),
+            "training_gate": gate_request,
+            "timing_scope": ("synchronized host wall time; resident inputs; no output readback; includes GradScaler finite-check synchronization"
+                             if amp.name == "fp16" else "synchronized host wall time; resident inputs; no readback"),
             "gradient_reset": (
                 "captured backward overwrites stable gradient buffers"
                 if use_graphs else "set_to_none outside timed region"
@@ -1743,6 +1899,7 @@ def _bench(model_name, spec, dev, stream):
             ),
         },
         "precision": precision,
+        "correctness_reference": execution.get("precision_qualification", {}).get("correctness_reference"),
         "timings": {
             "compile_s": round(compile_s, 3),
             "inference_ms": round(inference_summary["median"], 3),

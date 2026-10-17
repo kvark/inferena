@@ -31,6 +31,10 @@ def compare_tensors(actual, reference, *, gradient=False, reduced_precision=Fals
         raise QualificationError("tensor shape or dtype changed")
     if not actual.numel():
         raise QualificationError("empty qualification tensor")
+    # NumPy has no native bfloat16 dtype. Cast both after checking that their
+    # original dtypes agree; every bfloat16 value is exactly representable in f32.
+    if actual.dtype == torch.bfloat16:
+        actual, reference = actual.float(), reference.float()
     actual, reference = actual.numpy(), reference.numpy()
     if not np.isfinite(actual).all() or not np.isfinite(reference).all():
         raise QualificationError("non-finite values")
@@ -142,25 +146,30 @@ def profile_phase(fn, path, samples, before=None, device="cuda"):
 
 
 class CapturedPhase:
-    def __init__(self, fn, model, graph, outputs):
+    def __init__(self, fn, model, graph, outputs, after=None):
         # The callable may be the sole owner of captured inputs/parameters.
         self.fn = fn
         self.model = model
         self.graph = graph
         self.outputs = outputs
+        self.after = after
 
     def __call__(self):
         self.graph.replay()
+        if self.after is not None:
+            self.after()
         return self.outputs
 
 
-def capture_phase(fn, model=None, stream=None, reduced_precision=False, device="cuda", capture=True):
+def capture_phase(fn, model=None, stream=None, reduced_precision=False, device="cuda", capture=True, after=None):
     """Qualify ordinary calls, optionally capture and qualify graph replay.
 
     fn returns a tensor or a tuple of tensors. Inputs and parameters must keep
     their addresses. Training is forward/loss/backward, without an optimizer.
     Capture errors and validation failures propagate; never time a fallback.
     Reuse the preparation stream when compilation retains autograd nodes.
+    after runs outside capture, after every execution, including timed replays.
+    This keeps GradScaler unscale/finite checks/update in the measured step.
     """
     start = time.perf_counter()
     api = graph_backend(device) if torch.device(device).type in ("cuda", "xpu") else None
@@ -220,6 +229,8 @@ def capture_phase(fn, model=None, stream=None, reduced_precision=False, device="
             if model is not None:
                 model.zero_grad(set_to_none=True)
             outputs = fn()
+            if after is not None:
+                after()
             synchronize(device)
             validation_start = time.perf_counter()
             if index == 0:
@@ -232,7 +243,13 @@ def capture_phase(fn, model=None, stream=None, reduced_precision=False, device="
     if api is not None:
         api.current_stream(device).wait_stream(stream)
 
-    replay = fn
+    def ordinary_call():
+        output = fn()
+        if after is not None:
+            after()
+        return output
+
+    replay = ordinary_call
     replays = []
     capture_s = 0.0
     replay_validation_s = 0.0
@@ -256,7 +273,7 @@ def capture_phase(fn, model=None, stream=None, reduced_precision=False, device="
                 raise
             synchronize(device)
             raise QualificationError(str(error), kind="capture", stage="graph capture") from error
-        replay = CapturedPhase(fn, model, graph, outputs)
+        replay = CapturedPhase(fn, model, graph, outputs, after)
         capture_s = time.perf_counter() - capture_start
         validation_start = time.perf_counter()
         for _ in range(2):
@@ -269,6 +286,7 @@ def capture_phase(fn, model=None, stream=None, reduced_precision=False, device="
         "status": "captured-and-validated" if capture else "validated-uncaptured",
         "api": f"torch.{backend}.{graph_type.__name__}" if capture else None,
         "scope": "forward + loss + backward" if model is not None else "forward",
+        "post_execution": "eager GradScaler housekeeping, included in timing" if after is not None else None,
         "capture_s": capture_s,
         "preparation_s": time.perf_counter() - start,
         "validation_s": ordinary_validation_s + replay_validation_s,

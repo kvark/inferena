@@ -6,7 +6,7 @@ case "$(uname -s)" in
     *) ROOT=$(cd "$(dirname "$0")/.." && pwd) ;;
 esac
 export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
-if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
     echo "Usage: bash scripts/setup.sh <cu130|xpu|cpu|mps|rocm7.2> [new-venv-path]" >&2
     exit 2
 fi
@@ -20,7 +20,21 @@ case "$BACKEND" in
     cu130|xpu|cpu|mps|rocm7.2) ;;
     *) echo "Unknown wheel backend: $BACKEND" >&2; exit 2 ;;
 esac
-ENV_DIR=${1:-"$ROOT/.venv"}
+ENV_DIR=
+for ARG in "$@"; do
+    case "$ARG" in
+        --no-max-autotune) ;; # Accepted for compatibility; already the default.
+        -*) echo "Unknown setup option: $ARG" >&2; exit 2 ;;
+        *)
+            if [ -n "$ENV_DIR" ]; then
+                echo "Only one new environment path may be provided" >&2
+                exit 2
+            fi
+            ENV_DIR=$ARG
+            ;;
+    esac
+done
+ENV_DIR=${ENV_DIR:-"$ROOT/.venv-p3hpc"}
 if [ -e "$ENV_DIR" ]; then
     echo "Environment already exists: $ENV_DIR. Choose a new path; nothing was replaced." >&2
     exit 2
@@ -44,9 +58,9 @@ if [ "$BACKEND" = rocm7.2 ]; then
         --refresh-package triton-rocm
     )
 fi
-REQUIREMENTS="$ROOT/requirements-pytorch.txt"
+REQUIREMENTS="$ROOT/requirements-p3hpc.txt"
 if [ -f "$ENV_DIR/Scripts/python.exe" ] && [ "$BACKEND" = cu130 ]; then
-    REQUIREMENTS="$ROOT/requirements-pytorch-cu130-windows.txt"
+    REQUIREMENTS="$ROOT/requirements-p3hpc-cu130-windows.txt"
 fi
 uv pip install --python "$ENV_PYTHON" "${TORCH_ARGS[@]+"${TORCH_ARGS[@]}"}" -r "$REQUIREMENTS"
 case "$BACKEND" in cu130) PROBE_BACKEND=cuda ;; rocm*) PROBE_BACKEND=rocm ;; *) PROBE_BACKEND=$BACKEND ;; esac

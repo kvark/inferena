@@ -536,7 +536,7 @@ dependencies = [
 [[package]]
 name = "blade-graphics"
 version = "0.9.0"
-source = "git+https://github.com/kvark/blade?rev=7909fc17392f803b02be001041695127426e0fa3#7909fc17392f803b02be001041695127426e0fa3"
+source = "git+https://github.com/kvark/blade?rev=96c1dc731b1d5e133a6c0a8a020014619ff2e434#96c1dc731b1d5e133a6c0a8a020014619ff2e434"
 dependencies = [
  "ash",
  "ash-window",
@@ -553,7 +553,7 @@ dependencies = [
  "libloading 0.9.0",
  "log",
  "mint",
- "naga 30.0.0 (git+https://github.com/gfx-rs/wgpu?rev=323acfb729a00c3030e362faa27252afe6368792)",
+ "naga 30.0.0 (git+https://github.com/kvark/wgpu?rev=a97559b6318dc0a857ace502ffc7f3e442951f39)",
  "objc2",
  "objc2-app-kit",
  "objc2-core-foundation",
@@ -5143,7 +5143,7 @@ checksum = "7ebb8d8732c6a6df3d8f032a82911cfc747e00efb95cc46e8d0acd5b5b88570c"
 [[package]]
 name = "meganeura"
 version = "0.3.0"
-source = "git+https://github.com/kvark/meganeura?rev=eb8c90fceb2f065bed98c2d1c6cc4e419923e11d#eb8c90fceb2f065bed98c2d1c6cc4e419923e11d"
+source = "git+https://github.com/kvark/meganeura?rev=41a15d31b652f95aa9fb427dea47acf052c1e9bd#41a15d31b652f95aa9fb427dea47acf052c1e9bd"
 dependencies = [
  "blade-graphics",
  "blade-macros",
@@ -5152,7 +5152,6 @@ dependencies = [
  "flate2",
  "half",
  "log",
- "naga 30.0.0 (git+https://github.com/gfx-rs/wgpu?rev=323acfb729a00c3030e362faa27252afe6368792)",
  "oxionnx-core",
  "oxionnx-proto",
  "ron",
@@ -5350,7 +5349,7 @@ dependencies = [
 [[package]]
 name = "naga"
 version = "30.0.0"
-source = "git+https://github.com/gfx-rs/wgpu?rev=323acfb729a00c3030e362faa27252afe6368792#323acfb729a00c3030e362faa27252afe6368792"
+source = "git+https://github.com/kvark/wgpu?rev=a97559b6318dc0a857ace502ffc7f3e442951f39#a97559b6318dc0a857ace502ffc7f3e442951f39"
 dependencies = [
  "arrayvec",
  "bit-set 0.11.1",
@@ -5363,7 +5362,7 @@ dependencies = [
  "indexmap",
  "libm",
  "log",
- "naga-types 30.0.0 (git+https://github.com/gfx-rs/wgpu?rev=323acfb729a00c3030e362faa27252afe6368792)",
+ "naga-types 30.0.0 (git+https://github.com/kvark/wgpu?rev=a97559b6318dc0a857ace502ffc7f3e442951f39)",
  "num-traits",
  "once_cell",
  "rustc-hash 1.1.0",
@@ -5387,7 +5386,7 @@ dependencies = [
 [[package]]
 name = "naga-types"
 version = "30.0.0"
-source = "git+https://github.com/gfx-rs/wgpu?rev=323acfb729a00c3030e362faa27252afe6368792#323acfb729a00c3030e362faa27252afe6368792"
+source = "git+https://github.com/kvark/wgpu?rev=a97559b6318dc0a857ace502ffc7f3e442951f39#a97559b6318dc0a857ace502ffc7f3e442951f39"
 dependencies = [
  "hashbrown 0.17.1",
  "indexmap",

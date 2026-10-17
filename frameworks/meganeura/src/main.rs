@@ -53,6 +53,7 @@ fn build_session(
     let mut preparation = serde_json::json!({
         "mode": format!("{mode:?}"),
         "cooperative_matrix_policy": policy,
+        "search_input_policy": "refresh-before-step-v1",
         "search": null,
     });
     let session = if meganeura::config::TUNE.bool_or(false) {
@@ -105,7 +106,7 @@ fn build_session(
         )
         .expect("cannot load kernel memo");
         options.kernel_memo = Some(cache.memo.clone());
-        let (session, report) = train::build_measured(
+        let (session, report) = train::build_measured_with_inputs(
             graph,
             config,
             options,
@@ -120,6 +121,12 @@ fn build_session(
                 if !reused {
                     initialize_parameters(session);
                 }
+                initialize_inputs(session);
+                Ok(())
+            },
+            |session| {
+                // Match bench_session: host uploads affect subsequent execution
+                // even though their own time is outside the step timer.
                 initialize_inputs(session);
                 Ok(())
             },

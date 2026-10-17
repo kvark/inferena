@@ -21,6 +21,14 @@ from p3hpc import (ROOT, MODELS, PHASES, SMOLLM2_PINS, SYNTHETIC_PARAMETER_INIT,
 
 PROTOCOL = "p3hpc-android-campaign-v9"
 TARGET = "aarch64-linux-android"
+WARMUP_SECONDS = 2
+
+
+def measurement_environment(count):
+    # The native runner defaults to a longer desktop warmup. Set the Android
+    # policy explicitly so the launch and the receipt validator agree.
+    return dict(INFERENA_WARMUP_RUNS="5", INFERENA_WARMUP_SECONDS=str(WARMUP_SECONDS),
+                INFERENA_MEASUREMENT_RUNS=str(count))
 
 
 def write_json(path, value):
@@ -126,7 +134,7 @@ def check_native(record, args, model, precision, count, dependency, native):
     protocol = record["protocol"]
     if (protocol["name"] != "inferena-paper-v6" or protocol["diagnostic"]
             or protocol["synthetic_parameter_init"] != SYNTHETIC_PARAMETER_INIT
-            or protocol["warmup_runs"] != 5 or protocol["warmup_seconds"] != 2
+            or protocol["warmup_runs"] != 5 or protocol["warmup_seconds"] != WARMUP_SECONDS
             or protocol["measurement_runs"] != count or protocol["training_requested"] is not True):
         raise ValueError("native workload/measurement protocol differs")
     expected_class = "strict-f32" if precision == "strict" else "accelerated"
@@ -135,7 +143,7 @@ def check_native(record, args, model, precision, count, dependency, native):
     for phase in PHASES:
         warmup = protocol["warmup"][phase]
         samples = record["timing_samples_ms"][phase]
-        if (warmup["runs"] < 5 or not math.isfinite(warmup["seconds"]) or warmup["seconds"] < 2
+        if (warmup["runs"] < 5 or not math.isfinite(warmup["seconds"]) or warmup["seconds"] < WARMUP_SECONDS
                 or len(samples) != count or any(not math.isfinite(x) or x <= 0 for x in samples)):
             raise ValueError(f"invalid {phase} warmup or samples")
     optimizer = record["optimizer"]
@@ -241,7 +249,7 @@ def collect(args, parser, packages, started_at, started):
                                    role="correctness-only", timing_competitor=False, rtol=1e-4, atol=1e-6),
                     arithmetic_note="No cooperative matrices on Quest; both classes execute f32 and use strict tensor bounds",
                     native_policy=dict(kernel_strategy="Race", negligible_plan_share_cutoff=0.001),
-                    warmup=dict(minimum_runs=5, minimum_seconds=2),
+                    warmup=dict(minimum_runs=5, minimum_seconds=WARMUP_SECONDS),
                     measurement_runs=20 if args.collect else 1,
                     planned_runs=(args.replicates if args.collect else 1) * len(args.models) * len(args.precisions),
                     failure_policy=dict(retry_failed_primary=False, timing_substitution=False),
@@ -303,7 +311,7 @@ def collect(args, parser, packages, started_at, started):
                     check_battery(run["health_before"]["battery"])
                     env = dict(MEGANEURA_DEVICE_ID=str(native["device_id"]), MEGANEURA_TUNE="1",
                                INFERENA_STRICT=str(int(precision == "strict")),
-                               INFERENA_WARMUP_RUNS="5", INFERENA_MEASUREMENT_RUNS=str(count),
+                               **measurement_environment(count),
                                INFERENA_TUNE_SECONDS=str(args.tune_seconds),
                                INFERENA_MAX_SUBMISSION_CHUNKS=str(args.max_submission_chunks),
                                INFERENA_TENSOR_EXPORT=remote_capture, FRAMEWORK_REV=dependency["rev"],

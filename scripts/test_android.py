@@ -10,11 +10,18 @@ from unittest.mock import patch
 
 from p3hpc import create_parser, check_native_search, TUNE_SCRATCH_BYTES
 from p3hpc_android import (PROTOCOL, Device, battery_info, check_battery, check_native,
-                           validate_oracle, write_json, sha256)
+                           measurement_environment, validate_oracle, write_json, sha256)
 from p3hpc_report import campaign_rows
 
 
 class AndroidContract(unittest.TestCase):
+    def test_launch_explicitly_sets_android_measurement_policy(self):
+        for count in (1, 20):  # Qualification and collection.
+            with self.subTest(count=count):
+                self.assertEqual(measurement_environment(count), dict(
+                    INFERENA_WARMUP_RUNS="5", INFERENA_WARMUP_SECONDS="2",
+                    INFERENA_MEASUREMENT_RUNS=str(count)))
+
     def test_memory_fallback_is_bounded_and_android_only(self):
         import sys
         tuning = dict(scope="All", strategy="Race", max_classes=2 * sys.maxsize + 1, min_improvement=0.05,
@@ -70,6 +77,11 @@ class AndroidContract(unittest.TestCase):
         with patch("p3hpc_android.check_native_search") as search:
             check_native(record, args, "SmolVLA", "strict", 20, {"rev": "revision"}, {"name": "Adreno"})
             self.assertEqual(search.call_count, 3)
+            # A launch that inherits the desktop default must still be rejected.
+            record["protocol"]["warmup_seconds"] = 10
+            with self.assertRaisesRegex(ValueError, "native workload/measurement protocol differs"):
+                check_native(record, args, "SmolVLA", "strict", 20, {"rev": "revision"}, {"name": "Adreno"})
+            record["protocol"]["warmup_seconds"] = 2
             record["precision"]["comparison_class"] = "accelerated"
             for session in record["optimizer"]["sessions"]:
                 session["cooperative_matrix_policy"] = "Auto"

@@ -63,22 +63,22 @@ fn build_session_with_quality(
     config.tune = false;
     // The library's process-global default is never destroyed. Own the context
     // so dropping a session releases its device and flushes vendor trace data.
-    config.gpu.get_or_insert_with(|| {
-        std::sync::Arc::new(
-            meganeura::runtime::init_gpu_context().expect("GPU initialization failed"),
-        )
-    });
+    ensure_selected_gpu(&mut config);
     let arithmetic = precision::Policy::from_env();
     arithmetic.configure(&mut config);
     let reference_start = Instant::now();
     let mut reference_config = session_config();
     // Keep reference allocations and runtime calibration out of the context
-    // whose selected program will be measured.
-    let reference_gpu = std::sync::Arc::new(
-        meganeura::runtime::init_gpu_context().expect("reference GPU initialization failed"),
-    );
+    // whose selected program will be measured. This is a second context on the
+    // adapter `SessionConfig::from_env` already chose.
+    ensure_selected_gpu(&mut reference_config);
     assert_eq!(
-        reference_gpu.device_information().device_name,
+        reference_config
+            .gpu
+            .as_ref()
+            .unwrap()
+            .device_information()
+            .device_name,
         config
             .gpu
             .as_ref()
@@ -87,7 +87,6 @@ fn build_session_with_quality(
             .device_name,
         "arithmetic reference selected a different GPU",
     );
-    reference_config.gpu = Some(reference_gpu);
     reference_config.mode = mode;
     reference_config.tune = false;
     reference_config.cache = None;
@@ -309,6 +308,18 @@ fn search_memory_budget(budget: u64, usage: u64) -> (u64, &'static str, Option<u
     }
     #[cfg(not(target_os = "android"))]
     panic!("GPU memory budget is unavailable or exhausted");
+}
+
+fn ensure_selected_gpu(config: &mut SessionConfig<'_>) {
+    // `SessionConfig::from_env` already opened `GpuOptions::from_env` when
+    // `MEGANEURA_DEVICE_ID`, timing, or capture was set. `init_gpu_context`
+    // ignores that id and opens the Vulkan default, which is the iGPU on a
+    // hybrid machine once the loader is no longer pinned to the discrete GPU.
+    if config.gpu.is_none() {
+        config.gpu = Some(std::sync::Arc::new(
+            meganeura::runtime::init_gpu_context().expect("GPU initialization failed"),
+        ));
+    }
 }
 
 fn session_config() -> SessionConfig<'static> {

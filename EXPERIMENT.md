@@ -36,9 +36,17 @@ from merged Meganeura #262: classes predicted to contribute less than 0.1% of
 the whole plan may remain unvisited. The receipt must include calibration and
 a finite positive plan prediction. Unexplained incomplete coverage, class caps
 and changed budgets still fail validation. Whole-program timing and numerical
-gates remain unchanged. Android uses its corresponding v9 protocol. The initial
+gates remain unchanged. Android uses its corresponding v10 protocol. The initial
 integration's B570 SmolVLA run exposed this receipt incompatibility; its records
 remain separate from the fresh v28 qualification.
+
+Android v10 corrects the CPU oracle's loss arithmetic: the reference loss now
+preserves the requested float64 dtype instead of using the timed AMP benchmark's
+float32 loss helper. V9's SmolLM2 gradient mismatches were reproduced with that
+cast and disappear when only the reference cross-entropy uses float64. Receipts
+record and validate `loss_dtype` and `loss_policy=reference-dtype-v1`. Tensor
+bounds, native arithmetic, search and measurement policies are unchanged. Keep
+the original v9 failures; qualify the corrected oracle in a new campaign.
 
 ## Earlier v27 validation
 

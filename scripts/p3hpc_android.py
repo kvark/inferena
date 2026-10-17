@@ -15,11 +15,13 @@ import sys
 import time
 import tomllib
 
+from cpu_reference import LOSS_POLICY
+
 from p3hpc import (ROOT, MODELS, PHASES, SMOLLM2_PINS, SYNTHETIC_PARAMETER_INIT,
                   archive_results, check_native_search, gpu_matches, input_hashes,
                   select_native_device)
 
-PROTOCOL = "p3hpc-android-campaign-v9"
+PROTOCOL = "p3hpc-android-campaign-v10"
 TARGET = "aarch64-linux-android"
 WARMUP_SECONDS = 2
 
@@ -168,6 +170,7 @@ def check_native(record, args, model, precision, count, dependency, native):
 
 def validate_oracle(folder, report, precision):
     if (report["reference_dtype"] != "float64" or report["attention"] != "eager"
+            or report.get("loss_dtype") != "float64" or report.get("loss_policy") != LOSS_POLICY
             or report["policy"]["atol"] != 1e-6 or report["policy"]["rtol"] != 1e-4
             or set(report["phases"]) != set(PHASES)):
         raise ValueError("CPU oracle contract changed")
@@ -246,6 +249,7 @@ def collect(args, parser, packages, started_at, started):
                     sha256=hashes, device=identity, initial_health=initial_health,
                     android_ndk=ndk_properties, target=TARGET, remote_directory=remote,
                     reference=dict(framework="pytorch", device="host CPU", dtype="float64", attention="eager",
+                                   loss_dtype="float64", loss_policy=LOSS_POLICY,
                                    role="correctness-only", timing_competitor=False, rtol=1e-4, atol=1e-6),
                     arithmetic_note="No cooperative matrices on Quest; both classes execute f32 and use strict tensor bounds",
                     native_policy=dict(kernel_strategy="Race", negligible_plan_share_cutoff=0.001),
@@ -365,7 +369,7 @@ def collect(args, parser, packages, started_at, started):
                     if cpu.returncode != (0 if valid else 1):
                         raise RuntimeError("CPU process status contradicts the oracle receipt")
                     record["validation"] = dict(reference_framework="pytorch", reference_device="host CPU",
-                                                policy="full-tensor-cpu-f64-v1", comparison_performed=True,
+                                                policy="full-tensor-cpu-f64-v2", comparison_performed=True,
                                                 forward_valid=all(run["phases"][p]["status"] == "valid" for p in PHASES[:2]),
                                                 training_valid=run["phases"]["training"]["status"] == "valid",
                                                 report="comparison-float64-eager.json")

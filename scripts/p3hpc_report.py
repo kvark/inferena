@@ -16,7 +16,8 @@ def campaign_rows(directory):
                          "p3hpc-android-campaign-v6": "p3hpc-paired-campaign-v25",
                          "p3hpc-android-campaign-v7": "p3hpc-paired-campaign-v26",
                          "p3hpc-android-campaign-v8": "p3hpc-paired-campaign-v27",
-                         "p3hpc-android-campaign-v9": "p3hpc-paired-campaign-v28"}
+                         "p3hpc-android-campaign-v9": "p3hpc-paired-campaign-v28",
+                         "p3hpc-android-campaign-v10": "p3hpc-paired-campaign-v28"}
     android = manifest["protocol"] in android_protocols
     paired_protocol = android_protocols.get(manifest["protocol"], manifest["protocol"])
     if paired_protocol not in {f"p3hpc-paired-campaign-v{v}" for v in range(18, 29)}:

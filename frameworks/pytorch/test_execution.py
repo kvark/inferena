@@ -409,7 +409,7 @@ class CampaignTest(unittest.TestCase):
                           "native_f32_cooperative_matrix_permitted": True,
                           "f16_cooperative_matrix_permitted": False},
         }
-        tuning = {"scope": "All", "max_classes": 2 * sys.maxsize + 1,
+        tuning = {"scope": "All", "strategy": "Race", "max_classes": 2 * sys.maxsize + 1,
                   "min_improvement": 0.05,
                   "max_time": {"secs": 30, "nanos": 0}, "max_scratch_bytes": TUNE_SCRATCH_BYTES}
         mg = {**copy.deepcopy(base), "framework": "meganeura", "optimizer": {
@@ -629,6 +629,7 @@ class CampaignTest(unittest.TestCase):
             (0, ("optimizer", "sessions", 0, "search", "options", "min_improvement"), 0.05),
             (0, ("optimizer", "sessions", 0, "search", "options", "warmup_time"), {"secs": 0, "nanos": 0}),
             (0, ("optimizer", "sessions", 0, "search", "options", "tuning", "max_classes"), 8),
+            (0, ("optimizer", "sessions", 0, "search", "options", "tuning", "strategy"), "Pairwise"),
             (0, ("optimizer", "sessions", 0, "search", "options", "tuning", "min_improvement"), 0.01),
             (0, ("optimizer", "sessions", 0, "search", "options", "tuning", "max_time"), {"secs": 2, "nanos": 0}),
             (0, ("optimizer", "sessions", 0, "search", "trials", 0, "kernel_tuning", "visited_classes"), 0),

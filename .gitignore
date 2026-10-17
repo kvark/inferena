@@ -6,8 +6,7 @@
 /frameworks/llama-cpp/llama.cpp/
 __pycache__/
 *.pyc
-.venv/
-.venv-*/
+.venv*/
 .coverage
 coverage.xml
 .claude/

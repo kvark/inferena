@@ -24,4 +24,4 @@ meganeura = { git = "https://github.com/kvark/meganeura", rev = "378d8e28f8355b0
 
 # Shared dependencies.
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }

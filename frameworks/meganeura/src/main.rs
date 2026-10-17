@@ -4,7 +4,10 @@
 //! using the meganeura crate (e-graph optimized NN on blade-graphics).
 
 use meganeura::data::safetensors::SafeTensorsModel;
-use meganeura::{CoopPolicy, Graph, Mode, Session, SessionConfig, train, tune::TuneOptions};
+use meganeura::{
+    CoopPolicy, Graph, Mode, Session, SessionConfig, train,
+    tune::{TuneOptions, TuneStrategy},
+};
 use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
@@ -15,18 +18,24 @@ thread_local! {
     static SESSION_PREPARATION: RefCell<Vec<serde_json::Value>> = const { RefCell::new(Vec::new()) };
 }
 
+mod convergence;
 mod export;
 mod initialization;
 mod parameters;
+mod precision;
 mod qualification;
+mod quality;
 mod search_cache;
 
 fn warmup_time() -> Duration {
     let seconds = std::env::var("INFERENA_WARMUP_SECONDS")
-        .unwrap_or_else(|_| "0".to_owned())
+        .unwrap_or_else(|_| "10".to_owned())
         .parse::<f64>()
-        .expect("INFERENA_WARMUP_SECONDS must be a non-negative number");
-    assert!(seconds.is_finite() && seconds >= 0.0);
+        .expect("INFERENA_WARMUP_SECONDS must be a positive number");
+    assert!(
+        seconds.is_finite() && seconds > 0.0,
+        "INFERENA_WARMUP_SECONDS must be a finite positive number"
+    );
     Duration::from_secs_f64(seconds)
 }
 
@@ -35,6 +44,16 @@ fn build_session(
     mode: Mode,
     initialize_parameters: impl Fn(&mut Session),
     initialize_inputs: impl Fn(&mut Session),
+) -> Session {
+    build_session_with_quality(graph, mode, initialize_parameters, initialize_inputs, None)
+}
+
+fn build_session_with_quality(
+    graph: &Graph,
+    mode: Mode,
+    initialize_parameters: impl Fn(&mut Session),
+    initialize_inputs: impl Fn(&mut Session),
+    language_model: Option<(usize, &[u32])>,
 ) -> Session {
     export::set_graph(graph);
     let mut config = session_config();
@@ -49,14 +68,57 @@ fn build_session(
             meganeura::runtime::init_gpu_context().expect("GPU initialization failed"),
         )
     });
+    let arithmetic = precision::Policy::from_env();
+    arithmetic.configure(&mut config);
+    let reference_start = Instant::now();
+    let mut reference_config = session_config();
+    // Keep reference allocations and runtime calibration out of the context
+    // whose selected program will be measured.
+    let reference_gpu = std::sync::Arc::new(
+        meganeura::runtime::init_gpu_context().expect("reference GPU initialization failed"),
+    );
+    assert_eq!(
+        reference_gpu.device_information().device_name,
+        config
+            .gpu
+            .as_ref()
+            .unwrap()
+            .device_information()
+            .device_name,
+        "arithmetic reference selected a different GPU",
+    );
+    reference_config.gpu = Some(reference_gpu);
+    reference_config.mode = mode;
+    reference_config.tune = false;
+    reference_config.cache = None;
+    reference_config.runtime.coop = CoopPolicy::NativeF32;
+    reference_config.options.flash_forward_coop = false;
+    reference_config.options.flash_backward_coop = false;
+    reference_config.options.bf16_matrix_gradients = false;
+    let mut reference = meganeura::build(graph, reference_config).0;
+    initialize_parameters(&mut reference);
+    initialize_inputs(&mut reference);
+    reference.step();
+    reference.wait();
+    let mut qualification = qualification::Qualification::new(graph, mode, &reference)
+        .expect("invalid strict-f32 arithmetic reference");
+    drop(reference);
+    if let Some((vocabulary, targets)) = language_model {
+        qualification
+            .set_language_model(vocabulary, targets)
+            .expect("invalid language-model reference");
+    }
+    qualification.set_reference_seconds(reference_start.elapsed().as_secs_f64());
+    let reduced_graph = arithmetic.graph(graph);
+    let graph = reduced_graph.as_ref().unwrap_or(graph);
     let policy = format!("{:?}", config.runtime.coop);
     let mut preparation = serde_json::json!({
         "mode": format!("{mode:?}"),
         "cooperative_matrix_policy": policy,
-        "search_input_policy": "refresh-before-step-v1",
+        "arithmetic": arithmetic.metadata(),
         "search": null,
     });
-    let session = if meganeura::config::TUNE.bool_or(false) {
+    let session = if meganeura::config::TUNE.bool_or(true) {
         let seconds = std::env::var("INFERENA_TUNE_SECONDS")
             .unwrap_or_else(|_| "30".to_owned())
             .parse::<f64>()
@@ -70,7 +132,6 @@ fn build_session(
         let memory = config.gpu.as_ref().unwrap().memory_stats();
         let (available, memory_source, system_available) =
             search_memory_budget(memory.budget, memory.usage);
-        let mut qualification = qualification::Qualification::new(graph, mode);
         let mut options = train::BuildSearchOptions {
             max_graphs: 16,
             max_programs: 64,
@@ -86,6 +147,7 @@ fn build_session(
             // This is a logical-plan bound, not a measured heap peak.
             max_plan_bytes: (available / 4 * 3) as usize,
             tuning: TuneOptions {
+                strategy: TuneStrategy::Race,
                 max_classes: usize::MAX,
                 max_time: Duration::from_secs_f64(seconds),
                 max_scratch_bytes: 1024 * 1024 * 1024,
@@ -101,6 +163,7 @@ fn build_session(
                 "driver": device.driver_name,
                 "driver_info": device.driver_info,
                 "cooperative_policy": policy,
+                "arithmetic": arithmetic.name(),
                 "tuning": options.tuning,
             }),
         )
@@ -125,8 +188,6 @@ fn build_session(
                 Ok(())
             },
             |session| {
-                // Match bench_session: host uploads affect subsequent execution
-                // even though their own time is outside the step timer.
                 initialize_inputs(session);
                 Ok(())
             },
@@ -143,7 +204,6 @@ fn build_session(
         );
         preparation["kernel_memo"] = cache.finish(&report).expect("cannot save kernel memo");
         preparation["search"] = serde_json::to_value(report).unwrap();
-        preparation["qualification"] = qualification.report();
         preparation["memory_budget"] = serde_json::json!({
             "device_budget_bytes": memory.budget,
             "device_usage_bytes": memory.usage,
@@ -157,8 +217,15 @@ fn build_session(
         let mut session = meganeura::build(graph, config).0;
         initialize_parameters(&mut session);
         initialize_inputs(&mut session);
+        session.step();
+        session.wait();
+        qualification
+            .check(&session)
+            .expect("unqualified native arithmetic");
         session
     };
+    preparation["qualification"] = qualification.report();
+    preparation["search_input_policy"] = "refresh before each step, outside timing".into();
     preparation["cooperative_dispatches"] = serde_json::json!(
         session
             .plan()
@@ -166,6 +233,47 @@ fn build_session(
             .iter()
             .filter(|dispatch| dispatch.use_coop())
             .count()
+    );
+    preparation["bf16_matrix_dispatches"] = serde_json::json!(
+        session
+            .plan()
+            .dispatches
+            .iter()
+            .filter(|d| matches!(
+                d.kernel,
+                meganeura::compile::Kernel::CooperativeTyped { types, .. }
+                    | meganeura::compile::Kernel::CooperativeWorkgroup {
+                        types: Some(types), ..
+                    } if types.uses(meganeura::DType::BF16)
+            ) || matches!(d.shader, meganeura::compile::ShaderEntry::Conv2dBF16 { .. }))
+            .count()
+    );
+    preparation["bf16_subgroup_shape"] =
+        if preparation["bf16_matrix_dispatches"].as_u64().unwrap() > 0 {
+            serde_json::json!(meganeura::codegen::checked_cooperative_shape(
+                &session
+                    .context()
+                    .capabilities()
+                    .cooperative_matrix
+                    .bf16_f32_shapes,
+            ))
+        } else {
+            serde_json::Value::Null
+        };
+    preparation["bf16_workgroup_tiles"] = serde_json::json!(
+        session
+            .plan()
+            .dispatches
+            .iter()
+            .filter_map(|d| match d.kernel {
+                meganeura::compile::Kernel::CooperativeWorkgroup {
+                    shape,
+                    types: Some(types),
+                    ..
+                } if types.uses(meganeura::DType::BF16) => Some(shape),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
     );
     SESSION_PREPARATION.with_borrow_mut(|reports| reports.push(preparation));
     session
@@ -470,8 +578,8 @@ fn bench_session(
     set_inputs(session);
     let mut exported = export::before(session, phase);
     let (warmups, samples) = benchmark_counts();
-    let warmup_range = nsys_range(&format!("meganeura/{phase}/warmup"));
     let warmup_time = warmup_time();
+    let warmup_range = nsys_range(&format!("meganeura/{phase}/warmup"));
     let warmup_start = Instant::now();
     let mut warmup_runs = 0;
     while warmup_runs < warmups || warmup_start.elapsed() < warmup_time {
@@ -528,11 +636,7 @@ fn capture_gap_profile(
         )
     });
     let strict = std::env::var("INFERENA_STRICT").as_deref() == Ok("1");
-    let precision = if strict {
-        "strict-f32"
-    } else {
-        "accelerated-f32"
-    };
+    let precision = if strict { "strict-f32" } else { "accelerated" };
     let slug: String = model
         .chars()
         .map(|character| {
@@ -573,7 +677,7 @@ fn capture_gap_profile(
             "mode": std::env::var("MEGANEURA_OPTIMIZER").unwrap_or_else(|_| "egglog-outlined".to_string()),
             "extraction_cost": std::env::var("MEGANEURA_EGRAPH_COST").unwrap_or_else(|_| "tensor-traffic".to_string()),
         },
-        "benchmark_protocol": "inferena-v3",
+        "benchmark_protocol": "inferena-paper-v6",
         "normal_benchmark": {
             "samples_ms": &benchmark.samples_ms,
             "median_ms": benchmark.median_ms,
@@ -598,13 +702,8 @@ fn capture_gap_profile(
     Some(format!("{directory_name}/{file_name}"))
 }
 
-fn bench_smollm2(model_name: &str) {
+fn smollm2_config(path: &std::path::Path) -> meganeura::models::smollm2::Config {
     use meganeura::models::smollm2;
-
-    let mut profile_artifacts = std::collections::BTreeMap::new();
-    let mut memory = MemoryCollector::default();
-    let path = find_local_model(model_name)
-        .expect("prepare pinned weights first: python scripts/prepare_models.py <model>");
     let source: serde_json::Value = serde_json::from_reader(
         std::fs::File::open(path.with_file_name("config.json")).expect("model config missing"),
     )
@@ -619,7 +718,7 @@ fn bench_smollm2(model_name: &str) {
     assert!(source["mlp_bias"].is_null() || source["mlp_bias"] == false);
     let size = |name: &str| usize::try_from(source[name].as_u64().expect(name)).unwrap();
     let scalar = |name: &str| source[name].as_f64().expect(name) as f32;
-    let config = smollm2::Config {
+    smollm2::Config {
         vocab_size: size("vocab_size"),
         hidden_size: size("hidden_size"),
         num_hidden_layers: size("num_hidden_layers"),
@@ -629,7 +728,17 @@ fn bench_smollm2(model_name: &str) {
         rms_norm_eps: scalar("rms_norm_eps"),
         rope_theta: scalar("rope_theta"),
         tie_word_embeddings: source["tie_word_embeddings"].as_bool().unwrap(),
-    };
+    }
+}
+
+fn bench_smollm2(model_name: &str) {
+    use meganeura::models::smollm2;
+
+    let mut profile_artifacts = std::collections::BTreeMap::new();
+    let mut memory = MemoryCollector::default();
+    let path = find_local_model(model_name)
+        .expect("prepare pinned weights first: python scripts/prepare_models.py <model>");
+    let config = smollm2_config(&path);
 
     let seq_len: usize = 128;
     let vocab = config.vocab_size;
@@ -652,13 +761,14 @@ fn bench_smollm2(model_name: &str) {
     let labels: Vec<u32> = (0..seq_len as u32)
         .map(|i| (i + 1) % vocab as u32)
         .collect();
-    let mut session = build_session(
+    let mut session = build_session_with_quality(
         &g,
         Mode::Inference,
         |session| load_weights(session, &model, &transposed_set),
         |session| {
             session.set_input_u32("token_ids", &input_ids);
         },
+        Some((vocab, &labels)),
     );
     let mut compile_s = compile_start.elapsed().as_secs_f64();
     eprintln!("[meganeura] ready (compile: {compile_s:.2}s)");
@@ -705,13 +815,14 @@ fn bench_smollm2(model_name: &str) {
     let mut lat_g = Graph::new();
     let lat_logits = smollm2::build_graph(&mut lat_g, &config, 1);
     lat_g.set_outputs(vec![lat_logits]);
-    let mut lat_session = build_session(
+    let mut lat_session = build_session_with_quality(
         &lat_g,
         Mode::Inference,
         |session| load_weights(session, &model, &transposed_set),
         |session| {
             session.set_input_u32("token_ids", &[0u32]);
         },
+        Some((vocab, &[1u32])),
     );
     compile_s += lat_compile_start.elapsed().as_secs_f64();
     let latency = bench_session("latency", &mut lat_session, &|s| {
@@ -1021,7 +1132,7 @@ fn kernel_release() -> Option<String> {
         .filter(|release| !release.is_empty())
 }
 
-/// Environment metadata recorded with each device result.
+/// Environment metadata the paper protocol requires for a device row.
 ///
 /// Driver identity is the primary confound across a multi-vendor matrix and
 /// cannot be reconstructed once a run is archived, so it is recorded in the
@@ -1051,6 +1162,8 @@ fn environment_json(session: &meganeura::Session) -> serde_json::Value {
         "gpu_device_id": device_id,
         "cooperative_f32_tile": caps.f32_tile,
         "cooperative_f16_tile": caps.f16_tile,
+        "bf16_storage": session.context().capabilities().shader_bfloat16,
+        "cooperative_bf16_f32_shapes": session.context().capabilities().cooperative_matrix.bf16_f32_shapes,
         "gpu_device_local_budget_bytes": session
             .device_memory_stats()
             .map(|stats| stats.budget_bytes),
@@ -1097,41 +1210,25 @@ fn emit_result(
     let sample = validation_sample(output, 256);
     let backend = detect_backend();
     let (warmup_runs, measurement_runs) = benchmark_counts();
-    let strict = std::env::var("INFERENA_STRICT").as_deref() == Ok("1");
-    let accelerated = !strict;
-    let precision = if accelerated {
+    let precision = precision::Policy::from_env().metadata();
+    let correctness_reference = (!precision::strict()).then(|| SESSION_PREPARATION.with_borrow(|sessions| {
+        let first = sessions.iter().find(|s| s["mode"] == "Inference").expect("inference reference");
+        let mut outputs = first["qualification"]["arithmetic_reference"]["reference_outputs"].clone();
+        outputs["output_shape"] = serde_json::json!(output_shape);
+        if training.is_some() {
+            let trained = sessions.iter().find(|s| s["mode"] == "Training").expect("training reference");
+            let reference = &trained["qualification"]["arithmetic_reference"]["reference_outputs"];
+            for field in ["loss", "grad_norm", "gradient_norms"] {
+                outputs[field] = reference[field].clone();
+            }
+        }
+        assert!(outputs["loss"].as_f64().is_some_and(f64::is_finite), "missing reference loss");
         serde_json::json!({
-            "comparison_class": "reduced-input-f32-accumulate",
-            "cooperative_matrix_policy": "Auto: protect full-precision derivative regions",
-            "tensor_storage": "f32",
-            "matmul_inputs": "forward: f16 for eligible cooperative-matrix kernels; f32 otherwise",
-            "attention_inputs": "forward: f16 for eligible cooperative-matrix kernels; f32 otherwise",
-            "convolution_inputs": "forward: f16 for eligible cooperative-matrix kernels; f32 otherwise",
-            "backward_matmul_inputs": "f32",
-            "backward_convolution_inputs": "f32",
-            "backward_attention_inputs": "f32",
-            "accumulation": "f32",
-            "output": "f32",
-            "reduced_precision_allowed": true,
-            "f16_cooperative_matrix_permitted": true,
-            "persistent_f16_tensors": false,
+            "precision": "strict-f32", "reference": "untuned native strict f32",
+            "prepared_before_candidate_compilation": true, "training_requested": training.is_some(),
+            "outputs": outputs,
         })
-    } else {
-        serde_json::json!({
-            "comparison_class": "strict-f32",
-            "cooperative_matrix_policy": "NativeF32",
-            "tensor_storage": "f32",
-            "matmul_inputs": "f32",
-            "attention_inputs": "f32",
-            "convolution_inputs": "f32",
-            "accumulation": "f32",
-            "output": "f32",
-            "reduced_precision_allowed": false,
-            "f16_cooperative_matrix_permitted": false,
-            "native_f32_cooperative_matrix_permitted": true,
-            "persistent_f16_tensors": false,
-        })
-    };
+    }));
 
     let rev = std::env::var("FRAMEWORK_REV").unwrap_or_default();
     let workload_metrics = model.starts_with("SmolLM").then(|| {
@@ -1153,7 +1250,7 @@ fn emit_result(
         "backend": backend,
         "environment": environment,
         "protocol": {
-            "name": "inferena-v3",
+            "name": "inferena-paper-v6",
             "synthetic_parameter_init": initialization::POLICY,
             "warmup_runs": warmup_runs,
             "warmup_seconds": warmup_time().as_secs_f64(),
@@ -1166,16 +1263,16 @@ fn emit_result(
             "statistic": "median",
             "training_requested": training.is_some(),
             "training_scope": training.map(|_| "forward + loss + backward; no optimizer update"),
-            "compile_scope": "graph construction, GPU pipelines, weight/input initialization and optional qualified graph/kernel/submission search for requested sessions",
-            "diagnostic": std::env::var_os("INFERENA_NSYS").is_some(),
+            "compile_scope": "graph construction, calibrated graph/kernel/submission search, GPU pipelines, weight/input initialization and full-tensor qualification for requested sessions",
+            "diagnostic": std::env::var_os("INFERENA_NSYS").is_some() || precision::Policy::from_env() != precision::Policy::Auto,
             "context_lifetime": "owned per session; destroyed after use",
         },
         "precision": precision,
+        "correctness_reference": correctness_reference,
         "optimizer": {
             "mode": std::env::var("MEGANEURA_OPTIMIZER").unwrap_or_else(|_| "egglog-outlined".to_string()),
             "extraction_cost": std::env::var("MEGANEURA_EGRAPH_COST").unwrap_or_else(|_| "tensor-traffic".to_string()),
-            "measured_construction": meganeura::config::TUNE.bool_or(false),
-            "kernel_tuning": meganeura::config::TUNE.bool_or(false),
+            "measured_construction": meganeura::config::TUNE.bool_or(true),
             "sessions": SESSION_PREPARATION.with_borrow(Clone::clone),
         },
         "timings": {
@@ -1697,6 +1794,12 @@ fn main() {
     env_logger::init();
 
     let model_name = std::env::args().nth(1).unwrap_or("SmolLM2-135M".into());
+    if model_name == "--converge" {
+        let spec = std::env::args().nth(2).expect("--converge SPEC OUTPUT");
+        let output = std::env::args().nth(3).expect("--converge SPEC OUTPUT");
+        convergence::run(std::path::Path::new(&spec), std::path::Path::new(&output));
+        return;
+    }
     if model_name == "--list-devices" {
         let devices: Vec<_> = blade_graphics::Context::enumerate()
             .expect("native device enumeration failed")

@@ -2,11 +2,12 @@
 
 use clap::Parser;
 use serde::{Deserialize, Serialize};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Workload and validation contract used by the paired runners.
-pub const BENCHMARK_PROTOCOL: &str = "inferena-v3";
+/// Workload/validation contract; the PyTorch execution protocol is versioned separately.
+pub const PAPER_PROTOCOL: &str = "inferena-paper-v6";
 
 /// Result produced by each framework benchmark runner.
 /// Every runner must print exactly one JSON object matching this schema to stdout.
@@ -401,16 +402,56 @@ fn precision_contract_error(result: &BenchResult, requested: &str) -> Option<Str
     let text = |key: &str| precision.get(key).and_then(serde_json::Value::as_str);
     let flag = |key: &str| precision.get(key).and_then(serde_json::Value::as_bool);
 
+    let accelerated = requested == "accelerated";
     for key in ["tensor_storage", "accumulation", "output"] {
-        if text(key) != Some("f32") {
+        let permitted = match key {
+            "tensor_storage" => [
+                "f32",
+                "f16",
+                "bf16",
+                "mixed",
+                "f32 parameters; autocast activations",
+            ]
+            .as_slice(),
+            "accumulation" => ["f32", "backend autocast policy"].as_slice(),
+            _ => ["f32", "f16", "bf16", "operator-dependent"].as_slice(),
+        };
+        if !text(key).is_some_and(|value| {
+            if accelerated {
+                permitted.contains(&value)
+            } else {
+                value == "f32"
+            }
+        }) {
             return Some(format!(
-                "precision.{key}={:?}; Inferena requires f32 storage, accumulation, and output",
+                "precision.{key}={:?}; unsupported arithmetic for {requested}",
                 text(key)
             ));
         }
     }
 
-    let accelerated = requested == "accelerated-f32";
+    let mixed_storage = text("tensor_storage") == Some("mixed");
+    if (mixed_storage || precision.contains_key("storage_dtypes"))
+        && !precision
+            .get("storage_dtypes")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|types| {
+                types.len() >= if mixed_storage { 2 } else { 1 }
+                    && types.iter().all(|dtype| {
+                        dtype.as_str().is_some_and(|name| {
+                            ["f32", "f16", "bf16"].contains(&name)
+                                && (accelerated || name == "f32")
+                                && match text("tensor_storage") {
+                                    Some(label @ ("f32" | "f16" | "bf16")) => name == label,
+                                    _ => true,
+                                }
+                        })
+                    })
+            })
+    {
+        return Some("storage_dtypes must match the storage label and requested precision".into());
+    }
+
     if flag("reduced_precision_allowed") != Some(accelerated) {
         return Some(format!(
             "precision.reduced_precision_allowed={:?}; expected {accelerated}",
@@ -440,7 +481,7 @@ fn precision_contract_error(result: &BenchResult, requested: &str) -> Option<Str
                 ));
             }
         }
-        ("pytorch", "accelerated-f32") if backend.starts_with("CUDA") => {
+        ("pytorch", "accelerated") if backend.starts_with("CUDA") && text("autocast").is_none() => {
             for key in ["cuda_matmul_allow_tf32", "cudnn_allow_tf32"] {
                 if flag(key) != Some(true) {
                     return Some(format!(
@@ -462,22 +503,92 @@ fn precision_contract_error(result: &BenchResult, requested: &str) -> Option<Str
                 flag("f16_cooperative_matrix_permitted")
             ));
         }
-        ("meganeura", "accelerated-f32")
-            if flag("f16_cooperative_matrix_permitted") != Some(true) =>
+        ("meganeura", "strict-f32")
+            if flag("bf16_permitted") == Some(true)
+                || flag("bf16_graph_conversion") == Some(true) =>
         {
             return Some(format!(
-                "precision.f16_cooperative_matrix_permitted={:?}; accelerated mode requires true",
-                flag("f16_cooperative_matrix_permitted")
+                "precision.bf16_permitted={:?}; strict mode forbids BF16",
+                flag("bf16_permitted")
             ));
         }
         _ => {}
     }
 
-    if result.framework == "meganeura" && flag("persistent_f16_tensors") != Some(false) {
+    if !accelerated
+        && result.framework == "meganeura"
+        && flag("persistent_f16_tensors") != Some(false)
+    {
         return Some(format!(
-            "precision.persistent_f16_tensors={:?}; audited workloads require false",
+            "precision.persistent_f16_tensors={:?}; strict mode requires false",
             flag("persistent_f16_tensors")
         ));
+    }
+
+    if result.framework == "pytorch" && (accelerated || text("autocast").is_some()) {
+        let dtype = text("autocast");
+        if dtype.is_some()
+            && (!accelerated
+                || !matches!(dtype, Some("bf16" | "fp16"))
+                || text("loss") != Some("f32"))
+        {
+            return Some("autocast requires the accelerated profile and f32 losses".into());
+        }
+        if dtype.is_some()
+            && backend.starts_with("CUDA")
+            && (flag("cuda_matmul_allow_tf32") != Some(false)
+                || flag("cudnn_allow_tf32") != Some(false))
+        {
+            return Some("AMP's remaining f32 operations require TF32 disabled".into());
+        }
+        let execution = result
+            .extra
+            .get("execution")
+            .unwrap_or(&serde_json::Value::Null);
+        let gate = &execution["precision_qualification"];
+        let training = result
+            .extra
+            .get("protocol")
+            .and_then(|p| p["training_requested"].as_bool())
+            == Some(true);
+        if !matches!(gate["status"].as_str(), Some("pass" | "partial"))
+            || gate["reference"].as_str() != Some("eager strict f32")
+            || (dtype.is_some()
+                && execution["gradient_scaler"]["enabled"].as_bool() != Some(dtype == Some("fp16")))
+            || (training && !matches!(gate["training"]["status"].as_str(), Some("pass" | "failed")))
+            || (result.timings.training_ms.is_some()
+                && gate["training"]["status"].as_str() != Some("pass"))
+        {
+            return Some(
+                "accelerated reference lacks its output/training qualification or scaling receipt"
+                    .into(),
+            );
+        }
+    }
+    if accelerated && matches!(result.framework.as_str(), "pytorch" | "meganeura") {
+        let training = result
+            .extra
+            .get("protocol")
+            .and_then(|p| p["training_requested"].as_bool())
+            == Some(true);
+        let Some(outputs) = oracle_outputs(result) else {
+            return Some("accelerated reference lacks a strict-f32 correctness reference".into());
+        };
+        let oracle = &result.extra["correctness_reference"];
+        if oracle["precision"].as_str() != Some("strict-f32")
+            || oracle["prepared_before_candidate_compilation"].as_bool() != Some(true)
+            || oracle["training_requested"].as_bool() != Some(training)
+            || outputs.output_shape != result.outputs.output_shape
+            || outputs.logits_sample.len() != 256
+            || !outputs.loss.is_finite()
+            || outputs.logits_sample.iter().any(|x| !x.is_finite())
+            || (training
+                && (outputs.grad_norm.is_none_or(|x| !x.is_finite())
+                    || outputs.gradient_norms.is_empty()
+                    || outputs.gradient_norms.values().any(|x| !x.is_finite())))
+        {
+            return Some("invalid strict-f32 correctness reference".into());
+        }
     }
 
     None
@@ -498,11 +609,7 @@ fn run_framework(
     profile_dir: Option<&Path>,
     profile_samples: usize,
 ) -> FrameworkOutcome {
-    let precision = if strict {
-        "strict-f32"
-    } else {
-        "accelerated-f32"
-    };
+    let precision = if strict { "strict-f32" } else { "accelerated" };
     let fw_dir = root.join("frameworks").join(framework);
     let run_script = fw_dir.join("run.sh");
 
@@ -530,6 +637,14 @@ fn run_framework(
     };
     cmd.arg(script).arg(model).current_dir(&fw_dir);
     cmd.env("INFERENA_STRICT", if strict { "1" } else { "0" })
+        .env(
+            "INFERENA_AUTOCAST",
+            if strict {
+                "off".into()
+            } else {
+                std::env::var("INFERENA_AUTOCAST").unwrap_or_else(|_| "auto".into())
+            },
+        )
         .env(
             "INFERENA_INFERENCE_ONLY",
             if inference_only { "1" } else { "0" },
@@ -627,7 +742,11 @@ fn run_framework(
             let partial =
                 r.extra.remove("status").as_ref().and_then(|v| v.as_str()) == Some("partial");
             if matches!(framework, "pytorch" | "meganeura") {
-                let expected_protocol = BENCHMARK_PROTOCOL;
+                let expected_protocol = if framework == "pytorch" {
+                    include_str!("../../frameworks/pytorch/PROTOCOL").trim()
+                } else {
+                    PAPER_PROTOCOL
+                };
                 let reported_protocol = r
                     .extra
                     .get("protocol")
@@ -636,7 +755,7 @@ fn run_framework(
                 let expected_class = if precision == "strict-f32" {
                     "strict-f32"
                 } else {
-                    "reduced-input-f32-accumulate"
+                    "accelerated"
                 };
                 let reported_class = r
                     .extra
@@ -724,8 +843,8 @@ fn run_framework(
 }
 
 /// Save each framework's result as a separate JSON file in results/.
-fn save_results(results_dir: &Path, model: &str, outcomes: &[FrameworkOutcome]) {
-    std::fs::create_dir_all(results_dir).ok();
+fn save_results(results_dir: &Path, model: &str, outcomes: &[FrameworkOutcome]) -> io::Result<()> {
+    std::fs::create_dir_all(results_dir)?;
 
     for outcome in outcomes {
         let (fw, content) = match outcome {
@@ -740,20 +859,23 @@ fn save_results(results_dir: &Path, model: &str, outcomes: &[FrameworkOutcome]) 
             }
         };
         let path = results_dir.join(format!("{model}_{fw}.json"));
-        if let Err(e) = std::fs::write(&path, &content) {
-            eprintln!("Warning: failed to save {}: {e}", path.display());
-        }
+        atomic_write(&path, &content)?;
     }
 
     // Also save a combined summary.
     let summary_path = results_dir.join(format!("{model}_summary.json"));
     let summary = serde_json::to_string_pretty(outcomes).unwrap();
-    if let Err(e) = std::fs::write(&summary_path, &summary) {
-        eprintln!("Warning: failed to save summary: {e}");
-    }
+    atomic_write(&summary_path, &summary)
+}
 
-    eprintln!();
-    eprintln!("Results saved to {}/", results_dir.display());
+fn atomic_write(path: &Path, content: &str) -> io::Result<()> {
+    let mut temporary = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
+    temporary.write_all(content.as_bytes())?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    #[cfg(unix)]
+    std::fs::File::open(path.parent().unwrap())?.sync_all()?;
+    Ok(())
 }
 
 /// Compute error metrics between two logit sample vectors.
@@ -833,7 +955,29 @@ struct ComparisonMetrics {
     status: &'static str,
 }
 
+fn oracle_outputs(reference: &BenchResult) -> Option<Outputs> {
+    // Every accelerated arithmetic policy uses a separate f32 oracle so
+    // reduced precision cannot become another engine's gradient ground truth.
+    let oracle = reference.extra.get("correctness_reference")?;
+    if reference.extra.get("precision")?["comparison_class"].as_str() != Some("accelerated")
+        || oracle["precision"].as_str() != Some("strict-f32")
+    {
+        return None;
+    }
+    serde_json::from_value(oracle["outputs"].clone()).ok()
+}
+
 fn compare_result(reference: &BenchResult, other: &BenchResult) -> ComparisonMetrics {
+    let oracle = oracle_outputs(reference).map(|outputs| BenchResult {
+        outputs,
+        ..reference.clone()
+    });
+    let reference = oracle.as_ref().unwrap_or(reference);
+    let other_oracle = oracle_outputs(other).map(|outputs| BenchResult {
+        outputs,
+        ..other.clone()
+    });
+    let other = other_oracle.as_ref().unwrap_or(other);
     let hash_match = reference.outputs.logits_hash == other.outputs.logits_hash;
     let output_shape_match = reference.outputs.output_shape == other.outputs.output_shape;
     let output_sample_count_match =
@@ -1120,7 +1264,7 @@ fn annotate_validation(outcomes: &mut [FrameworkOutcome], benchmark_revision: &s
                 serde_json::json!(benchmark_revision),
             );
         }
-        let validation = match &reference {
+        let mut validation = match &reference {
             None => serde_json::json!({
                 "comparison_performed": false,
                 "reference_framework": null,
@@ -1164,6 +1308,20 @@ fn annotate_validation(outcomes: &mut [FrameworkOutcome], benchmark_revision: &s
                 })
             }
         };
+        if let Some(reference) = &reference {
+            validation["reference_precision"] =
+                serde_json::json!(if oracle_outputs(reference).is_some() {
+                    "untimed strict-f32 oracle"
+                } else {
+                    "measured reference"
+                });
+            validation["candidate_precision"] =
+                serde_json::json!(if oracle_outputs(result).is_some() {
+                    "untimed strict-f32 oracle"
+                } else {
+                    "measured candidate"
+                });
+        }
         result.extra.insert("validation".to_string(), validation);
     }
 }
@@ -1447,9 +1605,20 @@ fn main() {
             profile_dir.as_deref(),
             cli.profile_samples,
         ));
+        if !cli.dry_run {
+            // Preserve completed engines before starting another one. A GPU
+            // hang must not discard the successful half of a pair. Each new
+            // checkpoint recomputes validation with the references available.
+            annotate_validation(&mut outcomes, &git_revision(&root));
+            if let Err(error) = save_results(&results_dir, &cli.model, &outcomes) {
+                eprintln!(
+                    "Failed to save results to {}: {error}",
+                    results_dir.display()
+                );
+                std::process::exit(1);
+            }
+        }
     }
-    let benchmark_revision = git_revision(&root);
-    annotate_validation(&mut outcomes, &benchmark_revision);
 
     // Collect successful results for comparison.
     let successes: Vec<&BenchResult> = outcomes
@@ -1514,9 +1683,7 @@ fn main() {
         }
     }
 
-    // Save results even when everything fails — the per-framework JSON captures
-    // the stderr excerpt, which is often the only record of what went wrong.
-    save_results(&results_dir, &cli.model, &outcomes);
+    eprintln!("Results saved to {}/", results_dir.display());
 
     if successes.is_empty() {
         eprintln!("No successful benchmark results.");
@@ -1534,6 +1701,48 @@ mod tests {
         compare_gradient_norms, compare_result, precision_contract_error, relative_scalar_error,
     };
     use std::collections::BTreeMap;
+
+    #[test]
+    fn checkpoint_survives_failed_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("record.json");
+        super::atomic_write(&path, r#"{"status":"running"}"#).unwrap();
+        super::atomic_write(&path, r#"{"status":"complete"}"#).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"status":"complete"}"#
+        );
+        // A failed rename must preserve the destination and clean the staged file.
+        let blocked = directory.path().join("directory.json");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(super::atomic_write(&blocked, "{}").is_err());
+        assert!(blocked.is_dir());
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn incremental_results_gain_validation_when_reference_finishes() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut native = result(vec![1, 256], true);
+        native.framework = "meganeura".into();
+        let mut outcomes = vec![FrameworkOutcome::Ok(native.clone())];
+        annotate_validation(&mut outcomes, "test-revision");
+        super::save_results(directory.path(), "model", &outcomes).unwrap();
+        let read = || -> serde_json::Value {
+            serde_json::from_slice(
+                &std::fs::read(directory.path().join("model_summary.json")).unwrap(),
+            )
+            .unwrap()
+        };
+        assert_eq!(read()[0]["validation"]["status"], "NO REFERENCE");
+        assert_eq!(read()[0]["benchmark_rev"], "test-revision");
+        native.framework = "pytorch".into();
+        outcomes.push(FrameworkOutcome::Ok(native));
+        annotate_validation(&mut outcomes, "test-revision");
+        super::save_results(directory.path(), "model", &outcomes).unwrap();
+        assert_eq!(read().as_array().unwrap().len(), 2);
+        assert_eq!(read()[0]["validation"]["comparison_performed"], true);
+    }
 
     /// Archived results predate the memory report and must stay readable —
     /// the paper's analysis reads them alongside new runs.
@@ -1645,6 +1854,135 @@ mod tests {
     }
 
     #[test]
+    fn runner_accepts_current_pytorch_protocol_and_rejects_stale_records() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("frameworks/pytorch");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("run.sh"),
+            "#!/usr/bin/env bash\ncat record.json\n",
+        )
+        .unwrap();
+        let mut record = result(vec![1, 256], true);
+        record.framework = "pytorch".into();
+        record.extra.insert(
+            "precision".into(),
+            serde_json::json!({
+                "comparison_class": "strict-f32", "tensor_storage": "f32",
+                "accumulation": "f32", "output": "f32", "reduced_precision_allowed": false,
+            }),
+        );
+        let current = include_str!("../../frameworks/pytorch/PROTOCOL").trim();
+        for protocol in [current, "inferena-graph-replay-v11"] {
+            record.extra.insert(
+                "protocol".into(),
+                serde_json::json!({
+                    "name": protocol, "training_requested": true,
+                }),
+            );
+            std::fs::write(
+                directory.join("record.json"),
+                serde_json::to_string(&record).unwrap(),
+            )
+            .unwrap();
+            let outcome = super::run_framework(
+                root.path(),
+                "pytorch",
+                "model",
+                false,
+                false,
+                None,
+                true,
+                false,
+                5,
+                20,
+                None,
+                3,
+            );
+            if protocol == current {
+                assert!(
+                    matches!(outcome, FrameworkOutcome::Ok(_)),
+                    "{}",
+                    serde_json::to_string(&outcome).unwrap()
+                );
+            } else {
+                assert!(
+                    matches!(outcome, FrameworkOutcome::Error { ref error, .. } if error.contains("runner reported protocol"))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn forwarding_receipts_preserves_f64_values() {
+        let receipt = serde_json::json!({
+            "relative_l2": 0.003553088113636246_f64,
+            "probe_loss_ratio": 0.9447575302675789_f64,
+            "loss": 5.916818618774414_f64,
+        });
+        let forwarded: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&receipt).unwrap()).unwrap();
+        assert_eq!(receipt, forwarded);
+    }
+
+    #[test]
+    fn amp_comparison_uses_the_f32_oracle_and_rejects_missing_evidence() {
+        let mut reference = result(vec![1, 256], true);
+        reference.framework = "pytorch".into();
+        let original = reference.outputs.clone();
+        reference.outputs.grad_norm = Some(2.0);
+        reference
+            .outputs
+            .gradient_norms
+            .insert("weight".into(), 2.0);
+        reference.outputs.logits_sample.fill(1.1);
+        reference.extra.insert("precision".into(), serde_json::json!({
+            "autocast": "fp16", "comparison_class": "accelerated", "loss": "f32",
+            "tensor_storage": "f32 parameters; autocast activations", "accumulation": "backend autocast policy",
+            "output": "operator-dependent", "reduced_precision_allowed": true,
+        }));
+        reference.extra.insert(
+            "protocol".into(),
+            serde_json::json!({"training_requested": true}),
+        );
+        reference.extra.insert("execution".into(), serde_json::json!({
+            "gradient_scaler": {"enabled": true},
+            "precision_qualification": {"status": "pass", "reference": "eager strict f32", "training": {"status": "pass"}},
+        }));
+        reference.extra.insert(
+            "correctness_reference".into(),
+            serde_json::json!({
+                "precision": "strict-f32", "training_requested": true, "outputs": original,
+                "prepared_before_candidate_compilation": true,
+            }),
+        );
+        assert_eq!(precision_contract_error(&reference, "accelerated"), None);
+        let native = result(vec![1, 256], true);
+        let comparison = compare_result(&reference, &native);
+        assert!(comparison.forward_valid && comparison.training_valid);
+        let mut wrong_native = native.clone();
+        wrong_native
+            .outputs
+            .gradient_norms
+            .insert("weight".into(), 1.2);
+        assert!(!compare_result(&reference, &wrong_native).training_valid);
+        assert!(precision_contract_error(&reference, "strict-f32").is_some());
+        // TF32/off has the same oracle and gate requirements as AMP.
+        reference.extra.get_mut("precision").unwrap()["autocast"] = serde_json::Value::Null;
+        assert_eq!(precision_contract_error(&reference, "accelerated"), None);
+        assert!(compare_result(&reference, &native).training_valid);
+        let mut missing_gate = reference.clone();
+        missing_gate.extra["execution"]
+            .as_object_mut()
+            .unwrap()
+            .remove("precision_qualification");
+        assert!(precision_contract_error(&missing_gate, "accelerated").is_some());
+        reference.extra.remove("correctness_reference");
+        assert!(precision_contract_error(&reference, "accelerated").is_some());
+        assert!(!compare_result(&reference, &native).training_valid);
+    }
+
+    #[test]
     fn gradient_comparison_rejects_different_parameter_sets() {
         let reference = BTreeMap::from([("weight".to_string(), 1.0)]);
         let other = BTreeMap::from([("bias".to_string(), 1.0)]);
@@ -1728,6 +2066,63 @@ mod tests {
                 "nvidia_tf32_override": "0",
             }),
         );
+        assert!(precision_contract_error(&candidate, "strict-f32").is_some());
+    }
+
+    #[test]
+    fn bf16_is_permitted_in_accelerated_but_never_strict() {
+        let mut candidate = result(vec![1, 256], true);
+        candidate.framework = "meganeura".into();
+        candidate.extra.insert(
+            "protocol".into(),
+            serde_json::json!({"training_requested": true}),
+        );
+        candidate.extra.insert(
+            "correctness_reference".into(),
+            serde_json::json!({
+                "precision": "strict-f32", "training_requested": true,
+                "prepared_before_candidate_compilation": true, "outputs": candidate.outputs,
+            }),
+        );
+        candidate.extra.insert(
+            "precision".into(),
+            serde_json::json!({
+                "tensor_storage": "mixed", "storage_dtypes": ["f32", "bf16"],
+                "comparison_class": "accelerated",
+                "accumulation": "f32", "output": "f32",
+                "reduced_precision_allowed": true, "bf16_permitted": true,
+                "f16_cooperative_matrix_permitted": false,
+                "persistent_f16_tensors": false,
+            }),
+        );
+        assert_eq!(precision_contract_error(&candidate, "accelerated"), None);
+        let reference = candidate.clone();
+        candidate.outputs.logits_sample.fill(100.0);
+        // Cross-engine agreement checks the independent F32 references. The
+        // engines' full-output quality gates validate the accelerated outputs.
+        assert!(compare_result(&reference, &candidate).forward_valid);
+        let mut missing = candidate.clone();
+        missing.extra.remove("correctness_reference");
+        assert!(precision_contract_error(&missing, "accelerated").is_some());
+        assert!(precision_contract_error(&candidate, "strict-f32").is_some());
+        for types in [
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            serde_json::json!(["f32", "unknown"]),
+        ] {
+            candidate.extra.get_mut("precision").unwrap()["storage_dtypes"] = types;
+            assert!(precision_contract_error(&candidate, "accelerated").is_some());
+        }
+        // Even an F32-labelled result cannot silently permit BF16 in strict.
+        let precision = candidate.extra.get_mut("precision").unwrap();
+        precision.as_object_mut().unwrap().remove("storage_dtypes");
+        precision["tensor_storage"] = "f32".into();
+        precision["reduced_precision_allowed"] = false.into();
+        assert!(precision_contract_error(&candidate, "strict-f32").is_some());
+        candidate.extra.get_mut("precision").unwrap()["bf16_permitted"] = false.into();
+        assert_eq!(precision_contract_error(&candidate, "strict-f32"), None);
+        candidate.extra.get_mut("precision").unwrap()["storage_dtypes"] =
+            serde_json::json!(["f32", "bf16"]);
         assert!(precision_contract_error(&candidate, "strict-f32").is_some());
     }
 

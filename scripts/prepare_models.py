@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch the declared immutable SmolLM2 inputs for the shared local model directory."""
+"""Fetch the declared immutable SmolLM2 inputs before offline collection."""
 
 import argparse
 import hashlib

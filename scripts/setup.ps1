@@ -6,9 +6,7 @@ param(
     [string]$Backend,
 
     [Parameter(Position = 1)]
-    [string]$EnvPath,
-
-    [switch]$NoMaxAutotune
+    [string]$EnvPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -31,7 +29,7 @@ switch ($Backend) {
 }
 
 if (-not $EnvPath) {
-    $EnvPath = Join-Path $Root '.venv-p3hpc'
+    $EnvPath = Join-Path $Root '.venv'
 }
 if (Test-Path $EnvPath) {
     Write-Error "Environment already exists: $EnvPath. Choose a new path; nothing was replaced."
@@ -46,9 +44,9 @@ $EnvPython = Join-Path $EnvPath 'Scripts\python.exe'
 
 $TorchArgs = @('--torch-backend', $Backend)
 
-$Requirements = Join-Path $Root 'requirements-p3hpc.txt'
+$Requirements = Join-Path $Root 'requirements-pytorch.txt'
 if ($Backend -eq 'cu130') {
-    $Requirements = Join-Path $Root 'requirements-p3hpc-cu130-windows.txt'
+    $Requirements = Join-Path $Root 'requirements-pytorch-cu130-windows.txt'
 }
 
 uv pip install --python $EnvPython @TorchArgs -r $Requirements
@@ -60,6 +58,5 @@ $ProbeBackend = switch -Regex ($Backend) {
     default    { $Backend }
 }
 
-# NoMaxAutotune remains accepted for compatibility; it is already the default.
 & $EnvPython (Join-Path $Root 'scripts\check_environment.py') --backend $ProbeBackend
 exit $LASTEXITCODE

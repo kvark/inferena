@@ -256,7 +256,7 @@ class CampaignTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 select_native_device(devices, expected)
         pin = next(line for line in (
-            Path(__file__).resolve().parents[2] / "requirements-p3hpc.txt"
+            Path(__file__).resolve().parents[2] / "requirements-pytorch.txt"
         ).read_text().splitlines() if line.startswith("torch=="))
         self.assertEqual(pin, f"torch=={TORCH_VERSION}")
         for suffix in ("", "+cu130", "+rocm7.2", "+xpu"):

@@ -134,6 +134,11 @@ Set `INFERENA_KERNEL_MEMO_DIR` to reuse kernel decisions for the same dependency
 device, driver and tuning configuration; fresh program measurements and
 qualification still run. These choices and search receipts are recorded.
 
+Search refreshes inputs before every qualification, warmup and timed step,
+matching the benchmark's host uploads. Uploads stay outside execution samples
+but consume the search budget and appear in `input_refresh_time`. Session
+receipts identify this behavior as `search_input_policy: refresh-before-step-v1`.
+
 PyTorch compilation has no deadline by default. Set `INFERENA_COMPILE_SECONDS`
 to enable a watchdog that terminates the compiler process tree on expiry.
 `INFERENA_PREPARATION_REPORT` optionally preserves compilation and qualification

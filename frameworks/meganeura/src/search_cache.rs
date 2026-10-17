@@ -151,7 +151,9 @@ mod tests {
         graph.set_outputs(vec![loss]);
         let options = train::BuildSearchOptions {
             max_graphs: 1,
-            max_programs: 1,
+            // The first program is an untuned fallback. A second trial
+            // measures kernel choices beside it, including memo reuse.
+            max_programs: 2,
             max_time: Duration::from_secs(30),
             tuning: TuneOptions {
                 max_time: Duration::from_secs(30),
@@ -177,7 +179,7 @@ mod tests {
                 // never old weights, inputs or a qualification result.
                 let input = (run + 1) as f32 * 0.25;
                 let weight = (run + 1) as f32 * 0.125;
-                let (session, report) = train::build_measured(
+                let (session, report) = train::build_measured_with_inputs(
                     &graph,
                     config,
                     train::BuildSearchOptions {
@@ -185,8 +187,11 @@ mod tests {
                         ..options.clone()
                     },
                     |session, _| {
-                        session.set_input("x", &[input; 33 * 17]);
                         session.set_parameter("w", &[weight; 17 * 65]);
+                        Ok(())
+                    },
+                    |session| {
+                        session.set_input("x", &[input; 33 * 17]);
                         Ok(())
                     },
                     |session| {
@@ -205,22 +210,26 @@ mod tests {
                 assert!(!cache.memo.lock().unwrap().is_empty());
                 assert_eq!(receipt["load"], if run == 0 { "miss" } else { "hit" });
                 let selected = &report.trials[report.selected];
-                let tuning = selected.kernel_tuning.as_ref().unwrap();
+                assert!(selected.outcome.qualified);
+                assert!(report.trials[0].kernel_tuning.is_none());
+                let tuning = report.trials[1].kernel_tuning.as_ref().unwrap();
                 assert!(!tuning.time_budget_exhausted);
                 if run == 0 {
                     assert!(!tuning.outcomes.is_empty());
-                    assert_eq!(selected.qualifications, 2);
                 } else {
                     assert!(tuning.outcomes.is_empty());
                     assert!(!tuning.reused_classes.is_empty());
                     assert_eq!(receipt["new_comparisons"], 0);
-                    assert_eq!(selected.qualifications, 1);
                 }
                 assert_eq!(
                     qualification.report()["qualified_calls"],
-                    selected.qualifications
+                    report
+                        .trials
+                        .iter()
+                        .map(|trial| trial.qualifications)
+                        .sum::<u32>()
+                        + u32::from(!report.final_qualification_time.is_zero())
                 );
-                assert_eq!(report.final_qualification_time, Duration::ZERO);
                 eprintln!("{mode:?} run {}: {receipt}", run + 1);
                 drop(session);
             }

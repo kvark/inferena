@@ -402,7 +402,7 @@ def collect(args, parser, packages, started_at, started):
         from p3hpc_report import campaign_rows, render
         (destination / "results.md").write_text(render(campaign_rows(destination)), encoding="utf-8")
         try:
-            print("Archiving complete tensors and receipts...", flush=True)
+            print("Archiving results and validation receipts...", flush=True)
             print(f"Archive: {archive_results(destination)}", flush=True)
         except OSError as error:
             print(f"Archive not updated: {error}; results remain in {destination}", file=sys.stderr)

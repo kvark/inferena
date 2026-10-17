@@ -462,8 +462,9 @@ latter statuses permits retrying until favorable or hiding failures.
 
 The collector automatically writes **`../inferena-results/latest.tgz`** for a
 finished or caught-failure campaign, including qualification runs. Send that
-file: it contains only the current run's directory, manifest, records, logs and
-the archived harness/native executables.
+file: it contains the current run's manifest, reports, timing records, logs and
+validation receipts. Raw tensors, CPU reference arrays, source archives and
+executables stay in the original result directory and are omitted from the tgz.
 Each archive replaces the previous `latest.tgz`; original result directories
 remain untouched. With `--results-dir`, the archive sits beside that directory.
 If archiving fails, a warning is printed and the previous archive is left intact.

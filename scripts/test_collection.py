@@ -6,13 +6,44 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import unittest
 from unittest.mock import patch
 
 from collection import run_recorded, write_json
-from p3hpc import build_runners, verify_runner_binaries
+from p3hpc import archive_results, build_runners, verify_runner_binaries
+
+
+class ResultsArchiveTest(unittest.TestCase):
+    def test_results_archive_preserves_receipts_and_leaves_evidence_on_disk(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "campaign"
+            files = {
+                "campaign.json": '{"status": "complete-with-failures"}',
+                "results.md": "SmolLM2: mismatch",
+                "qualification/r1/strict/SmolLM2/runner.log": "native run",
+                "qualification/r1/strict/SmolLM2/comparison-float64-eager.json": '{"passed": false}',
+                "qualification/r1/strict/SmolLM2/training.json": '{"gradients": {}}',
+                "samples.csv": "phase,ms\ntraining,10",
+            }
+            evidence = (
+                "qualification/r1/strict/SmolLM2/blobs/tensor.bin",
+                "qualification/r1/strict/SmolLM2/cpu-float64-eager/training.npz",
+                "source.tar", "inferena-meganeura", "binaries/inferena.exe",
+            )
+            for name, contents in {**files, **dict.fromkeys(evidence, "raw evidence")}.items():
+                path = destination / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(contents.encode("utf-8"))
+            archive = archive_results(destination)
+            with tarfile.open(archive, "r:gz") as bundle:
+                archived = {m.name: bundle.extractfile(m).read().decode("utf-8")
+                            for m in bundle.getmembers() if m.isfile()}
+            self.assertEqual(archived, {f"campaign/{name}": value for name, value in files.items()})
+            for name in evidence:
+                self.assertEqual((destination / name).read_text(), "raw evidence")
 
 
 class RunnerProvenanceTest(unittest.TestCase):

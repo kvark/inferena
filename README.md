@@ -352,8 +352,10 @@ Keep that whole directory; `campaign.json` must say
 means all planned conditions were attempted, with failures preserved and
 exit code 1. Incomplete phase replicate groups are not aggregate timings. Nothing is
 added to Git; `../inferena-results/latest.tgz` is replaced with an archive of
-the latest run, while older result directories remain intact. Copy that archive
-before another run. Optional `--qualify-only --models ResNet-50
+the latest run's reports, records, logs and validation receipts. Raw tensors,
+reference arrays, source snapshots and executables remain in the original result
+directory and are omitted from the tgz. Older result directories remain intact.
+Copy that archive before another run. Optional `--qualify-only --models ResNet-50
 --precisions strict` provides a short new-device check; it does not collect
 publication timings. Larger SmolLM2 sizes are a separate opt-in
 cloud-GPU-only collection: `python scripts/p3hpc.py --models SmolLM2-360M SmolLM2-1.7B`.

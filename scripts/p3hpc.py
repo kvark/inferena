@@ -144,14 +144,21 @@ def positive_seconds(value):
 
 
 def archive_results(destination):
+    """Package results and validation receipts; keep bulky evidence locally."""
+    result_suffixes = {".json", ".jsonl", ".md", ".log", ".txt", ".csv", ".tsv"}
+
+    def results_only(member):
+        if member.isdir():
+            return None if Path(member.name).name == "blobs" else member
+        if member.isfile() and Path(member.name).suffix.lower() in result_suffixes:
+            return member
+        return None
+
     archive = destination.parent / "latest.tgz"
     with tempfile.TemporaryDirectory(prefix=".p3hpc-archive-", dir=destination.parent) as temporary:
         staged = Path(temporary) / "latest.tgz"
-        # Full-tensor Android captures include expanded bf16 checkpoints. The
-        # highest gzip setting spends minutes searching these repeated bytes.
-        # Retain the same tar.gz contents with bounded compression effort.
         with tarfile.open(staged, "w:gz", compresslevel=1) as bundle:
-            bundle.add(destination, arcname=destination.name)
+            bundle.add(destination, arcname=destination.name, filter=results_only)
         staged.replace(archive)
     return archive
 

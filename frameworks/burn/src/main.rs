@@ -211,8 +211,9 @@ fn main() {
 
     // --- Latency (single-token forward) ---
     let lat_data: Vec<i64> = vec![0];
-    let lat_input = Tensor::<1, Int>::from_data(burn::tensor::TensorData::new(lat_data, [1]), &device)
-        .unsqueeze::<2>();
+    let lat_input =
+        Tensor::<1, Int>::from_data(burn::tensor::TensorData::new(lat_data, [1]), &device)
+            .unsqueeze::<2>();
     // Warm-up.
     let _ = forward(&model, lat_input.clone()).to_data();
     let t0 = Instant::now();

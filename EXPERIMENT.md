@@ -1164,7 +1164,7 @@ candidate/dispatch logs, kernel messages, and DRM telemetry:
 
 ```sh
 INFERENA_STRICT=1 INFERENA_TUNE_SECONDS=30 \
-  python scripts/gpu_diagnostic.py --drm-card card1 --seconds 180 \
+  python scripts/gpu_diagnostic.py --drm-card card1 --seconds 180 --trace \
   --output /tmp/whisper-hang -- /absolute/path/to/inferena-meganeura Whisper-tiny
 ```
 

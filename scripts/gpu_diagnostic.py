@@ -16,15 +16,21 @@ from collection import terminate_tree, write_json
 
 def capture_lines(process, path, stop, faults=None):
     with path.open("w") as output:
+        next_sync = 0.0
         for line in iter(process.stdout.readline, b""):
             text = line.decode("utf-8", errors="replace")
             output.write(json.dumps({"unix_s": time.time(), "line": text.rstrip()}) + "\n")
-            output.flush()
-            os.fsync(output.fileno())
+            if (faults is not None or "meganeura::submission" in text or " begin:" in text
+                    or time.monotonic() >= next_sync):
+                output.flush()
+                os.fsync(output.fileno())
+                next_sync = time.monotonic() + 0.2
             if faults is not None and re.search(r"job timed out|wedged|reset failed|reset.*failed", text, re.I):
                 faults.append(text.strip())
             if stop.is_set():
                 break
+        output.flush()
+        os.fsync(output.fileno())
 
 
 def observe(device, folder, stop):
@@ -72,6 +78,7 @@ def main():
     parser.add_argument("--drm-card", required=True)
     parser.add_argument("--seconds", type=int, default=180)
     parser.add_argument("--memory-mib", type=int, default=6144)
+    parser.add_argument("--trace", action="store_true", help="dump dispatch plans and every submission; changes timing")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -86,7 +93,8 @@ def main():
               "policy": {key: os.environ.get(key) for key in (
                   "INFERENA_STRICT", "INFERENA_TUNE_SECONDS", "INFERENA_MAX_SUBMISSION_CHUNKS",
                   "INFERENA_WARMUP_SECONDS", "INFERENA_MEASUREMENT_RUNS", "FRAMEWORK_REV")},
-              "diagnostic": True, "durable_logging_affects_timing": True}
+              "diagnostic": True, "submission_tracing": args.trace,
+              "durable_logging_affects_timing": True}
     write_json(args.output / "diagnostic.json", report)
     stop, faults, threads = threading.Event(), [], []
     process = journal = None
@@ -97,8 +105,11 @@ def main():
         threads.append(threading.Thread(target=observe, args=(device, args.output, stop), daemon=True))
         for thread in threads:
             thread.start()
-        env = dict(os.environ, MEGANEURA_DEVICE_ID=identity["device"], MEGANEURA_DUMP_PLAN="1",
-                   RUST_LOG="warn,meganeura::train::search=debug,meganeura::submission=debug")
+        env = dict(os.environ, MEGANEURA_DEVICE_ID=identity["device"],
+                   RUST_LOG="warn,meganeura::train::search=info")
+        if args.trace:
+            env.update(MEGANEURA_DUMP_PLAN="1",
+                       RUST_LOG="warn,meganeura::train::search=debug,meganeura::submission=debug")
         limited = [sys.executable, str(Path(__file__).with_name("limited.py")),
                    "--memory-mib", str(args.memory_mib), "--seconds", str(args.seconds), "--", *command]
         with (args.output / "record.json.tmp").open("w") as output:

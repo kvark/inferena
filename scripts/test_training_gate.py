@@ -5,7 +5,8 @@ import unittest
 from unittest.mock import patch
 
 from quality import language_model_report
-from training_gate import assess_trajectories, load_fixture, receipt_matches, workload_for
+from training_gate import (REAL_TEXT, REPEATED, SMOLLM2_HIDDEN_SIZES, assess_trajectories,
+                           load_fixture, receipt_matches, workload_for)
 
 
 class TrainingGateTest(unittest.TestCase):
@@ -37,6 +38,21 @@ class TrainingGateTest(unittest.TestCase):
         self.assertNotIn("file", fixture["tokenizer"])
         with patch("pathlib.Path.read_bytes", return_value=b"{}"), self.assertRaisesRegex(ValueError, "frozen"):
             load_fixture()
+
+    def test_family_uses_real_text_and_model_sized_parameter_evidence(self):
+        for model, width in SMOLLM2_HIDDEN_SIZES.items():
+            with self.subTest(model=model):
+                workload = workload_for(model)
+                self.assertEqual(workload["policy"], REAL_TEXT)
+                self.assertEqual(workload["fixture_sha256"], self.workload["fixture_sha256"])
+                self.assertEqual(workload_for(model, repeated=True)["policy"], REPEATED)
+                record = copy.deepcopy(self.reference)
+                record["parameter_check"].update(initial=[1.] * width, final=[.9] * width)
+                self.assertEqual(assess_trajectories(record, record, workload)["status"], "pass")
+                record["parameter_check"]["final"].pop()
+                with self.assertRaisesRegex(ValueError, "parameter update evidence"):
+                    assess_trajectories(record, record, workload)
+        self.assertEqual(workload_for("Whisper-tiny")["policy"], REPEATED)
 
     def test_training_agreement_cannot_mask_failed_probes_or_absent_learning(self):
         self.assertEqual(assess_trajectories(self.reference, self.reference, self.workload)["status"], "pass")
@@ -97,6 +113,14 @@ class TrainingGateTest(unittest.TestCase):
         gate = record["execution"]["precision_qualification"]
         gate["latency_forward"] = copy.deepcopy(gate["forward"])
         self.assertEqual(check_precision_qualification(record)["training"], "pass")
+        for model in ("SmolLM2-360M", "SmolLM2-1.7B"):
+            changed = copy.deepcopy(record)
+            changed["model"] = model
+            with self.assertRaisesRegex(ValueError, "wrong accelerated training workload"):
+                check_precision_qualification(changed)
+            changed["execution"]["precision_qualification"]["training"]["workload"] = workload_for(model, repeated=True)
+            with self.assertRaisesRegex(ValueError, "wrong accelerated training workload"):
+                check_precision_qualification(changed)
         for row in curve["checkpoints"]:
             row["probe_losses"] = [x * 1.03 for x in row["probe_losses"]]
         with self.assertRaisesRegex(ValueError, "disagrees"):

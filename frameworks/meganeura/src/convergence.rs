@@ -57,8 +57,11 @@ fn evaluate(session: &mut Session, batches: &[Vec<u32>]) -> Vec<f32> {
 pub fn run(spec_path: &Path, output: &Path) {
     let bytes = std::fs::read(spec_path).expect("missing convergence spec");
     let spec: Spec = serde_json::from_slice(&bytes).expect("invalid convergence spec");
-    assert_eq!(spec.protocol, "smollm2-text-v2");
-    assert_eq!(spec.model, "SmolLM2-135M");
+    assert_eq!(spec.protocol, "smollm2-text-v3");
+    assert!(matches!(
+        spec.model.as_str(),
+        "SmolLM2-135M" | "SmolLM2-360M" | "SmolLM2-1.7B"
+    ));
     assert_eq!(spec.steps, spec.train.len());
     assert!(spec.steps > 0 && spec.checkpoint_every > 0);
     assert!(spec.learning_rate.is_finite() && spec.learning_rate > 0.0);
@@ -108,7 +111,7 @@ pub fn run(spec_path: &Path, output: &Path) {
     );
     let mut record = json!({
         "protocol": spec.protocol, "status": "running", "framework": "meganeura",
-        "model": spec.model, "precision": if strict { "strict-f32" } else { "reduced-input-f32-accumulate" },
+        "model": spec.model, "precision": if strict { "strict-f32" } else { "accelerated" },
         "spec_sha256": hex::encode(Sha256::digest(&bytes)),
         "environment": super::environment_json(&session),
         "arithmetic": super::precision::Policy::from_env().metadata(),

@@ -17,11 +17,12 @@ from execution import QualificationError, synchronize
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from collection import write_json
 from study import sha256
+from training_gate import SMOLLM2_HIDDEN_SIZES
 
 
 def run(spec_path, output):
     spec = json.loads(spec_path.read_text())
-    if (spec["protocol"] != "smollm2-text-v2" or spec["model"] != "SmolLM2-135M"
+    if (spec["protocol"] != "smollm2-text-v3" or spec["model"] not in SMOLLM2_HIDDEN_SIZES
             or len(spec["train"]) != spec["steps"]):
         raise ValueError("unexpected convergence workload")
     for path, expected in spec["input_sha256"].items():

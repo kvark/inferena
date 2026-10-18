@@ -8,7 +8,11 @@ import statistics
 
 FIXTURE = Path(__file__).resolve().parents[1] / "data/smollm2-real-text-v1.json"
 FIXTURE_SHA256 = "cf9d122497a1075119d2b3dca3c9173d69edf4e51c9ae6b5eb8236f8440f29e9"
-REAL_TEXT = "smollm2-real-text-v1"
+REAL_TEXT = "smollm2-real-text-v2"
+SMOLLM2_HIDDEN_SIZES = {"SmolLM2-135M": 576, "SmolLM2-360M": 960, "SmolLM2-1.7B": 2048}
+# Verified at each revision in models/smollm2-revisions.json: the tokenizer bytes
+# are identical, so the original frozen token batches apply to all three models.
+TOKENIZER_SHA256 = "9ca9acddb6525a194ec8ac7a87f24fbba7232a9a15ffa1af0c1224fcd888e47c"
 REPEATED = "repeated-synthetic-v1"
 CURVE_POLICY = "loss-curve-v2"
 CURVE_RTOL, CURVE_ATOL = 0.02, 1e-6
@@ -38,8 +42,10 @@ def load_fixture():
 
 
 def workload_for(model, *, repeated=False):
-    if model == "SmolLM2-135M" and not repeated:
+    if model in SMOLLM2_HIDDEN_SIZES and not repeated:
         return {"policy": REAL_TEXT, "steps": 256, "fixture_sha256": FIXTURE_SHA256,
+                "model": model, "parameter_elements": SMOLLM2_HIDDEN_SIZES[model],
+                "tokenizer_sha256": TOKENIZER_SHA256,
                 "learning_rate": 0.0010000000474974513, "checkpoint_every": 64,
                 "scope": "varying real-text batches; fixed training probe and held-out text"}
     return {"policy": REPEATED, "steps": 32, "learning_rate": 0.001,
@@ -91,8 +97,9 @@ def check_trajectory(trajectory, workload):
             if len(row[key]) != 4 or any(not math.isfinite(x) or x < 0 for x in row[key]):
                 raise ValueError("invalid real-text evaluation losses")
     parameter = trajectory["parameter_check"]
-    if (parameter["name"] != "model.norm.weight" or len(parameter["initial"]) != 576
-            or len(parameter["final"]) != 576
+    if (parameter["name"] != "model.norm.weight"
+            or len(parameter["initial"]) != workload["parameter_elements"]
+            or len(parameter["final"]) != workload["parameter_elements"]
             or any(not math.isfinite(x) for x in [*parameter["initial"], *parameter["final"]])
             or parameter["changed"] != (parameter["initial"] != parameter["final"])):
         raise ValueError("invalid parameter update evidence")

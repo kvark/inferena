@@ -16,17 +16,16 @@ from collection import write_json
 from p3hpc import (check_torch_identity, cpu_frequency_policies, gpu_matches, input_hashes,
                   positive_seconds, select_native_device, SMOLLM2_REVISIONS, PYTHON_VERSION)
 from study import ROOT, begin, environment, run_json, sha256
+from training_gate import SMOLLM2_HIDDEN_SIZES, TOKENIZER_SHA256, load_fixture
 
 sys.path.insert(0, str(ROOT / "frameworks/pytorch"))
 from amp import compare_loss_curves
 
 CORPUS_URL = "https://www.gutenberg.org/ebooks/1514.txt.utf-8"
 CORPUS_SHA256 = "e8626a628112990c8505dd1098276e6f75040cc268690d018ee6694c71888ea4"
-MODEL = "SmolLM2-135M"
-TOKENIZER_SHA256 = "9ca9acddb6525a194ec8ac7a87f24fbba7232a9a15ffa1af0c1224fcd888e47c"
 
 
-def prepare_spec(corpus, steps):
+def prepare_spec(corpus, steps, model):
     if sha256(corpus) != CORPUS_SHA256:
         raise ValueError("corpus bytes differ from the frozen Project Gutenberg snapshot")
     text = corpus.read_text(encoding="utf-8")
@@ -37,8 +36,8 @@ def prepare_spec(corpus, steps):
     text = text.split(start)[1].split(end)[0].strip()
     from tokenizers import Tokenizer
     from huggingface_hub import hf_hub_download
-    tokenizer_path = Path(hf_hub_download(f"HuggingFaceTB/{MODEL}", "tokenizer.json",
-                                        revision=SMOLLM2_REVISIONS[MODEL]))
+    tokenizer_path = Path(hf_hub_download(f"HuggingFaceTB/{model}", "tokenizer.json",
+                                        revision=SMOLLM2_REVISIONS[model]))
     if sha256(tokenizer_path) != TOKENIZER_SHA256:
         raise ValueError("tokenizer differs from the frozen checkpoint revision")
     tokenizer = Tokenizer.from_file(str(tokenizer_path))
@@ -58,14 +57,18 @@ def prepare_spec(corpus, steps):
         rng.shuffle(epoch)
         order.extend(epoch)
     order = order[:steps]
-    hashes = input_hashes([MODEL])
+    fixture = load_fixture()
+    if ([train[index] for index in order] != fixture["train"][:steps]
+            or train[:4] != fixture["probe"] or heldout[:4] != fixture["heldout"]):
+        raise ValueError("study token batches differ from the cohort's frozen fixture")
+    hashes = input_hashes([model])
     # Both engines use the exact f32 learning-rate value.
     import struct
     learning_rate = struct.unpack("f", struct.pack("f", 0.001))[0]
-    return {"protocol": "smollm2-text-v2", "model": MODEL, "steps": steps,
+    return {"protocol": "smollm2-text-v3", "model": model, "steps": steps,
             "sequence_length": sequence_length, "learning_rate": learning_rate, "checkpoint_every": 64,
             "seed": 17, "optimizer": "SGD, no momentum, no weight decay, no clipping",
-            "tokenizer": {"revision": SMOLLM2_REVISIONS[MODEL], "sha256": TOKENIZER_SHA256,
+            "tokenizer": {"revision": SMOLLM2_REVISIONS[model], "sha256": TOKENIZER_SHA256,
                           "file": str(tokenizer_path)},
             "corpus": {"url": CORPUS_URL, "sha256": CORPUS_SHA256, "tokens": len(tokens),
                        "split": "first 80% tokens train, last 20% held out; discard incomplete blocks",
@@ -83,7 +86,7 @@ def prepare_spec(corpus, steps):
 
 def validate_run(record, spec, spec_hash):
     if (record["status"] != "complete" or record["protocol"] != spec["protocol"]
-            or record["spec_sha256"] != spec_hash or record["model"] != MODEL
+            or record["spec_sha256"] != spec_hash or record["model"] != spec["model"]
             or record["completed_updates"] != spec["steps"] or record["skipped_updates"]
             or len(record["losses"]) != spec["steps"]):
         raise ValueError("incomplete, skipped or mismatched optimizer updates")
@@ -101,7 +104,8 @@ def validate_run(record, spec, spec_hash):
                 raise ValueError("invalid evaluation checkpoint")
     parameter = record["parameter_check"]
     if (parameter["name"] != spec["gate"]["parameter_must_change"] or parameter["changed"] is not True
-            or len(parameter["initial"]) != 576 or len(parameter["final"]) != 576
+            or len(parameter["initial"]) != SMOLLM2_HIDDEN_SIZES[spec["model"]]
+            or len(parameter["final"]) != SMOLLM2_HIDDEN_SIZES[spec["model"]]
             or parameter["initial"] == parameter["final"]
             or not all(math.isfinite(value) for value in [*parameter["initial"], *parameter["final"]])):
         raise ValueError("no evidence of a finite parameter update")
@@ -114,6 +118,9 @@ def validate_run(record, spec, spec_hash):
 
 
 def compare_runs(actual, reference):
+    if (actual["model"] != reference["model"] or actual["spec_sha256"] != reference["spec_sha256"]
+            or actual["parameter_check"]["initial"] != reference["parameter_check"]["initial"]):
+        raise ValueError("trajectories did not start from the same model, workload and checked parameter")
     reports = {"training": compare_loss_curves(actual["losses"], reference["losses"])}
     for key in ("probe_losses", "heldout_losses"):
         reports[key] = compare_loss_curves([loss for row in actual["checkpoints"] for loss in row[key]],
@@ -126,6 +133,8 @@ def validate_precision(record, name):
     expected = "strict-f32" if mode == "strict" else "accelerated"
     if record["precision"] != expected or record["framework"] != framework:
         raise ValueError("requested engine/precision did not execute")
+    if framework == "meganeura" and record["arithmetic"]["comparison_class"] != expected:
+        raise ValueError("requested native arithmetic did not execute")
     if framework == "pytorch":
         dtype = None if mode == "strict" else mode
         if (record["precision_policy"].get("autocast") != dtype
@@ -137,6 +146,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", required=True, choices=("cuda", "rocm", "xpu", "mps", "cpu"))
     parser.add_argument("--gpu", required=True, help="native GPU; PyTorch must match unless CPU is explicitly requested")
+    parser.add_argument("--model", choices=SMOLLM2_HIDDEN_SIZES, default="SmolLM2-135M")
     parser.add_argument("--corpus", required=True, type=Path, help=f"frozen plain text from {CORPUS_URL}")
     parser.add_argument("--results-dir", required=True, type=Path)
     parser.add_argument("--steps", type=int, default=256, help="use 256 for the declared study; smaller runs are smoke tests")
@@ -144,15 +154,15 @@ def main():
     parser.add_argument("--tune-seconds", type=positive_seconds, default=30)
     parser.add_argument("--run-seconds", type=positive_seconds, default=1200)
     args = parser.parse_args()
-    if args.steps < 1 or len(set(args.precisions)) != len(args.precisions):
-        parser.error("positive step count and unique precisions required")
+    if not 1 <= args.steps <= 256 or len(set(args.precisions)) != len(args.precisions):
+        parser.error("1–256 steps and unique precisions required")
     import torch
     if platform.python_version() != PYTHON_VERSION:
         parser.error(f"use pinned Python {PYTHON_VERSION}")
     check_torch_identity(torch.__version__, torch.version.git_version, torch.__version__)
-    spec = prepare_spec(args.corpus, args.steps)
+    spec = prepare_spec(args.corpus, args.steps, args.model)
     destination = args.results_dir.resolve()
-    manifest = begin(destination, "smollm2-convergence-study-v2", args)
+    manifest = begin(destination, "smollm2-convergence-study-v3", args)
     manifest.update(cpu_frequency_policies=cpu_frequency_policies(), publication_ready=False,
                     scope="one checkpoint, one corpus, one seed; actual SGD updates, no performance claim")
     path = destination / "study.json"
@@ -175,7 +185,8 @@ def main():
         manifest["native_device"] = native
         manifest["binary_sha256"] = sha256(binary)
         # B570 is selected first when invoking this on the local two-GPU host.
-        for name in ("meganeura-strict", "pytorch-strict", *[f"pytorch-{value}" for value in args.precisions]):
+        for name in ("meganeura-strict", "meganeura-accelerated", "pytorch-strict",
+                     *[f"pytorch-{value}" for value in args.precisions]):
             folder = destination / name
             run = {"name": name, "status": "running"}
             manifest["runs"].append(run)
@@ -184,7 +195,7 @@ def main():
             if name.startswith("meganeura"):
                 current.update(MEGANEURA_DEVICE_ID=str(native["device_id"]), MEGANEURA_TUNE="1",
                                INFERENA_TUNE_SECONDS=str(args.tune_seconds),
-                               INFERENA_KERNEL_MEMO_DIR=str(destination / "cold-kernel-memo"))
+                               INFERENA_KERNEL_MEMO_DIR=str(destination / f"cold-kernel-memo-{name}"))
                 command = [str(binary), "--converge", str(spec_path), str(folder / "progress.json")]
             else:
                 current["INFERENA_AUTOCAST"] = "" if name.endswith("strict") else name.split("-")[1]

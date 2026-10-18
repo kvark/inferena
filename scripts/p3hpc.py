@@ -626,7 +626,7 @@ def validate_replicated_gradients(groups, replicates):
 def input_hashes(models):
     """Refuse unpinned checkpoints, including accidentally mixed base/Instruct files."""
     hashes = {"Cargo.lock": hashlib.sha256((ROOT / "Cargo.lock").read_bytes()).hexdigest()}
-    if "SmolLM2-135M" in models:
+    if any(model in SMOLLM2_REVISIONS for model in models):
         load_fixture()
         hashes[str(FIXTURE.relative_to(ROOT))] = FIXTURE_SHA256
     for model in models:
@@ -850,7 +850,7 @@ def main():
                INFERENA_WARMUP_SECONDS=str(WARMUP_SECONDS))
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v28", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v29", "source": revision,
         "started_at": started_at,
         "host": {"name": socket.gethostname(), "os": platform.system(),
                  "kernel": platform.release(), "platform": platform.platform(), "arch": platform.machine(),

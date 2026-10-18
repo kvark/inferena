@@ -322,28 +322,31 @@ class AmpTest(unittest.TestCase):
 
     def test_real_text_qualification_restores_state_and_uses_diverse_batches(self):
         from amp import training_plan
+        from training_gate import SMOLLM2_HIDDEN_SIZES
         class Model(torch.nn.Module):
-            def __init__(self):
+            def __init__(self, width):
                 super().__init__()
                 self.model = torch.nn.Module()
-                self.model.norm = torch.nn.LayerNorm(576, bias=False)
+                self.model.norm = torch.nn.LayerNorm(width, bias=False)
                 self.seen = set()
             def forward(self, batch):
                 self.seen.add(tuple(batch["input_ids"].flatten().tolist()))
                 return self.model.norm.weight
-        model = Model()
-        initial = model.model.norm.weight.detach().clone()
         policy = AmpPolicy("cpu", "")
         inputs = {"input_ids": torch.arange(128).reshape(1, -1), "labels": torch.arange(1, 129).reshape(1, -1)}
-        plan = training_plan("SmolLM2-135M", inputs, "cpu")
-        rng = torch.get_rng_state().clone()
-        report = qualify(model, model, lambda m, batch: m(batch), lambda output, _: output.square().sum(),
-                         inputs, policy, plan=plan)
-        self.assertEqual(report["training"]["status"], "pass")
-        self.assertEqual(report["training"]["completed_updates"], 256)
-        self.assertGreater(len(model.seen), 185)
-        torch.testing.assert_close(model.model.norm.weight, initial, rtol=0, atol=0)
-        torch.testing.assert_close(torch.get_rng_state(), rng, rtol=0, atol=0)
+        for name, width in SMOLLM2_HIDDEN_SIZES.items():
+            with self.subTest(model=name):
+                model = Model(width)
+                initial = model.model.norm.weight.detach().clone()
+                plan = training_plan(name, inputs, "cpu")
+                rng = torch.get_rng_state().clone()
+                report = qualify(model, model, lambda m, batch: m(batch), lambda output, _: output.square().sum(),
+                                 inputs, policy, plan=plan)
+                self.assertEqual(report["training"]["status"], "pass")
+                self.assertEqual(report["training"]["completed_updates"], 256)
+                self.assertGreater(len(model.seen), 185)
+                torch.testing.assert_close(model.model.norm.weight, initial, rtol=0, atol=0)
+                torch.testing.assert_close(torch.get_rng_state(), rng, rtol=0, atol=0)
 
     @unittest.skipUnless(torch.cuda.is_available() or torch.xpu.is_available(), "CUDA/HIP/XPU required")
     def test_compiled_amp_replay_keeps_scaling_live_and_does_not_update_parameters(self):
@@ -420,7 +423,7 @@ class AmpTest(unittest.TestCase):
                 _bench("test", {"type": "whisper"}, "cpu", None)
             record = json.loads(output.getvalue())
         self.assertEqual(record["status"], "ok")
-        self.assertEqual(record["protocol"]["name"], "inferena-graph-replay-v16")
+        self.assertEqual(record["protocol"]["name"], "inferena-graph-replay-v17")
         self.assertEqual(record["precision"]["comparison_class"], "accelerated")
         self.assertEqual(record["correctness_reference"]["precision"], "strict-f32")
         self.assertIsNotNone(record["correctness_reference"]["outputs"]["grad_norm"])
@@ -580,7 +583,13 @@ class AmpTest(unittest.TestCase):
                 record["precision_policy"]["autocast"] = "fp16" if mode != "fp16" else "bf16"
                 with self.assertRaisesRegex(ValueError, "dtype/scaling"):
                     validate_precision(record, f"pytorch-{mode}")
-        validate_precision({"framework": "meganeura", "precision": "strict-f32"}, "meganeura-strict")
+        for mode, expected in (("strict", "strict-f32"), ("accelerated", "accelerated")):
+            record = {"framework": "meganeura", "precision": expected,
+                      "arithmetic": {"comparison_class": expected}}
+            validate_precision(record, f"meganeura-{mode}")
+            record["arithmetic"]["comparison_class"] = "wrong"
+            with self.assertRaisesRegex(ValueError, "native arithmetic"):
+                validate_precision(record, f"meganeura-{mode}")
 
     def test_real_data_gate_rejects_skips_stale_weights_and_missing_checkpoints(self):
         import copy
@@ -589,7 +598,7 @@ class AmpTest(unittest.TestCase):
         sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
         from convergence import validate_run
 
-        spec = {"protocol": "smollm2-text-v2", "steps": 256, "checkpoint_every": 64,
+        spec = {"protocol": "smollm2-text-v3", "model": "SmolLM2-135M", "steps": 256, "checkpoint_every": 64,
                 "gate": {"parameter_must_change": "model.norm.weight"}}
         record = {"status": "complete", "protocol": spec["protocol"], "spec_sha256": "abc",
                   "model": "SmolLM2-135M", "completed_updates": 256, "skipped_updates": 0,
@@ -610,6 +619,19 @@ class AmpTest(unittest.TestCase):
         fails(lambda r: r["checkpoints"][-1].update(probe_losses=[1.0] * 4))
         fails(lambda r: r["checkpoints"][-1].update(heldout_losses=[2.0] * 4))
         fails(lambda r: r["losses"].__setitem__(100, float("nan")))
+
+        from convergence import compare_runs
+        from training_gate import SMOLLM2_HIDDEN_SIZES
+        for name, width in SMOLLM2_HIDDEN_SIZES.items():
+            current = copy.deepcopy(record)
+            current["model"] = name
+            current["parameter_check"].update(initial=[1.] * width, final=[.9] * width)
+            self.assertEqual(validate_run(current, dict(spec, model=name), "abc")["status"], "pass")
+            self.assertEqual(compare_runs(current, current)["training"]["status"], "pass")
+            other = copy.deepcopy(current)
+            other["parameter_check"]["initial"][0] = 2.
+            with self.assertRaisesRegex(ValueError, "same model, workload"):
+                compare_runs(current, other)
 
     def test_embedding_probe_includes_repeated_and_unused_rows(self):
         from bench import qualify_embedding_backward

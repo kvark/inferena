@@ -1,6 +1,6 @@
 # P3HPC paired collection
 
-The development collector uses **v28**, with exactly two profiles: `strict`
+The development collector uses **v29**, with exactly two profiles: `strict`
 and `accelerated` (practical). The October 11 cohort below remains frozen at
 **v18**. V19 introduced AMP; v20 changed accelerated training qualification.
 V21 adds a native F32 arithmetic reference and refreshes search inputs to match
@@ -18,6 +18,24 @@ V27 uses PyTorch's built-in profiler benchmarker for XPU kernel autotuning and
 records the actual benchmarker in every compiled result. Other backends retain
 the pinned default event-based benchmarker. Search and compilation budgets,
 numerical acceptance, final step timers and the two-profile matrix are unchanged.
+
+## Development v29: real text for the SmolLM2 family
+
+V29 extends the existing 135M accelerated training workload to 360M and 1.7B:
+256 real-text SGD updates with the same frozen batches, optimizer, loss bounds,
+probe and held-out learning checks. The three pinned tokenizer files are
+byte-identical. Parameter-update evidence is checked against each model's width
+(576, 960 or 2048). This replaces the larger models' repeated-synthetic gate;
+it does not turn their old failed records into passes. Keep v28 and v29 separate.
+The PyTorch runner protocol is v17 and Android's corresponding campaign is v11.
+Search, benchmark shapes, timing, and the strict/accelerated profiles are unchanged.
+
+The separate convergence study now accepts `--model` for all three sizes and
+compares Meganeura strict and accelerated, and PyTorch F32 and requested AMP
+modes on identical text and checkpoints. It remains a separate learning study,
+not an additional benchmark column or an automatic native cohort gate.
+Support for 1.7B is not a qualification result: run its full study on a server
+GPU with sufficient memory before claiming convergence.
 
 ## Development v28: two profiles
 
@@ -186,7 +204,7 @@ evidence and verifies its output shape. Replay agreement with the same AMP
 computation cannot replace the F32 comparison. The extra eager forward and
 candidate check are untimed and included in recorded preparation costs.
 
-For **SmolLM2-135M**, training qualification uses the frozen
+For **SmolLM2-135M, 360M and 1.7B**, training qualification uses the frozen
 [data/smollm2-real-text-v1.json](data/smollm2-real-text-v1.json) fixture:
 
 - 256 matched SGD updates, learning rate exactly f32(0.001), no momentum,
@@ -204,7 +222,7 @@ For **SmolLM2-135M**, training qualification uses the frozen
   increasing mean held-out loss by more than 2%, and change a finite norm
   parameter. The collector recomputes these gates from raw receipts.
 
-Other models retain the 32-update repeated-synthetic numerical gate, now applied
+Non-SmolLM2 models retain the 32-update repeated-synthetic numerical gate, applied
 to TF32 as well as AMP. Receipts explicitly identify it as synthetic; it is not
 real-data convergence evidence. Real datasets for those workloads remain future
 work. The earlier repeated-batch SmolLM2 test remains an optional diagnostic:
@@ -241,7 +259,7 @@ The default matrix remains five models × two profiles × three replicates:
 120 seconds, phase warmup ten seconds and measurement twenty samples. V20 adds
 256 reference plus 256 candidate SGD updates and 80 total evaluation forwards
 to each accelerated SmolLM2-135M run, replacing its former 64 repeated-batch
-updates. Each other accelerated workload has 32 reference plus 32 candidate
+updates. V29 applies that same work to 360M and 1.7B. Each non-SmolLM2 accelerated workload has 32 reference plus 32 candidate
 updates. Qualification times are recorded separately from compilation and step
 timings. `scripts/amp_reference.py` remains an optional dtype diagnostic;
 `scripts/convergence.py` remains the separate cross-engine learning study.
@@ -1177,9 +1195,9 @@ GradScaler uses an optimizer whose step performs no update; real SGD appears
 only in the untimed gate and convergence study. See PyTorch's
 [AMP guidance](https://docs.pytorch.org/docs/stable/notes/amp_examples.html).
 
-The real-data study uses the pinned SmolLM2-135M checkpoint and tokenizer with
+The real-data study uses the selected pinned SmolLM2 checkpoint and tokenizer with
 Project Gutenberg's [A Midsummer Night's Dream](https://www.gutenberg.org/ebooks/1514).
-The corpus and tokenizer SHA-256 values are frozen in `scripts/convergence.py`;
+The corpus and tokenizer SHA-256 values are frozen in the study/gate code;
 a changed download is rejected. Gutenberg headers/footers are stripped before
 tokenization, no special tokens are added, and the first 80% of tokens train
 while the last 20% are held out. All engines receive the same saved 128-token
@@ -1190,14 +1208,17 @@ learning rate, without momentum, weight decay or clipping.
 curl --fail --location https://www.gutenberg.org/ebooks/1514.txt.utf-8 \
   --output ../pg1514.txt
 .venv-xpu/bin/python scripts/convergence.py --backend xpu --gpu B570 \
-  --corpus ../pg1514.txt --results-dir ../convergence-b570
+  --model SmolLM2-360M --corpus ../pg1514.txt --results-dir ../convergence-b570-360m
+# On a server GPU (use its actual device name):
+.venv/bin/python scripts/convergence.py --backend cuda --gpu H100 \
+  --model SmolLM2-1.7B --corpus ../pg1514.txt --results-dir ../convergence-h100-1.7b
 ```
 
 Start with B570, then repeat on the other devices. Each worker has a 1,200 s
 process-tree watchdog. Receipts are replaced atomically after every update;
 the study keeps source archives, the corpus, tokenizer, ordered token batches,
 search preparation and raw losses outside Git. Native construction uses a
-fresh kernel memo and the 30 s search policy. PyTorch is explicitly eager,
+separate fresh kernel memos for strict and accelerated, with the 30 s search policy. PyTorch is explicitly eager,
 math SDPA and uncaptured. Real-text XPU runs qualify embedding backward on
 the first batch, including repeated tokens, and record any selected
 mathematically equivalent `index_add` workaround.
@@ -1205,8 +1226,8 @@ mathematically equivalent `index_add` workaround.
 The learning gate requires every update, a changed finite `model.norm.weight`,
 at least 5% lower loss on four fixed training probe sequences, and no more
 than 2% higher loss on four held-out sequences. Probe and held-out losses are
-recorded at steps 0, 64, 128, 192 and 256. Native f32 and each AMP trajectory
-must also pass the same per-step/relative-L2 curve bounds against PyTorch f32,
+recorded at steps 0, 64, 128, 192 and 256. Native strict and accelerated and each AMP trajectory
+must also pass the same per-loss bounds against PyTorch f32 (relative L2 is diagnostic),
 including every evaluation sequence. Failed numerical gates remain failures.
 This establishes a short matched training trajectory for one model, corpus
 and seed; it does not establish general convergence or supply throughput data.

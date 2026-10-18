@@ -1,5 +1,6 @@
 """Durable campaign records and a wall-clock watchdog for a complete runner tree."""
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import math
@@ -10,6 +11,30 @@ import subprocess
 import sys
 import tempfile
 import time
+
+
+@contextmanager
+def keep_awake():
+    """Hold macOS sleep assertions only for the campaign's lifetime."""
+    if sys.platform != "darwin":
+        yield {"enabled": False, "reason": "not macOS"}
+        return
+    # Keep the display awake as well: display sleep can change GPU behavior.
+    # -w releases the assertions even if the collector is killed without cleanup.
+    command = ["/usr/bin/caffeinate", "-dis", "-w", str(os.getpid())]
+    process = subprocess.Popen(command, start_new_session=True)
+    try:
+        print("Keeping macOS awake for the campaign (caffeinate -dis).", file=sys.stderr)
+        yield {"enabled": True, "command": command,
+               "scope": "campaign; display and idle sleep, system sleep on AC power"}
+    finally:
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
 
 
 def write_json(path, value):

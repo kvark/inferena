@@ -437,6 +437,11 @@ For example, the Mac qualification is:
 .venv/bin/python scripts/p3hpc.py --backend mps --qualify-only
 ```
 
+On macOS the collector holds `caffeinate -dis` assertions for the campaign,
+keeping the display and system awake, and records the command in `campaign.json`.
+The assertions are released when collection exits, including on interruption.
+Keep the Mac on AC power with the lid open; this does not override lid-close sleep.
+
 Substitute that machine's backend. The Mac check is particularly important:
 this revision now compiles MPS, whereas v7 deliberately ran eager. A failure
 must be investigated or explicitly reported; never silently use eager times

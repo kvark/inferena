@@ -1,6 +1,6 @@
 # P3HPC paired collection
 
-The development collector uses **v29**, with exactly two profiles: `strict`
+The development collector uses **v30**, with exactly two profiles: `strict`
 and `accelerated` (practical). The October 11 cohort below remains frozen at
 **v18**. V19 introduced AMP; v20 changed accelerated training qualification.
 V21 adds a native F32 arithmetic reference and refreshes search inputs to match
@@ -18,6 +18,17 @@ V27 uses PyTorch's built-in profiler benchmarker for XPU kernel autotuning and
 records the actual benchmarker in every compiled result. Other backends retain
 the pinned default event-based benchmarker. Search and compilation budgets,
 numerical acceptance, final step timers and the two-profile matrix are unchanged.
+
+## Development v30: real-text embedding probe
+
+XPU now probes embedding backward with the first real-text qualification batch,
+including repeated token IDs, before preparing the F32 oracle. The existing
+checked dense `index_add` workaround is selected if native backward fails.
+Strict and explicitly repeated-synthetic workloads retain their unique-ID probe.
+This matches the standalone convergence study and fixes a 360M reference crash
+that the smaller synthetic probe missed. Bounds, token batches, dtype selection
+and timing scope are unchanged. PyTorch uses protocol v18; Android pairs with
+v30 as v12. Preserve the failed v29 records and do not pool the two protocols.
 
 ## Development v29: real text for the SmolLM2 family
 
@@ -1222,7 +1233,7 @@ curl --fail --location https://www.gutenberg.org/ebooks/1514.txt.utf-8 \
 Start with B570, then repeat on the other devices. Each worker has a 1,200 s
 process-tree watchdog. Receipts are replaced atomically after every update;
 the study keeps source archives, the corpus, tokenizer, ordered token batches,
-search preparation and raw losses outside Git. Native construction uses a
+search preparation and raw losses outside Git. Native construction uses
 separate fresh kernel memos for strict and accelerated, with the 30 s search policy. PyTorch is explicitly eager,
 math SDPA and uncaptured. Real-text XPU runs qualify embedding backward on
 the first batch, including repeated tokens, and record any selected

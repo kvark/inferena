@@ -535,6 +535,25 @@ class AmpTest(unittest.TestCase):
             self.assertTrue(oracle["correctness_reference"]["prepared_before_candidate_compilation"])
             self.assertIsNotNone(oracle["correctness_reference"]["outputs"]["grad_norm"])
             self.assertNotIn("timings", oracle)
+            # An unusable F32 oracle must not turn the candidate's classified
+            # numerical failure into a malformed-JSON collector failure.
+            for invalid_field in ("loss", "full_output"):
+                snapshot = json.loads(json.dumps(oracle["correctness_reference"]))
+                reference = {"correctness_reference": snapshot, "output": torch.ones(1, 4)}
+                if invalid_field == "loss":
+                    snapshot["outputs"]["loss"] = float("nan")
+                else:
+                    reference["output"][0, 0] = float("nan")
+                with patch.dict(os.environ, {**env, "INFERENA_PREPARATION_REPORT": str(Path(directory) / "preparation.json")}), \
+                        patch("bench.load_model", return_value=model), \
+                        patch("bench.prepare_inputs", return_value={"input_features": torch.ones(1, 4)}), \
+                        patch("bench.prepare_reference", return_value=reference), \
+                        patch("bench.qualify_precision", side_effect=QualificationError("forward failure")), \
+                        self.assertRaisesRegex(QualificationError, "forward failure"):
+                    _bench("test", {"type": "whisper"}, "cpu", None)
+                unavailable = json.loads((Path(directory) / "torch-f32-oracle.json").read_text())
+                self.assertIsNone(unavailable["correctness_reference"])
+                self.assertIn("non-finite", unavailable["unavailable_reason"])
 
     def test_candidate_compilation_cannot_change_the_f32_oracle(self):
         from contextlib import redirect_stdout

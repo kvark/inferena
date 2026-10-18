@@ -131,6 +131,9 @@ def main():
             os.fsync(output.fileno())
         if report["status"] == "complete":
             (args.output / "record.json.tmp").replace(args.output / "record.json")
+    except Exception as error:
+        report.update(status="failed", error=str(error))
+        raise
     finally:
         for owned in (process, journal):
             if owned is not None and owned.poll() is None:
@@ -141,6 +144,10 @@ def main():
         stop.set()
         for thread in threads:
             thread.join(timeout=6)
+        if faults:
+            report["status"] = "gpu-fault"
+        elif report["status"] == "running":
+            report["status"] = "interrupted"
         report.update(faults=faults, finished_unix=time.time())
         write_json(args.output / "diagnostic.json", report)
     return 0 if report["status"] == "complete" else 1

@@ -1575,11 +1575,19 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
         # subsequently fails compilation, accuracy, or replay qualification.
         # This file contains no benchmark timing and never replaces that result.
         if path := os.environ.get("INFERENA_PREPARATION_REPORT"):
+            snapshot = precision_reference["correctness_reference"]
+            values = snapshot["outputs"]
+            observed = [values["loss"], *values["logits_sample"]]
+            if training_requested:
+                observed.extend([values["grad_norm"], *values["gradient_norms"].values()])
+            finite = (all(math.isfinite(value) for value in observed)
+                      and bool(torch.isfinite(precision_reference["output"]).all()))
             save(Path(path).with_name("torch-f32-oracle.json"), {
                 "framework": "pytorch", "model": model_name,
                 "torch_version": torch.__version__, "torch_git_version": torch.version.git_version,
                 "backend": backend, "synthetic_parameter_init": SYNTHETIC_PARAMETER_INIT,
-                "correctness_reference": precision_reference["correctness_reference"],
+                "correctness_reference": snapshot if finite else None,
+                "unavailable_reason": None if finite else "non-finite original F32 snapshot",
             })
     compile_s = 0.0
     if mode != "eager":

@@ -1,6 +1,6 @@
 # P3HPC paired collection
 
-The development collector uses **v30**, with exactly two profiles: `strict`
+The development collector uses **v31**, with exactly two profiles: `strict`
 and `accelerated` (practical). The October 11 cohort below remains frozen at
 **v18**. V19 introduced AMP; v20 changed accelerated training qualification.
 V21 adds a native F32 arithmetic reference and refreshes search inputs to match
@@ -18,6 +18,28 @@ V27 uses PyTorch's built-in profiler benchmarker for XPU kernel autotuning and
 records the actual benchmarker in every compiled result. Other backends retain
 the pinned default event-based benchmarker. Search and compilation budgets,
 numerical acceptance, final step timers and the two-profile matrix are unchanged.
+
+## Development v31: repeatability within each native program
+
+This development branch pins Meganeura `9dafafa`
+([PR #265](https://github.com/kvark/meganeura/pull/265)), based on merged main
+`e0d2e26`. The change is under review; this section does not declare cohort readiness.
+
+Native search checks every candidate against the original F32 reference using
+the existing numerical or language-model quality contract. It also checks two
+fresh executions at each qualification checkpoint, restoring persistent writes
+and representative inputs before each execution. The tight repeatability bounds
+compare executions of the same complete execution plan. A different plan starts
+its own repeatability anchor; it must still pass the independent F32 gate.
+
+Previously, the first accelerated program became the tight numerical reference
+for every later candidate. This rejected valid changes of arithmetic, including
+scalar alternatives with smaller errors against F32. The numerical thresholds,
+whole-program timing gate, search budget, and two-profile design are unchanged.
+Qualification overhead remains inside the search budget and outside step timing.
+Receipts identify this policy as `same-program-full-tensor-v1` and record the
+repeat count. Android uses v13. Keep v30 measurements separate from v31 because
+the set of selectable programs changes.
 
 ## Development v30: real-text embedding probe
 
@@ -624,9 +646,10 @@ their sessions before constructing the next shape; calibration may temporarily
 hold an incumbent and challenger. Most models construct three sessions; Whisper
 uses two. In-flight driver work and qualification can overrun the soft deadline.
 
-Every candidate's full outputs and canonical parameter gradients are compared
-with the first checked program. V21 additionally checks every candidate against
-the original graph's F32 arithmetic, as described above. Candidates with outstanding kernel probes are
+Every candidate's full outputs and canonical parameter gradients are checked
+against the original graph's F32 arithmetic, as described above. V31 also checks
+repeatability against a prior execution of the same complete plan, rather than
+the first program in the search. Candidates with outstanding kernel probes are
 checked before and after tuning; memo-only candidates are checked after installing
 their kernels. Winning challengers are checked after paired measurement, and
 the final incumbent is checked again if another challenger has run since its

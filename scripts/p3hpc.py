@@ -228,6 +228,7 @@ def check_native_search(session, seconds, max_submission_chunks, kernel_memo=Fal
             or options["patience"] is not None
             or options["min_improvement"] != 0.01
             or options["warmup_runs"] != 2
+            or options.get("qualification_runs") != 2
             or duration_seconds(options["warmup_time"]) != 0.25
             or memory["plan_fraction_of_available"] != 0.75
             or options["max_plan_bytes"] != available // 4 * 3
@@ -242,7 +243,7 @@ def check_native_search(session, seconds, max_submission_chunks, kernel_memo=Fal
     if not trials or not 0 <= search["selected"] < len(trials):
         raise ValueError("native construction has no selected program")
     selected = trials[search["selected"]]
-    if selected["outcome"]["qualified"] is not True or selected["qualifications"] < 1:
+    if selected["outcome"]["qualified"] is not True or selected["qualifications"] < 2:
         raise ValueError("native selected program was not qualified")
     if selected["kernel_tuning"] is None:
         # Search preserves an ordinary, qualified baseline when tuning loses
@@ -252,16 +253,20 @@ def check_native_search(session, seconds, max_submission_chunks, kernel_memo=Fal
                 or any(outcome.get(key) != 0 for key in ("initial", "candidate", "selected"))):
             raise ValueError("native untuned selection is not the qualified initial fallback")
     for trial in trials:
+        if trial["outcome"]["qualified"] is True and trial["qualifications"] < 2:
+            raise ValueError("native candidate lacks repeated qualification")
         kernel = trial["kernel_tuning"]
         if kernel is None:
             continue
         check_native_kernel_search(kernel, tuning, seconds)
     qualification = session["qualification"]
-    if (qualification["policy"] != "fixed-full-tensor-v4"
-            or qualification["reference"] != "first checked program"
+    if (qualification["policy"] != "same-program-full-tensor-v1"
+            or qualification["reference"] != "same execution plan"
             or qualification["rtol"] != 1e-4 or qualification["atol"] != 1e-6
             or qualification["accelerated_gradient_rtol"] != 0.01
-            or qualification["qualified_calls"] < 1 or qualification["output_elements"] <= 0
+            or qualification["qualified_calls"] < 2 or qualification["output_elements"] <= 0
+            or qualification.get("program_checks", 0) < 2
+            or qualification.get("repeatability_checks", 0) < 1
             or session["mode"] == "Training" and qualification["gradient_elements"] <= 0):
         raise ValueError("native construction lacks full-output/gradient qualification")
     arithmetic = qualification.get("arithmetic_reference", {})
@@ -850,7 +855,7 @@ def collect(wake_policy):
                INFERENA_WARMUP_SECONDS=str(WARMUP_SECONDS))
     env.pop("VIRTUAL_ENV", None)
     manifest = {
-        "protocol": "p3hpc-paired-campaign-v30", "source": revision,
+        "protocol": "p3hpc-paired-campaign-v31", "source": revision,
         "started_at": started_at,
         "host": {"name": socket.gethostname(), "os": platform.system(),
                  "kernel": platform.release(), "platform": platform.platform(), "arch": platform.machine(),
@@ -889,7 +894,8 @@ def collect(wake_policy):
                           "kernel_memo": {"enabled": args.kernel_memo, "policy": KERNEL_MEMO_POLICY,
                                           "scope": "campaign/model/precision", "selected_program_reuse": False},
                           "warmup_pairs": 2, "warmup_seconds": 0.25,
-                          "qualification": "fixed-full-tensor-v4",
+                          "qualification": "same-program-full-tensor-v1",
+                          "qualification_runs": 2,
                           "arithmetic_reference": "native-f32-full-tensor-v2; preparation included in compile_s, outside search budget",
                           "search_input_policy": "refresh before each step, outside timing",
                           "search_seconds_per_session": args.tune_seconds, "strict_coop": "NativeF32"},

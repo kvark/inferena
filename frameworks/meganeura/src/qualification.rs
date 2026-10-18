@@ -1,4 +1,4 @@
-//! Full-tensor construction checks against both F32 arithmetic and the search anchor.
+//! Independent F32 correctness and same-program repeatability checks.
 //! The outer harness remains the independent PyTorch implementation check.
 use meganeura::{Graph, Mode, Session};
 use std::collections::BTreeMap;
@@ -81,9 +81,16 @@ impl Error {
     }
 }
 
+#[derive(PartialEq)]
 struct Snapshot {
     outputs: Vec<Vec<f32>>,
     gradients: BTreeMap<String, Vec<f32>>,
+}
+
+struct CheckedSnapshot {
+    tensors: Snapshot,
+    quality: Option<serde_json::Value>,
+    raw_logits: Option<serde_json::Value>,
 }
 
 impl Snapshot {
@@ -151,7 +158,10 @@ pub struct Qualification {
     accelerated: bool,
     f32: Snapshot,
     reference_seconds: f64,
-    anchor: Option<Snapshot>,
+    anchor: Option<CheckedSnapshot>,
+    anchor_plan: Option<meganeura::compile::ExecutionPlan>,
+    program_checks: usize,
+    repeatability_checks: usize,
     language_model: Option<crate::quality::LanguageModel>,
     last_quality: Option<serde_json::Value>,
     last_raw_logits: Option<serde_json::Value>,
@@ -177,6 +187,9 @@ impl Qualification {
             f32,
             reference_seconds: 0.0,
             anchor: None,
+            anchor_plan: None,
+            program_checks: 0,
+            repeatability_checks: 0,
             language_model: None,
             last_quality: None,
             last_raw_logits: None,
@@ -190,6 +203,9 @@ impl Qualification {
     }
 
     pub fn set_language_model(&mut self, vocabulary: usize, targets: &[u32]) -> Result<(), String> {
+        if self.anchor.is_some() {
+            return Err("language-model policy must be set before qualification".into());
+        }
         if self.mode != Mode::Inference || self.f32.outputs.len() != 1 {
             return Err("language-model quality requires one inference output".into());
         }
@@ -204,11 +220,30 @@ impl Qualification {
     }
 
     pub fn check(&mut self, session: &Session) -> Result<(), String> {
+        self.begin_program(session.plan());
         self.check_snapshot(Snapshot::read(session, &self.output_lengths, self.mode)?)
+    }
+
+    fn begin_program(&mut self, plan: &meganeura::compile::ExecutionPlan) {
+        if self.anchor_plan.as_ref() != Some(plan) {
+            self.anchor_plan = Some(plan.clone());
+            self.anchor = None;
+            self.program_checks = 0;
+        }
     }
 
     fn check_snapshot(&mut self, actual: Snapshot) -> Result<(), String> {
         let result = (|| {
+            // An identical snapshot already passed the independent F32 gate.
+            // Compare every output and gradient element, but avoid repeating
+            // the expensive error reductions and language-model softmax.
+            if let Some(anchor) = self.anchor.as_ref().filter(|a| a.tensors == actual) {
+                self.last_quality.clone_from(&anchor.quality);
+                self.last_raw_logits.clone_from(&anchor.raw_logits);
+                self.repeatability_checks += 1;
+                self.program_checks += 1;
+                return Ok(());
+            }
             let mut raw_logits = None;
             let quality = if let Some(language_model) = &self.language_model {
                 if actual.outputs.len() != 1 {
@@ -242,18 +277,22 @@ impl Qualification {
                     .map_err(|error| format!("strict-f32 reference: {error}"))?;
                 None
             };
-            // Preserve the tighter within-search repeatability check as well.
-            actual
-                .compare(
-                    self.anchor.as_ref().unwrap_or(&actual),
-                    self.mode,
-                    1e-4,
-                    self.accelerated,
-                )
-                .map_err(|error| format!("search anchor: {error}"))?;
-            if self.anchor.is_none() {
-                self.anchor = Some(actual);
+            // Arithmetic and fusion choices may differ between programs. The
+            // tight repeatability bound applies to executions of this plan;
+            // every plan must independently satisfy the F32 correctness gate.
+            if let Some(anchor) = &self.anchor {
+                actual
+                    .compare(&anchor.tensors, self.mode, 1e-4, self.accelerated)
+                    .map_err(|error| format!("program repeatability: {error}"))?;
+                self.repeatability_checks += 1;
+            } else {
+                self.anchor = Some(CheckedSnapshot {
+                    tensors: actual,
+                    quality: quality.clone(),
+                    raw_logits: raw_logits.clone(),
+                });
             }
+            self.program_checks += 1;
             self.last_quality = quality;
             self.last_raw_logits = raw_logits;
             Ok(())
@@ -296,8 +335,10 @@ impl Qualification {
             None
         };
         serde_json::json!({
-            "policy": "fixed-full-tensor-v4", "reference": "first checked program",
+            "policy": "same-program-full-tensor-v1", "reference": "same execution plan",
             "rtol": 1e-4, "atol": 1e-6, "accelerated_gradient_rtol": 0.01,
+            "program_checks": self.program_checks,
+            "repeatability_checks": self.repeatability_checks,
             "qualified_calls": self.calls,
             "rejected_calls": self.rejected_calls,
             "output_elements": self.f32.outputs.iter().map(Vec::len).sum::<usize>(),
@@ -330,6 +371,99 @@ mod tests {
     use super::{Error, Qualification, Snapshot};
     use meganeura::Mode;
 
+    fn inference_gate(reference: Vec<f32>) -> Qualification {
+        Qualification {
+            output_lengths: vec![reference.len()],
+            mode: Mode::Inference,
+            accelerated: true,
+            f32: Snapshot {
+                outputs: vec![reference],
+                gradients: Default::default(),
+            },
+            reference_seconds: 0.0,
+            anchor: None,
+            anchor_plan: None,
+            program_checks: 0,
+            repeatability_checks: 0,
+            language_model: None,
+            last_quality: None,
+            last_raw_logits: None,
+            calls: 0,
+            rejected_calls: 0,
+        }
+    }
+
+    #[test]
+    fn identical_snapshots_reuse_their_own_quality_evidence() {
+        let reference = vec![0.9_f32.ln(), 0.1_f32.ln()];
+        let mut gate = inference_gate(reference.clone());
+        gate.set_language_model(2, &[0]).unwrap();
+        let snapshot = |values| Snapshot {
+            outputs: vec![values],
+            gradients: Default::default(),
+        };
+        gate.check_snapshot(snapshot(reference.clone())).unwrap();
+        let anchor_quality = gate.last_quality.clone();
+        let anchor_raw = gate.last_raw_logits.clone();
+        let mut close = reference.clone();
+        close[0] += 0.00001;
+        gate.check_snapshot(snapshot(close)).unwrap();
+        assert_ne!(gate.last_quality, anchor_quality);
+        gate.check_snapshot(snapshot(reference)).unwrap();
+        assert_eq!(gate.last_quality, anchor_quality);
+        assert_eq!(gate.last_raw_logits, anchor_raw);
+        assert_eq!(gate.repeatability_checks, 2);
+        assert!(gate.set_language_model(2, &[1]).is_err());
+    }
+
+    #[test]
+    fn arithmetic_choices_are_independent_but_each_program_must_repeat() {
+        let snapshot = |value| Snapshot {
+            outputs: vec![vec![value]],
+            gradients: Default::default(),
+        };
+        let mut gate = inference_gate(vec![1.0]);
+        let mut graph = meganeura::Graph::new();
+        let x = graph.input("x", &[1]);
+        let y = graph.neg(x);
+        graph.set_outputs(vec![y]);
+        let first = meganeura::compile::compile(&graph);
+        let mut second = first.clone();
+        // Code-generation knobs matter even when dispatch geometry is equal.
+        second.knobs.flash.interleave = !first.knobs.flash.interleave;
+
+        gate.begin_program(&first);
+        gate.check_snapshot(snapshot(1.01)).unwrap();
+        gate.begin_program(&first);
+        gate.check_snapshot(snapshot(1.01)).unwrap();
+        assert_eq!(gate.program_checks, 2);
+
+        // This more accurate program must not reproduce the first program's
+        // rounding error. Both still obey the unchanged independent F32 gate.
+        gate.begin_program(&second);
+        gate.check_snapshot(snapshot(1.0)).unwrap();
+        gate.check_snapshot(snapshot(1.0)).unwrap();
+        assert_eq!(gate.program_checks, 2);
+        assert!(
+            gate.check_snapshot(snapshot(1.001))
+                .unwrap_err()
+                .contains("repeatability")
+        );
+        assert!(
+            gate.check_snapshot(snapshot(1.1))
+                .unwrap_err()
+                .contains("strict-f32")
+        );
+
+        // Revisiting an incumbent starts its own fresh repeatability check;
+        // neither an intervening candidate nor its failures become its oracle.
+        gate.begin_program(&first);
+        assert_eq!(gate.program_checks, 0);
+        gate.check_snapshot(snapshot(1.01)).unwrap();
+        gate.check_snapshot(snapshot(1.01)).unwrap();
+        assert_eq!(gate.repeatability_checks, 3);
+    }
+
     #[test]
     fn first_candidate_cannot_define_its_own_precision_reference() {
         let snapshot = |gradient| Snapshot {
@@ -343,6 +477,9 @@ mod tests {
             f32: snapshot(vec![0.25, -0.5]),
             reference_seconds: 0.01,
             anchor: None,
+            anchor_plan: None,
+            program_checks: 0,
+            repeatability_checks: 0,
             language_model: None,
             last_quality: None,
             last_raw_logits: None,

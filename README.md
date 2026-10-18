@@ -144,7 +144,7 @@ curve L2 is diagnostic. Non-language outputs retain the tensor-fidelity gate.
 Graph replay includes forward/loss/scaled backward; scaler housekeeping runs
 after replay inside the measured step.
 
-The development collection protocol is **v30**, still 30 pairs per GPU.
+The development collection protocol is **v31**, still 30 pairs per GPU.
 PyTorch qualifies both inference and latency against F32, including the smaller
 ResNet batch and shorter SmolVLA action sequence. Each receipt records the checked
 output shape; failed latency leaves its timings empty.
@@ -154,7 +154,8 @@ reference preparation time, recorded in `compile_s`, before the 30-second search
 Search refreshes inputs before each step to match benchmark execution.
 `scripts/amp_reference.py` provides optional dtype and `--repeated-batch`
 diagnostics; `scripts/convergence.py` separately compares both engines on real
-text. See the [current protocol](EXPERIMENT.md#development-v30-real-text-embedding-probe).
+text. Native search checks repeatability within each candidate program, alongside
+the independent F32 correctness gate. See the [current protocol](EXPERIMENT.md#development-v31-repeatability-within-each-native-program).
 The completed October 11 v18 cohort retains its frozen source and arithmetic
 policy. Keep its records separate from the new qualification protocol.
 

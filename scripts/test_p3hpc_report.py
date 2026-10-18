@@ -1,5 +1,7 @@
 """Only complete, qualifying cells may produce publication timings."""
 import copy
+import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -42,6 +44,52 @@ class PairedReport(unittest.TestCase):
             self.assertIsNone(rows["Bad", "training"]["native_ms"])
             self.assertIsNone(rows["Bad", "training"]["speedup"])
             self.assertEqual(rows["Bad", "inference"]["native_ms"], 1.)
+
+    def test_failed_reference_retains_native_measurement_without_claiming_qualification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.campaign(root)
+            for run in manifest["runs"]:
+                run["phases"]["inference"] = dict(status="failed")
+                write_json(root / run["path"] / f"{run['model']}_pytorch.json", dict(status="error"))
+            write_json(root / "campaign.json", manifest)
+            for row in campaign_rows(root):
+                if row["phase"] == "inference":
+                    self.assertEqual(row["native_measured_ms"], 1.)
+                    self.assertIsNone(row["native_ms"])
+                    self.assertIsNone(row["reference_ms"])
+                    self.assertIsNone(row["speedup"])
+
+    def test_preserved_oracle_qualifies_native_but_cannot_supply_reference_timings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.campaign(root)
+            for run in manifest["runs"]:
+                folder = root / run["path"]
+                run["phases"] = {p: dict(status="failed") for p in ("inference", "latency", "training")}
+                write_json(folder / f"{run['model']}_pytorch.json", dict(status="error"))
+                write_json(folder / "torch-f32-oracle.json", dict(correctness_only=True))
+                receipt = dict(policy="preserved-f32-oracle-v1", oracle="torch-f32-oracle.json",
+                    timing_substituted=False,
+                    native_sha256=hashlib.sha256((folder / f"{run['model']}_meganeura.json").read_bytes()).hexdigest(),
+                    oracle_sha256=hashlib.sha256((folder / "torch-f32-oracle.json").read_bytes()).hexdigest(),
+                    validation=dict(comparison_performed=True, forward_valid=True, training_valid=True,
+                                    parameter_gradient_relative_l2_error=0.01, total_gradient_relative_error=0.01))
+                write_json(folder / "native-oracle-comparison.json", receipt)
+                run["native_oracle"] = dict(path="native-oracle-comparison.json", **receipt)
+            write_json(root / "campaign.json", manifest)
+            for row in campaign_rows(root):
+                self.assertEqual(row["native_ms"], 1.)
+                self.assertEqual(row["native_status"], "valid")
+                self.assertIsNone(row["reference_ms"])
+                self.assertIsNone(row["speedup"])
+            # A stale receipt must not qualify a replaced measurement.
+            path = root / manifest["runs"][0]["path"] / "Good_meganeura.json"
+            record = json.loads(path.read_text())
+            record["timing_samples_ms"]["inference"][0] = 5.
+            write_json(path, record)
+            with self.assertRaisesRegex(ValueError, "does not belong"):
+                campaign_rows(root)
 
     def test_missing_or_duplicate_group_cannot_supply_training_times(self):
         with tempfile.TemporaryDirectory() as tmp:

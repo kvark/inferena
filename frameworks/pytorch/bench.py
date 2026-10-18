@@ -1571,6 +1571,16 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
         del reference_inputs
         oracle_seconds = time.perf_counter() - started
         precision_reference["correctness_reference"]["prepared_before_candidate_compilation"] = True
+        # Preserve the independent oracle even when the accelerated candidate
+        # subsequently fails compilation, accuracy, or replay qualification.
+        # This file contains no benchmark timing and never replaces that result.
+        if path := os.environ.get("INFERENA_PREPARATION_REPORT"):
+            save(Path(path).with_name("torch-f32-oracle.json"), {
+                "framework": "pytorch", "model": model_name,
+                "torch_version": torch.__version__, "torch_git_version": torch.version.git_version,
+                "backend": backend, "synthetic_parameter_init": SYNTHETIC_PARAMETER_INIT,
+                "correctness_reference": precision_reference["correctness_reference"],
+            })
     compile_s = 0.0
     if mode != "eager":
         compile_start = time.perf_counter()

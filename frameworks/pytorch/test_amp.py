@@ -518,7 +518,8 @@ class AmpTest(unittest.TestCase):
         from pathlib import Path
         with tempfile.TemporaryDirectory() as directory:
             receipt = Path(directory) / "qualification.json"
-            with patch.dict(os.environ, {**env, "INFERENA_PRECISION_REPORT": str(receipt)}), \
+            with patch.dict(os.environ, {**env, "INFERENA_PRECISION_REPORT": str(receipt),
+                                        "INFERENA_PREPARATION_REPORT": str(Path(directory) / "preparation.json")}), \
                     patch("bench.load_model", return_value=model), \
                     patch("bench.prepare_inputs", return_value={"input_features": torch.ones(1, 4)}), \
                     patch("bench.qualify_precision", side_effect=QualificationError("forward failure")), \
@@ -528,6 +529,12 @@ class AmpTest(unittest.TestCase):
             self.assertEqual(failed["status"], "failed")
             self.assertGreater(failed["reference_preparation_seconds"], 0)
             self.assertGreaterEqual(failed["elapsed_seconds"], 0)
+            oracle = json.loads((Path(directory) / "torch-f32-oracle.json").read_text())
+            self.assertEqual(oracle["model"], "test")
+            self.assertEqual(oracle["correctness_reference"]["precision"], "strict-f32")
+            self.assertTrue(oracle["correctness_reference"]["prepared_before_candidate_compilation"])
+            self.assertIsNotNone(oracle["correctness_reference"]["outputs"]["grad_norm"])
+            self.assertNotIn("timings", oracle)
 
     def test_candidate_compilation_cannot_change_the_f32_oracle(self):
         from contextlib import redirect_stdout

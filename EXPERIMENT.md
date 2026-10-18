@@ -850,6 +850,22 @@ alone is insufficient.
 
 ### Failed references and the separate eager diagnostic
 
+The report distinguishes native qualification, reference qualification, and
+paired comparison eligibility. A failed PyTorch phase does not erase completed
+Meganeura measurements. If an independent correctness check is missing, those
+measurements are explicitly labelled `qualification-incomplete-or-failed` and
+cannot contribute a speedup. Qualified native-only results may be published
+without a reference timing; training retains the replicated-gradient gate.
+
+Accelerated collection preserves `torch-f32-oracle.json` before candidate
+compilation. This is the already-computed eager F32 correctness snapshot, with
+no timing samples. `native-oracle-comparison.json` binds its comparison to the
+native record and oracle file by SHA-256. Thus an AMP accuracy or replay failure
+can leave native qualification intact without another GPU execution. Archives
+without this sidecar retain their original evidence; an existing checked eager
+diagnostic can qualify the same native record, but never supplies a replacement
+PyTorch benchmark timing.
+
 A numerical repeatability failure or a narrowly identified rejected graph
 capture is a result, not permission to weaken the gate. The primary JSON and
 preparation receipt keep the failure phase, check, tensor and available error
@@ -1142,6 +1158,22 @@ Raw evidence stays outside Git. Previous-cohort acceptance is available in Git
 history; it is not a certificate for this construction path on other backends.
 
 ## Separate diagnostics
+
+For a Linux GPU hang investigation, run one bounded workload with durable
+candidate/dispatch logs, kernel messages, and DRM telemetry:
+
+```sh
+INFERENA_STRICT=1 INFERENA_TUNE_SECONDS=30 \
+  python scripts/gpu_diagnostic.py --drm-card card1 --seconds 180 \
+  --output /tmp/whisper-hang -- /absolute/path/to/inferena-meganeura Whisper-tiny
+```
+
+The card selects the device explicitly. The wrapper applies the existing
+6-GiB/no-swap cgroup limit, stops the process tree on a timeout or a new kernel
+wedge/reset failure, and attempts a bounded copy of any available devcoredump.
+It does not change driver, power, or clock settings. Durable tracing affects
+execution and search order, so these timings are diagnostic only. A process
+watchdog cannot guarantee recovery of a wedged kernel driver.
 
 No profilers, compiler-debug overrides or local dependency overrides belong
 in publication collection. For diagnostics use a new output directory:

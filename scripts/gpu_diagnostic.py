@@ -14,9 +14,10 @@ import time
 from collection import terminate_tree, write_json
 
 
-def capture_lines(process, path, stop, faults=None):
+def capture_lines(process, path, faults=None):
     with path.open("w") as output:
         next_sync = 0.0
+        # Drain to EOF: a finished process can still have buffered diagnostics.
         for line in iter(process.stdout.readline, b""):
             text = line.decode("utf-8", errors="replace")
             output.write(json.dumps({"unix_s": time.time(), "line": text.rstrip()}) + "\n")
@@ -27,8 +28,6 @@ def capture_lines(process, path, stop, faults=None):
                 next_sync = time.monotonic() + 0.2
             if faults is not None and re.search(r"job timed out|wedged|reset failed|reset.*failed", text, re.I):
                 faults.append(text.strip())
-            if stop.is_set():
-                break
         output.flush()
         os.fsync(output.fileno())
 
@@ -101,7 +100,7 @@ def main():
     try:
         journal = subprocess.Popen(["journalctl", "-k", "-f", "-n", "0", "--no-pager"],
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
-        threads.append(threading.Thread(target=capture_lines, args=(journal, args.output / "kernel.jsonl", stop, faults), daemon=True))
+        threads.append(threading.Thread(target=capture_lines, args=(journal, args.output / "kernel.jsonl", faults), daemon=True))
         threads.append(threading.Thread(target=observe, args=(device, args.output, stop), daemon=True))
         for thread in threads:
             thread.start()
@@ -117,7 +116,7 @@ def main():
             # Capture stderr through the same durable line writer as the kernel.
             class Stderr:
                 stdout = process.stderr
-            thread = threading.Thread(target=capture_lines, args=(Stderr(), args.output / "runner.jsonl", stop), daemon=True)
+            thread = threading.Thread(target=capture_lines, args=(Stderr(), args.output / "runner.jsonl"), daemon=True)
             threads.append(thread)
             thread.start()
             deadline = time.monotonic() + args.seconds

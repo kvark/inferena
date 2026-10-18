@@ -5,6 +5,206 @@ post-OOM offline analysis separates inefficient resident kernels from
 weight-representation and memory-placement costs; it does not establish a
 removable barrier-cost percentage or contain new speed measurements.
 
+## Search accuracy versus repeatability (October 18, 2026)
+
+The v30 native checker compared every candidate with the first accelerated
+program using its repeatability bound. On RTX 5070, all 55 rejected
+SmolLM2-135M prefill candidates had already passed the independent original-F32
+language-model gate. Every one had smaller mean KL error than the initial
+program. A separate diagnostic recorded 186 same-program repeat comparisons
+with zero maximum error. These were cross-program numerical differences,
+not demonstrated unstable kernels.
+
+A second reproduction retains the old gate and captures complete tensors for
+all 55 rejections. Every rejected output independently passes PyTorch CPU
+float64 evaluation, and all 55 have smaller mean KL than the initial program:
+the largest rejected mean KL is `2.788e-6`, versus `3.595e-6` for the anchor.
+The largest rejected worst-token KL is `4.458e-5`. There are 17 distinct full
+output tensors across 71 qualification callbacks. Diagnostic writes use a
+sixty-second search allowance to retain the complete 64-trial frontier;
+these captures are correctness evidence, not additional performance samples.
+The final independent oracle explicitly uses F64 RMSNorm, rotary frequencies
+and attention softmax: Hugging Face retains F32 casts in those operations even
+after `model.double()`. A Torch dispatch audit verifies F64 floating results
+through the corrected evaluation. Earlier diagnostics using the ordinary
+Hugging Face double model remain archived; the correction changes none of the
+55 pass/fail decisions. Benchmark references and numerical gates are unchanged.
+
+All 55 captured rejected plans were then replayed with their original submission
+counts on the original token sequence, real text and random tokens. The replay
+asserts complete execution-plan equality after construction and starts scratch
+memory with NaNs. All 165 cases pass the native and independent all-F64 CPU
+gates; all 21,120 additional executions reproduce their complete output exactly.
+All 55 original-input output hashes match the historical captures. Maximum
+mean KL across plans is `2.788e-6` for the original input, `1.749e-6` for real
+text and `2.029e-6` for random tokens. The initial replay setup stopped at its
+plan-equality guard because construction reset a workgroup tile; supplying the
+captured tile settings restores exact equality. Both failed setup attempts and
+the corrected replay's source/binary provenance are retained.
+
+Inferena `03e6c9c` gives each complete execution plan its own repeatability
+anchor and requests two fresh executions at each qualification checkpoint.
+Every distinct plan must still satisfy the original F32 accuracy contract.
+Exact full-tensor repeats reuse that anchor's quality evidence. No numerical
+threshold, profile, search budget, or whole-program timing gate changes.
+Meganeura `9dafafa` supplies repeated qualification with state/input restoration;
+its API defaults to one execution for existing callers. Paired protocol v31 and
+Android v13 identify the new acceptance policy. Earlier measurements remain
+valid for their original protocol and must not be pooled with v31.
+
+The RTX 5070 comparison uses three paired fresh processes per condition,
+alternating variant order, no kernel memo, 30-second searches, ten-second
+warmups and 20 held-out samples. The control uses cohort Meganeura `378d8e2`
+with its archived diagnostic instrumentation disabled. All 60 core-model
+processes pass. SmolLM2 results
+are medians of three process medians; the 360M study measures forward phases:
+
+| Model / accelerated phase | Control (ms) | Fixed (ms) | Change |
+| --- | ---: | ---: | ---: |
+| 135M prefill | 7.289 | 5.498 | -24.6% |
+| 135M one-token latency | 1.497 | 1.418 | -5.3% |
+| 135M training | 24.361 | 24.347 | -0.1% |
+| 360M prefill | 15.806 | 12.147 | -23.2% |
+| 360M one-token latency | 3.149 | 3.144 | -0.2% |
+
+The largest increase across the 30 core model/profile/phase comparisons is
+2.85%, for strict SmolVLA latency; this is not a claim of zero regressions.
+Rejection counts fall from 183 in the control to zero in the fixed core matrix. The faster
+135M prefill program retains one cooperative dispatch for the output projection
+and uses scalar split-K layer products, versus 31 cooperative dispatches in the
+control. Its mean KL against native F32 falls from `3.597e-6` to `2.616e-6`. Total native process
+time rises 3.2%, from 2719 to 2805 seconds: the corrected prefill search uses
+nearly 30 seconds instead of quickly rejecting candidates in about ten seconds.
+
+A separate post-reboot RTX 5070 budget sweep completes 21 fresh processes,
+three per budget, with no kernel memo and zero correctness rejections. Median
+135M prefill / one-token times are 9.870 / 2.657 ms at one second, 7.398 / 1.692
+at three seconds, 5.848 / 1.416 at five seconds, 5.395 / 1.416 at ten seconds,
+5.547 / 1.431 at thirty seconds and 5.509 / 1.420 at sixty seconds. Ten seconds
+recovers the prefill improvement in this workload; longer searches do not
+produce a further measured gain. Small nonmonotonic differences remain. This
+diagnostic does not change the cohort's thirty-second budget or establish a
+budget sufficient for other models or GPUs.
+
+Training has a different budget tradeoff. Nine additional post-reboot processes
+compare 30-, 60- and 120-second searches, three per budget with reversed order
+on the second repetition. Training medians are respectively 24.200, 22.321 and
+22.030 ms: 60 seconds improves 7.8% over 30 seconds in this diagnostic, and 120
+seconds improves 9.0%. The shorter searches check 14–15 training candidates,
+60 seconds checks 34, and the 120-second allowance reaches the 64-program cap
+after about 104 seconds. None is rejected for correctness. The later winner
+keeps one cooperative dispatch instead of 31. This exposes additional useful
+training search coverage; it does not change the cohort budget or establish
+that a larger allowance is worthwhile for every workload.
+The later training family passes an independent CPU F64 check of the full
+outputs, loss and all gradients. A standalone 120-second real-text search
+selects that family and passes 256 matched updates, probe losses and held-out
+losses, with no mismatched steps; maximum training-loss difference is 0.00188.
+A 60-second standalone curve also passes, but reaches only 26 candidates and
+selects the earlier family, so it is not counted as learning evidence for the
+faster family. Search coverage depends on the construction context as well as
+the configured allowance.
+
+The matrix's fixed binary uses `8bf5efd`, whose production code is identical to
+`9dafafa`; the only subsequent library changes share an existing GPU context in
+two tests. The archived Inferena production patch exactly matches `03e6c9c`.
+A clean build of the actual git pin then passes the full collector qualification:
+ten model/profile conditions and 30 phase checks. Twelve cold/warm memo processes
+also pass; cached programs still receive repeated qualification and whole-program
+acceptance. This qualification-only collection is not a new publication cohort.
+
+The final pinned 135M program passes independent PyTorch CPU float64 checks of
+both forward phases, loss, and all 134,515,008 gradient elements under the
+unchanged aggregate max/RMS contract. Both 360M forward exports pass the CPU
+float64 distribution/loss gate too. Eight matched 256-update real-text
+trajectories pass: both native versions/profiles, PyTorch F32/BF16/F16, and an
+explicit native F16-permitted recipe. The fixed default accelerated curve's
+maximum per-step relative loss error is 0.297%. This covers one checkpoint,
+one corpus and one seed, not general training convergence.
+
+Forty additional shape/input cases pass both native qualification and the
+independent all-F64 CPU oracle. They cover 135M sequence lengths 1, 7, 31, 63,
+127, 128, 129 and 257 with synthetic, real-text and random-token inputs;
+selected cases use NaN-initialized scratch. Four ragged lengths and two poisoned
+cases also cover 360M. All 1280 additional executions reproduce their selected
+program's complete output exactly. These diagnostics test correctness and
+repeatability, not cohort performance.
+
+BF16 support is distinct from automatic selection. H100 exposes BF16 cooperative
+matrices, but the archived default programs select no BF16 dispatches. MI300's
+recorded RADV driver reports no BF16 shader/cooperative support; this is Vulkan
+driver exposure, not a statement about MI300 hardware or ROCm. Explicit local
+BF16 operands with F32 matrix outputs do qualify for forward execution. Three
+alternating repetitions show:
+
+| Model / phase | F16-permitted search (ms) | BF16 operands, F32 output (ms) |
+| --- | ---: | ---: |
+| 135M prefill | 5.501 | 5.744 |
+| 135M one-token latency | 1.417 | 5.440 |
+| 360M prefill | 12.112 | 11.843 |
+| 360M one-token latency | 3.128 | 10.143 |
+
+The F16-permitted search retains F32 scalar kernels. Blanket BF16 conversion
+uses 211 or 225 cooperative dispatches, including in single-token execution.
+Its small 360M prefill gain does not justify switching the whole model. Rounding
+matrix outputs to BF16 additionally fails the 135M one-token mean-KL gate
+(`0.010557 > ln(1.01)`). All three BF16 training recipes fail the existing initial
+gradient-fidelity gate, so no learning trajectory was run for them. These are
+contract rejections, not proof of faulty BF16 kernels. The diagnostic recipes
+do not add profiles or change the collection default.
+
+The offline MI300 audit covers the core and large-model archives: all 42 native
+processes completed, but only 98 of 126 paired phases qualify. Missing pairs
+come from PyTorch repeatability failures in core models and the BF16 1.7B
+prefill worst-token KL gate (`0.103 > ln(1.1)`); later phases of that run were
+not attempted. Recorded campaign durations total 142 minutes 20 seconds. Native
+execution completion must not be confused with a fully qualified paired cohort.
+
+The archived H100 135M prefill searches reject 55 candidates per repetition at
+the old cross-program anchor; MI300 rejects 56. This establishes that the
+acceptance defect also affects their search coverage. It does not establish
+which alternatives would win whole-program timing on either server.
+
+**B570 performance acceptance remains incomplete.** Ten of 36 planned native
+processes completed before the machine hung during the old control binary's
+Whisper strict training construction/search. At 12:02:03 UTC the Intel `xe`
+driver reported a failed GuC engine reset; at 12:02:04 it declared the device
+wedged. Immediately before the timeout, sampled temperatures were 60 C package
+and 64 C VRAM, with no throttling; the retained trace reaches 72 C package and
+reports only `pl2` power-limit throttling. The journal contains no matching
+thermal alarm, OOM, NVIDIA Xid, MCE or PCIe AER event during this investigation.
+The timed-out job is logged as "not started." This points to GPU queue/recovery
+failure rather than demonstrated overheating, but does not identify the
+initiating shader, driver, firmware or hardware cause. No B570 workload was restarted after the reboot.
+
+The first accelerated B570 ResNet latency pair increased 14.5% (5.517 to
+6.316 ms). Only one convolution class selected a different column layout,
+affecting three dispatches. Six frozen-plan controls changing only those
+dispatches produce process-median summaries of 6.342331 and 6.342615 ms, with
+matching outputs on both the original zero image and a nonzero image. The same
+program runs around 5.25 ms at 2750 MHz and 6.34 ms at 2100 MHz in read-only
+clock traces; clock-matched layout differences are small. These controls do
+not reconstruct the original pair's unrecorded clocks or turn the incomplete
+B570 matrix into a passing no-regression result.
+
+A post-reboot audit verifies all 60 completed core result documents, their
+twenty samples per phase, the medians recomputed from those samples, serial
+process execution and both retained binary hashes. All 84 fixed sessions have
+repeated qualification; their 3292 recorded trials contain zero correctness
+rejections. An unfinished analysis file and the sensor log's damaged trailing
+row are retained separately from valid measurements. The hang interrupted the
+six-hour investigation; downtime is excluded from its active-work accounting.
+
+Evidence is in `../inferena-results/search-correctness-20261018/`: start with
+`evidence-index.json`, `rejected-plan-replays-v2-5070/audit.json`,
+`matched-v4-5070/comparison.json`,
+`large-final-5070/comparison.json`, `bf16-forward-comparison.json`,
+`bf16-training-checks.json`, and `qualified-final-5070/campaign.json`.
+Binary hashes, source patches, individual samples, failures and CPU comparisons
+are retained. The changes are in draft [Meganeura #265](https://github.com/kvark/meganeura/pull/265)
+and [Inferena #77](https://github.com/kvark/inferena/pull/77); neither was merged.
+No new H100 or MI300 execution was performed, so server recovery is unmeasured.
+
 ## Quest SmolLM2 CPU-oracle loss precision (October 17, 2026)
 
 The v9 Quest qualification at Inferena `663e419` reported SmolLM2-135M training

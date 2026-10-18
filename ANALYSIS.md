@@ -104,6 +104,12 @@ A 60-second standalone curve also passes, but reaches only 26 candidates and
 selects the earlier family, so it is not counted as learning evidence for the
 faster family. Search coverage depends on the construction context as well as
 the configured allowance.
+Read-only RTX telemetry reaches 86 C during the later sustained training runs.
+The final driver query reports zero software/hardware thermal-slowdown counters,
+and the resumed kernel log contains no NVIDIA Xid or GPU wedge. Approximate
+final-training-window clock medians span 2842–2857 MHz across the nine budget
+runs; the two-second telemetry does not resolve individual timing samples.
+These later RTX readings are separate from the earlier B570 failure below.
 
 The matrix's fixed binary uses `8bf5efd`, whose production code is identical to
 `9dafafa`; the only subsequent library changes share an existing GPU context in

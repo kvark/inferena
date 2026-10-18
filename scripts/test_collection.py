@@ -12,8 +12,35 @@ import time
 import unittest
 from unittest.mock import patch
 
-from collection import run_recorded, write_json
+from collection import keep_awake, run_recorded, write_json
 from p3hpc import archive_results, build_runners, verify_runner_binaries
+
+
+class KeepAwakeTest(unittest.TestCase):
+    def test_macos_releases_assertions_on_completion_and_interruption(self):
+        for interrupted in (False, True):
+            with self.subTest(interrupted=interrupted), patch("collection.sys.platform", "darwin"), \
+                    patch("collection.subprocess.Popen") as launch:
+                process = launch.return_value
+                process.poll.return_value = None
+                try:
+                    with keep_awake() as receipt:
+                        self.assertTrue(receipt["enabled"])
+                        launch.assert_called_once_with(
+                            ["/usr/bin/caffeinate", "-dis", "-w", str(os.getpid())], start_new_session=True)
+                        process.terminate.assert_not_called()
+                        if interrupted:
+                            raise KeyboardInterrupt
+                except KeyboardInterrupt:
+                    self.assertTrue(interrupted)
+                process.terminate.assert_called_once()
+                process.wait.assert_called_once_with(timeout=5)
+
+    def test_other_platforms_do_not_launch_a_helper(self):
+        with patch("collection.sys.platform", "linux"), patch("collection.subprocess.Popen") as launch:
+            with keep_awake() as receipt:
+                self.assertFalse(receipt["enabled"])
+            launch.assert_not_called()
 
 
 class ResultsArchiveTest(unittest.TestCase):

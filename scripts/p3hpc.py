@@ -21,7 +21,7 @@ import tempfile
 import time
 import tomllib
 
-from collection import run_recorded, write_json
+from collection import keep_awake, run_recorded, write_json
 from precision import check_arithmetic_policy, check_precision_qualification
 from quality import LM_POLICY, MEAN_KL_LIMIT, TOKEN_KL_LIMIT, check_language_model_report
 from training_gate import CURVE_POLICY, FIXTURE, FIXTURE_SHA256, load_fixture, workload_for
@@ -747,7 +747,7 @@ def create_parser():
     return parser
 
 
-def main():
+def collect(wake_policy):
     started_at = datetime.now(timezone.utc).isoformat()
     started = time.monotonic()
     parser = create_parser()
@@ -927,6 +927,7 @@ def main():
         "runtime_overrides": {key: env[key] for key in (
             "HSA_OVERRIDE_GFX_VERSION", "HSA_ENABLE_SDMA", "AMD_SERIALIZE_KERNEL",
         ) if key in env},
+        "keep_awake": wake_policy,
         "runs": [], "status": "in-progress",
     }
 
@@ -1079,6 +1080,11 @@ def main():
     print(f"{manifest['status']}: {destination / 'campaign.json'}")
     if manifest["status"] != "complete":
         sys.exit(1)
+
+
+def main():
+    with keep_awake() as wake_policy:
+        collect(wake_policy)
 
 
 if __name__ == "__main__":

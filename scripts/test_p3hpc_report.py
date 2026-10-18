@@ -45,6 +45,16 @@ class PairedReport(unittest.TestCase):
             self.assertIsNone(rows["Bad", "training"]["speedup"])
             self.assertEqual(rows["Bad", "inference"]["native_ms"], 1.)
 
+    def test_windows_archive_paths_preserve_measurements_on_posix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.campaign(root)
+            expected = campaign_rows(root)
+            for run in manifest["runs"]:
+                run["path"] = run["path"].replace("/", "\\")
+            write_json(root / "campaign.json", manifest)
+            self.assertEqual(campaign_rows(root), expected)
+
     def test_failed_reference_retains_native_measurement_without_claiming_qualification(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

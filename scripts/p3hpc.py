@@ -1040,7 +1040,7 @@ def collect(wake_policy):
                                 command.append("--inference-only")
                             if args.allow_integrated_gpu:
                                 command.append("--allow-integrated-gpu")
-                            run = {"path": str(folder.relative_to(destination)), "command": command,
+                            run = {"path": folder.relative_to(destination).as_posix(), "command": command,
                                    "mode": mode, "graphs": graphs, "model": model,
                                    "precision": precision, "replicate": replicate + 1,
                                    "watchdog": "watchdog.json",

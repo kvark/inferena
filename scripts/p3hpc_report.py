@@ -8,8 +8,13 @@ from pathlib import Path
 import statistics
 
 
+def archive_path(directory, *parts):
+    """Read relative receipt paths from either Windows or POSIX collectors."""
+    return directory.joinpath(*(part.replace("\\", "/") for part in parts))
+
+
 def read_record(directory, run, engine):
-    path = directory / run["path"] / f"{run['model']}_{engine}.json"
+    path = archive_path(directory, run["path"], f"{run['model']}_{engine}.json")
     return json.loads(path.read_text()) if path.exists() else {}
 
 
@@ -70,14 +75,14 @@ def phase_evidence(directory, run, phase, native, reference, *, replicated=False
         native_status = "failed"
     receipt = run.get("native_oracle")
     if receipt:
-        folder = directory / run["path"]
-        recorded = json.loads((folder / receipt["path"]).read_text())
+        folder = archive_path(directory, run["path"])
+        recorded = json.loads(archive_path(folder, receipt["path"]).read_text())
         if (recorded != {k: v for k, v in receipt.items() if k != "path"}
                 or receipt["policy"] != "preserved-f32-oracle-v1"
                 or receipt["timing_substituted"] is not False
                 or hashlib.sha256((folder / f"{run['model']}_meganeura.json").read_bytes()).hexdigest()
                     != receipt["native_sha256"]
-                or hashlib.sha256((folder / receipt["oracle"]).read_bytes()).hexdigest() != receipt["oracle_sha256"]):
+                or hashlib.sha256(archive_path(folder, receipt["oracle"]).read_bytes()).hexdigest() != receipt["oracle_sha256"]):
             raise ValueError("independent oracle receipt does not belong to these records")
         validation = receipt["validation"]
         native = dict(native, validation=validation)
@@ -86,7 +91,7 @@ def phase_evidence(directory, run, phase, native, reference, *, replicated=False
         native_status = "valid" if valid else "failed"
     diagnostic = run.get("eager_diagnostic", {})
     if native_status != "valid" and diagnostic.get("phases", {}).get(phase, {}).get("status") == "valid":
-        path = directory / run["path"] / diagnostic["path"] / "comparison.json"
+        path = archive_path(directory, run["path"], diagnostic["path"], "comparison.json")
         if path.exists():
             records = json.loads(path.read_text())
             evidence = next((r for r in records if r.get("framework") == "meganeura"), {})

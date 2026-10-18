@@ -172,6 +172,10 @@ struct Cli {
     #[arg(long, num_args = 2)]
     compare_results: Vec<PathBuf>,
 
+    /// Compare a preserved native result with an untimed F32 oracle sidecar.
+    #[arg(long, num_args = 2, conflicts_with = "compare_results")]
+    compare_oracle: Vec<PathBuf>,
+
     /// Dry-run: validate framework+model support without running benchmarks.
     #[arg(long)]
     dry_run: bool,
@@ -1065,6 +1069,40 @@ fn compare_result(reference: &BenchResult, other: &BenchResult) -> ComparisonMet
     }
 }
 
+fn compare_oracle(
+    native: &BenchResult,
+    oracle: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let snapshot = &oracle["correctness_reference"];
+    if native.framework != "meganeura"
+        || oracle["framework"] != "pytorch"
+        || oracle["model"] != native.model
+        || snapshot["precision"] != "strict-f32"
+        || snapshot["prepared_before_candidate_compilation"] != true
+        || snapshot["training_requested"] != native.extra["protocol"]["training_requested"]
+    {
+        return Err("oracle identity or arithmetic contract differs from native result".into());
+    }
+    // Reuse exactly the paired F32 comparison. The temporary reference is never
+    // serialized: an oracle has no timing samples or benchmark eligibility.
+    let mut reference = native.clone();
+    reference.outputs = serde_json::from_value(snapshot["outputs"].clone())
+        .map_err(|error| format!("invalid oracle outputs: {error}"))?;
+    reference.extra.remove("correctness_reference");
+    let comparison = compare_result(&reference, native);
+    Ok(serde_json::json!({
+        "comparison_performed": true,
+        "reference_framework": "pytorch",
+        "reference_precision": "untimed strict-f32 oracle",
+        "forward_valid": comparison.forward_valid,
+        "training_valid": comparison.training_valid,
+        "gradients_available": comparison.gradients_available,
+        "parameter_gradient_relative_l2_error": finite_json(comparison.parameter_gradient_relative_l2_error),
+        "total_gradient_relative_error": finite_json(comparison.total_gradient_relative_error),
+        "status": comparison.status,
+    }))
+}
+
 fn compare_outputs(results: &[&BenchResult]) {
     if results.len() < 2 {
         return;
@@ -1528,6 +1566,19 @@ fn print_table(outcomes: &[FrameworkOutcome], successes: &[&BenchResult]) {
 
 fn main() {
     let cli = Cli::parse();
+    if !cli.compare_oracle.is_empty() {
+        let native = serde_json::from_slice(
+            &std::fs::read(&cli.compare_oracle[0]).expect("read native result"),
+        )
+        .expect("parse native result");
+        let oracle =
+            serde_json::from_slice(&std::fs::read(&cli.compare_oracle[1]).expect("read oracle"))
+                .expect("parse oracle");
+        let validation =
+            compare_oracle(&native, &oracle).expect("compare native with independent oracle");
+        println!("{}", serde_json::to_string_pretty(&validation).unwrap());
+        return;
+    }
     if !cli.compare_results.is_empty() {
         let mut outcomes: Vec<FrameworkOutcome> = cli
             .compare_results
@@ -1698,7 +1749,8 @@ fn main() {
 mod tests {
     use super::{
         BenchResult, FrameworkOutcome, MemoryReport, Outputs, Timings, annotate_validation,
-        compare_gradient_norms, compare_result, precision_contract_error, relative_scalar_error,
+        compare_gradient_norms, compare_oracle, compare_result, precision_contract_error,
+        relative_scalar_error,
     };
     use std::collections::BTreeMap;
 
@@ -1845,6 +1897,35 @@ mod tests {
             memory: None,
             extra: serde_json::Map::new(),
         }
+    }
+
+    #[test]
+    fn independent_oracle_uses_the_same_gate_without_producing_timings() {
+        let mut native = result(vec![256], true);
+        native.framework = "meganeura".into();
+        native.extra.insert(
+            "protocol".into(),
+            serde_json::json!({"training_requested": true}),
+        );
+        let mut oracle = serde_json::json!({
+            "framework": "pytorch", "model": native.model,
+            "correctness_reference": {"precision": "strict-f32", "training_requested": true,
+                "prepared_before_candidate_compilation": true, "outputs": native.outputs},
+        });
+        let validation = compare_oracle(&native, &oracle).unwrap();
+        assert_eq!(validation["forward_valid"], true);
+        assert_eq!(validation["training_valid"], true);
+        assert!(validation.get("timings").is_none());
+        oracle["correctness_reference"]["outputs"]["loss"] = serde_json::json!(2.0);
+        assert_eq!(
+            compare_oracle(&native, &oracle).unwrap()["forward_valid"],
+            false
+        );
+        oracle["model"] = serde_json::json!("different model");
+        assert!(compare_oracle(&native, &oracle).is_err());
+        oracle["model"] = serde_json::json!(native.model);
+        oracle["correctness_reference"]["precision"] = serde_json::json!("bf16");
+        assert!(compare_oracle(&native, &oracle).is_err());
     }
 
     #[test]

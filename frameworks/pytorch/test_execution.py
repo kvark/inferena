@@ -569,6 +569,10 @@ class CampaignTest(unittest.TestCase):
             assess([mg, error])
         receipt = {"qualification_failure": {**failure, "phase": "inference"}}
         self.assertEqual(assess([mg, error], receipt)["inference"]["status"], "failed")
+        incomplete_native = copy.deepcopy(mg)
+        incomplete_native["protocol"]["warmup"]["training"]["seconds"] = 0
+        with self.assertRaisesRegex(ValueError, "native training"):
+            assess([incomplete_native, error], receipt)
         self.assertEqual(assess([mg, pt])["training"]["status"], "valid")
         # A separate eager reference can validate native outputs, not rescue
         # the failed primary or enter its timing population.

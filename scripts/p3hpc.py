@@ -341,6 +341,58 @@ def check_native_reference(record):
         raise ValueError("native F32 correctness reference differs from its qualification snapshots")
 
 
+def check_native_record(mg, args, count, revision, precision, *, diagnostic=False):
+    """Validate native receipts even when PyTorch cannot produce a result."""
+    if mg["status"] != "ok" or not revision.startswith(mg["benchmark_rev"]):
+        raise ValueError("native execution or source identity failed")
+    protocol = mg["protocol"]
+    if (protocol["training_requested"] != (not args.inference_only)
+            or protocol.get("diagnostic") is not diagnostic
+            or protocol.get("name") != "inferena-paper-v6"
+            or protocol.get("synthetic_parameter_init") != SYNTHETIC_PARAMETER_INIT
+            or protocol.get("warmup_runs") != 5
+            or protocol.get("warmup_seconds") != WARMUP_SECONDS
+            or not gpu_matches(args.gpu, mg["gpu_name"])):
+        raise ValueError("native workload, warmup policy, or device changed")
+    if precision is not None and mg["precision"]["comparison_class"] != ("strict-f32" if precision == "strict" else "accelerated"):
+        raise ValueError("native arithmetic contract changed")
+    for phase in PHASES[:2] if args.inference_only else PHASES:
+        warmup = protocol.get("warmup", {}).get(phase, {})
+        samples = mg["timing_samples_ms"].get(phase, [])
+        seconds = warmup.get("seconds", 0)
+        if (warmup.get("runs", 0) < 5 or not math.isfinite(seconds) or seconds < WARMUP_SECONDS
+                or len(samples) != count or any(not math.isfinite(x) or x <= 0 for x in samples)):
+            raise ValueError(f"native {phase} has incomplete warmup or measurements")
+    if (mg.get("optimizer", {}).get("measured_construction") is not True
+            or mg["optimizer"].get("mode") != "egglog-outlined"):
+        raise ValueError("Meganeura calibrated egglog construction must be enabled")
+    strict = not mg["precision"]["reduced_precision_allowed"]
+    if strict and (mg["precision"].get("cooperative_matrix_policy") != "NativeF32"
+                   or mg["precision"].get("native_f32_cooperative_matrix_permitted") is not True
+                   or mg["precision"].get("f16_cooperative_matrix_permitted") is not False):
+        raise ValueError("strict arithmetic must permit native-f32, but not f16-input, cooperative tiles")
+    sessions = mg["optimizer"].get("sessions", [])
+    modes = [session["mode"] for session in sessions]
+    if (modes.count("Training") != int(not args.inference_only) or modes.count("Inference") not in (1, 2)
+            or set(modes) - {"Training", "Inference"}):
+        raise ValueError("missing native session preparation evidence")
+    language_model = mg["model"].startswith("SmolLM2-")
+    if language_model and modes.count("Inference") != 2:
+        raise ValueError("language-model prefill and latency both require qualification")
+    inference_index = 0
+    for session in sessions:
+        if session["cooperative_matrix_policy"] != ("NativeF32" if strict else "Auto"):
+            raise ValueError("native session used the wrong cooperative policy")
+        check_native_search(session, getattr(args, "tune_seconds", TUNE_SECONDS),
+                            getattr(args, "max_submission_chunks", MAX_SUBMISSION_CHUNKS),
+                            getattr(args, "kernel_memo", False), language_model=language_model,
+                            output_shape=(mg["outputs"]["output_shape"] if inference_index == 0
+                            else [1, 1, mg["outputs"]["output_shape"][-1]]) if language_model else None)
+        inference_index += session["mode"] == "Inference"
+    if not strict:
+        check_native_reference(mg)
+
+
 def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
                replicated=False, precision=None, phases=None, oracle=False):
     requested_phases = PHASES[:2] if args.inference_only else PHASES
@@ -417,34 +469,7 @@ def check_pair(records, args, mode, graphs, count, revision, diagnostic=False,
         check_precision_qualification(pt)
         if pt["correctness_reference"]["outputs"]["output_shape"] != mg["outputs"]["output_shape"]:
             raise ValueError("f32 oracle shape differs from the native output")
-    if (mg.get("optimizer", {}).get("measured_construction") is not True
-            or mg["optimizer"].get("mode") != "egglog-outlined"):
-        raise ValueError("Meganeura calibrated egglog construction must be enabled")
-    strict = not mg["precision"]["reduced_precision_allowed"]
-    if strict and (mg["precision"].get("cooperative_matrix_policy") != "NativeF32"
-                   or mg["precision"].get("native_f32_cooperative_matrix_permitted") is not True
-                   or mg["precision"].get("f16_cooperative_matrix_permitted") is not False):
-        raise ValueError("strict arithmetic must permit native-f32, but not f16-input, cooperative tiles")
-    sessions = mg["optimizer"].get("sessions", [])
-    modes = [session["mode"] for session in sessions]
-    if (modes.count("Training") != int(not args.inference_only) or modes.count("Inference") not in (1, 2)
-            or set(modes) - {"Training", "Inference"}):
-        raise ValueError("missing native session preparation evidence")
-    language_model = mg["model"].startswith("SmolLM2-")
-    if language_model and modes.count("Inference") != 2:
-        raise ValueError("language-model prefill and latency both require qualification")
-    inference_index = 0
-    for session in sessions:
-        if session["cooperative_matrix_policy"] != ("NativeF32" if strict else "Auto"):
-            raise ValueError("native session used the wrong cooperative policy")
-        check_native_search(session, getattr(args, "tune_seconds", TUNE_SECONDS),
-                            getattr(args, "max_submission_chunks", MAX_SUBMISSION_CHUNKS),
-                            getattr(args, "kernel_memo", False), language_model=language_model,
-                            output_shape=(mg["outputs"]["output_shape"] if inference_index == 0
-                            else [1, 1, mg["outputs"]["output_shape"][-1]]) if language_model else None)
-        inference_index += session["mode"] == "Inference"
-    if not strict:
-        check_native_reference(mg)
+    check_native_record(mg, args, count, revision, precision, diagnostic=diagnostic)
     execution = pt["execution"]
     sdpa = "math" if oracle else reference_sdpa_policy(args, pt["model"])
     if execution["sdpa_policy"] != sdpa:
@@ -522,6 +547,7 @@ def assess_phases(records, args, mode, graphs, count, revision, preparation, *, 
     phases = PHASES[:2] if args.inference_only else PHASES
     outcomes = {}
     if reference["status"] == "error":
+        check_native_record(native, args, count, revision, precision)
         # An inference failure has no usable result. The sidecar is written
         # only by the numerical/capture gate, never by an arbitrary exception.
         if failure["phase"] != "inference":
@@ -549,6 +575,28 @@ def assess_phases(records, args, mode, graphs, count, revision, preparation, *, 
         except NumericalMismatch as error:
             outcomes[phase] = {"status": "mismatch", "error": str(error)}
     return outcomes, pair
+
+
+def native_oracle_comparison(folder, model, args):
+    """Use the pre-compilation F32 snapshot without replacing failed timings."""
+    path = folder / "torch-f32-oracle.json"
+    if not path.exists():
+        return None
+    oracle = json.loads(path.read_text())
+    check_torch_identity(oracle["torch_version"], oracle["torch_git_version"], args.torch_version)
+    if (oracle["backend"].split()[0].lower() != args.backend
+            or oracle["synthetic_parameter_init"] != SYNTHETIC_PARAMETER_INIT):
+        raise ValueError("independent oracle environment differs from the campaign")
+    native_path = folder / f"{model}_meganeura.json"
+    harness = ROOT / "target/release" / ("inferena.exe" if sys.platform == "win32" else "inferena")
+    validation = json.loads(subprocess.check_output(
+        [str(harness), "--compare-oracle", str(native_path), str(path)], cwd=ROOT, text=True))
+    receipt = {"policy": "preserved-f32-oracle-v1", "oracle": path.name,
+               "native_sha256": hashlib.sha256(native_path.read_bytes()).hexdigest(),
+               "oracle_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+               "validation": validation, "timing_substituted": False}
+    write_json(folder / "native-oracle-comparison.json", receipt)
+    return {"path": "native-oracle-comparison.json", **receipt}
 
 
 def eager_diagnostic(command, env, folder, model, args, count, revision, precision):
@@ -1034,6 +1082,8 @@ def collect(wake_policy):
                             if pair["meganeura"]["environment"].get("gpu_device_id") != native["device_id"]:
                                 raise ValueError("Meganeura ran on a different device than the preflight selected")
                             run["phases"] = phases
+                            if precision == "accelerated":
+                                run["native_oracle"] = native_oracle_comparison(folder, model, args)
                             run["status"] = ("valid" if all(p["status"] == "valid" for p in phases.values())
                                              else "partial" if any(p["status"] == "valid" for p in phases.values())
                                              else "failed")

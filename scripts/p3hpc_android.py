@@ -21,7 +21,7 @@ from p3hpc import (ROOT, MODELS, PHASES, SMOLLM2_PINS, SYNTHETIC_PARAMETER_INIT,
                   archive_results, check_native_search, gpu_matches, input_hashes,
                   select_native_device)
 
-PROTOCOL = "p3hpc-android-campaign-v11"
+PROTOCOL = "p3hpc-android-campaign-v12"
 TARGET = "aarch64-linux-android"
 WARMUP_SECONDS = 2
 
@@ -240,7 +240,7 @@ def collect(args, parser, packages, started_at, started):
     remote = f"/data/local/tmp/inferena-{stamp}-{revision[:8]}"
     executable = remote + "/inferena-meganeura"
     import torch
-    manifest = dict(protocol=PROTOCOL, paired_protocol="p3hpc-paired-campaign-v29", source=revision,
+    manifest = dict(protocol=PROTOCOL, paired_protocol="p3hpc-paired-campaign-v30", source=revision,
                     started_at=started_at, platform="Quest 3S", backend="android-vulkan",
                     meganeura=dependency, python=sys.version, packages=packages,
                     torch=dict(version=torch.__version__, git_version=torch.version.git_version,

@@ -423,7 +423,7 @@ class AmpTest(unittest.TestCase):
                 _bench("test", {"type": "whisper"}, "cpu", None)
             record = json.loads(output.getvalue())
         self.assertEqual(record["status"], "ok")
-        self.assertEqual(record["protocol"]["name"], "inferena-graph-replay-v17")
+        self.assertEqual(record["protocol"]["name"], "inferena-graph-replay-v18")
         self.assertEqual(record["precision"]["comparison_class"], "accelerated")
         self.assertEqual(record["correctness_reference"]["precision"], "strict-f32")
         self.assertIsNotNone(record["correctness_reference"]["outputs"]["grad_norm"])
@@ -632,6 +632,39 @@ class AmpTest(unittest.TestCase):
             other["parameter_check"]["initial"][0] = 2.
             with self.assertRaisesRegex(ValueError, "same model, workload"):
                 compare_runs(current, other)
+
+    def test_xpu_embedding_probe_uses_real_text_before_preparing_oracle(self):
+        from unittest.mock import Mock
+        from amp import training_plan
+        from bench import _bench
+
+        inputs = {"input_ids": torch.arange(128).reshape(1, -1)}
+        for name, strict, repeated in [("SmolLM2-135M", False, False),
+                                      ("SmolLM2-360M", False, False),
+                                      ("SmolLM2-1.7B", False, False),
+                                      ("SmolLM2-360M", True, False),
+                                      ("SmolLM2-360M", False, True)]:
+            plan = training_plan(name, inputs, "cpu", repeated=repeated)
+            expected = None if strict or repeated else plan["train"][0]["input_ids"].flatten().tolist()
+            if expected is not None:
+                self.assertLess(len(set(expected)), len(expected))
+            model = Mock()
+            env = {"INFERENA_STRICT": str(int(strict)), "INFERENA_AUTOCAST": "off",
+                   "INFERENA_TORCH_MODE": "eager", "INFERENA_GRAPH_REPLAY": "0",
+                   "INFERENA_TRAINING_GATE": "repeated-synthetic" if repeated else "auto",
+                   "INFERENA_INFERENCE_ONLY": "0"}
+            with self.subTest(model=name, strict=strict, repeated=repeated), patch.dict(os.environ, env), \
+                    patch("bench.device_name", return_value="test XPU"), \
+                    patch("bench.load_model", return_value=model), patch("bench.synchronize"), \
+                    patch("bench._configure_benchmark_precision", return_value={}), \
+                    patch("bench.prepare_inputs", return_value=inputs), \
+                    patch("bench.training_plan", return_value=plan), \
+                    patch("bench.prepare_reference") as oracle, \
+                    patch("bench.qualify_embedding_backward", side_effect=RuntimeError("probe reached")) as probe:
+                with self.assertRaisesRegex(RuntimeError, "probe reached"):
+                    _bench(name, {"type": "causal_lm"}, "xpu", None)
+                probe.assert_called_once_with(model, "xpu", expected)
+                oracle.assert_not_called()
 
     def test_embedding_probe_includes_repeated_and_unused_rows(self):
         from bench import qualify_embedding_backward

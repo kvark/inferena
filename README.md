@@ -133,7 +133,7 @@ with no retry in another dtype after a numerical or compilation failure. Strict 
 correctness references remain f32 and supply no GPU comparison timings.
 
 Accelerated PyTorch uses a strict-f32 forward oracle and a common training
-gate for TF32, BF16 and FP16. SmolLM2-135M runs 256 matched real-text updates,
+gate for TF32, BF16 and FP16. SmolLM2-135M, 360M and 1.7B run 256 matched real-text updates,
 with fixed probe and held-out checks; other models retain the 32-update
 synthetic numerical check. Qualification restores the checkpoint before timing.
 Each engine's original f32 oracle supplies the cross-engine output and gradient
@@ -144,7 +144,7 @@ curve L2 is diagnostic. Non-language outputs retain the tensor-fidelity gate.
 Graph replay includes forward/loss/scaled backward; scaler housekeeping runs
 after replay inside the measured step.
 
-The development collection protocol is **v26**, still 30 pairs per GPU.
+The development collection protocol is **v30**, still 30 pairs per GPU.
 PyTorch qualifies both inference and latency against F32, including the smaller
 ResNet batch and shorter SmolVLA action sequence. Each receipt records the checked
 output shape; failed latency leaves its timings empty.
@@ -154,7 +154,7 @@ reference preparation time, recorded in `compile_s`, before the 30-second search
 Search refreshes inputs before each step to match benchmark execution.
 `scripts/amp_reference.py` provides optional dtype and `--repeated-batch`
 diagnostics; `scripts/convergence.py` separately compares both engines on real
-text. See the [current protocol](EXPERIMENT.md#development-v26-two-profiles).
+text. See the [current protocol](EXPERIMENT.md#development-v30-real-text-embedding-probe).
 The completed October 11 v18 cohort retains its frozen source and arithmetic
 policy. Keep its records separate from the new qualification protocol.
 

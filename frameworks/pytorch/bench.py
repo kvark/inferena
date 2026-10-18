@@ -31,6 +31,7 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from execution import QualificationError, capture_phase, graph_backend, profile_phase, synchronize, nsys_range
 from budget import compilation_budget, save
 from amp import AmpPolicy, BenchmarkBackward, qualify as qualify_precision, prepare_reference, precision_policy, training_plan
+from training_gate import REAL_TEXT
 
 PROTOCOL = Path(__file__).with_name("PROTOCOL").read_text().strip()
 
@@ -1534,8 +1535,17 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
     load_s = time.perf_counter() - load_start
     backward = BenchmarkBackward(eager_model, amp) if amp.dtype is not None else lambda loss: loss.backward()
 
+    gate_request = os.environ.get("INFERENA_TRAINING_GATE", "auto")
+    if gate_request not in ("auto", "repeated-synthetic"):
+        raise ValueError("INFERENA_TRAINING_GATE must be auto or repeated-synthetic")
+    gate_plan = (training_plan(model_name, prepare_inputs(model_type, eager_model, dev), dev,
+                               repeated=gate_request == "repeated-synthetic")
+                 if not strict and training_requested else None)
+    # Probe the actual qualification workload before constructing its F32 oracle.
+    probe_indices = (gate_plan["train"][0]["input_ids"].flatten().tolist()
+                     if gate_plan and gate_plan["workload"]["policy"] == REAL_TEXT else None)
     execution["embedding_backward"] = (
-        qualify_embedding_backward(eager_model, dev)
+        qualify_embedding_backward(eager_model, dev, probe_indices)
         if training_requested and model_type == "causal_lm" and dev.startswith("xpu")
         else {
             "status": "not-required"
@@ -1544,12 +1554,6 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
         }
     )
 
-    gate_request = os.environ.get("INFERENA_TRAINING_GATE", "auto")
-    if gate_request not in ("auto", "repeated-synthetic"):
-        raise ValueError("INFERENA_TRAINING_GATE must be auto or repeated-synthetic")
-    gate_plan = (training_plan(model_name, prepare_inputs(model_type, eager_model, dev), dev,
-                               repeated=gate_request == "repeated-synthetic")
-                 if not strict and training_requested else None)
     model = eager_model
     precision_reference = None
     oracle_seconds = 0.0

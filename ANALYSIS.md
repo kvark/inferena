@@ -5,6 +5,112 @@ post-OOM offline analysis separates inefficient resident kernels from
 weight-representation and memory-placement costs; it does not establish a
 removable barrier-cost percentage or contain new speed measurements.
 
+## Search ordering and independent native reporting (October 18 follow-up)
+
+Meganeura `5cb84bd` preserves each training seed's backward-layout rank and
+prioritizes other forward forms with the incumbent's rank. The initial cover,
+alternation with physical choices, numerical gates and whole-program timing
+gate remain intact. This changes exploration order rather than increasing the
+thirty-second search allowance. There are no model names, GPU identities or
+preferred graph indices in the policy.
+
+All 42 final-pinned RTX processes pass, including numerical comparison with
+preserved qualified PyTorch references. The core comparison covers five models,
+both profiles and two alternating-order pairs; one additional accelerated
+SmolLM2 pair brings the target to three repetitions. Accelerated 135M training
+falls from 24.363 to 22.341 ms (8.3%). All three new runs select the faster
+family with one cooperative dispatch, and training search takes 28.6–28.8
+seconds. Strict training improves 9.3% across two pairs. The forty-process core
+matrix has zero correctness rejections and takes 62.8 minutes; summed native
+process time increases 1.35% (1871 to 1897 seconds). Its largest phase increase
+is 4.1%, below the existing 5% material-regression criterion, with the selection
+differences described below. These are diagnostic comparisons, not a new
+publication cohort or a claim of zero losses.
+
+A fresh thirty-second export selects the faster training family with eight
+submission chunks and independently passes CPU all-F64 checking of its outputs,
+loss and all 134,515,008 gradient elements. A separate thirty-second real-text
+search selects that family with four chunks and completes 256 matched SGD
+updates against the preserved PyTorch F32 reference. Training, probe and
+held-out curves have zero mismatched steps; maximum training-loss difference
+is 0.001884. The fixed training-probe loss falls 6.66%, and held-out loss falls
+3.60%. This covers one checkpoint, corpus and seed.
+
+Accelerated collection now saves its already-computed PyTorch F32 snapshot
+before candidate compilation. A separate numerical comparison binds that
+snapshot to the native record by file hashes; it supplies no reference timing.
+The report distinguishes native qualification from paired eligibility and
+retains complete native measurements with an explicit unqualified label when
+independent evidence is missing. Training still requires its replicated gate.
+
+Reprocessing copies of the MI300 core and large-model archives retains all
+42 native model/profile/phase cells. Thirty-two qualify independently, while
+31 have qualified PyTorch pairs. The additional qualified cell is strict
+ResNet latency: its already-qualified inference oracle remains usable after
+the reference's later failure. The other ten cells lack sufficient passing
+evidence and remain unqualified. No original archive was modified and no
+server workload was rerun. Fourteen usable archived comparisons reproduce
+the existing F32 metrics exactly through the new oracle comparison command.
+
+The B570 follow-up uses serialized, memory-limited processes with a watchdog,
+durable candidate/kernel logs and read-only clock/temperature sampling. Detailed
+submission tracing is opt-in because it materially affects search coverage.
+One fully traced old-control Whisper process completes in 95 seconds without
+a fault, but checks only ten training candidates; this is diagnostic evidence,
+not a performance comparison or proof that the earlier hang is fixed.
+
+The subsequent light-logging B570 matrix completes all 36 processes: Whisper,
+ResNet and SmolLM2-135M, both profiles, three paired repetitions with alternating
+order. Control is cohort Meganeura `378d8e2` with logging-only instrumentation;
+the fixed build uses `5cb84bd`. Every process passes output/loss/gradient
+comparison with a preserved, qualified PyTorch reference. The largest increase
+across eighteen phase comparisons is 1.52%, for accelerated SmolLM2 prefill
+(12.114 to 12.298 ms). Accelerated ResNet training increases 1.37%; all other
+increases are smaller. No GPU fault or watchdog timeout occurs. Collection takes
+60 minutes; summed process times are 1803 seconds for control and 1798 for fixed.
+Package and VRAM telemetry both peak at 74 C. These observations do not identify
+or fix the earlier queue/recovery failure.
+
+ResNet latency medians decrease 6.1% strict and 13.1% accelerated, but the
+fixed build's accelerated repetitions span 5.171–6.338 ms. Read-only telemetry
+also records substantial clock variation, so these diagnostic comparisons do
+not establish that the code caused those gains. The largest measured increase
+is below the existing 5% material-regression criterion; this is not a claim of
+zero losses or publication-quality timing under the diagnostic monitor.
+
+The RTX strict ResNet training comparison exposes a small loss that must not
+be hidden: both control runs choose eight convolution weight-gradient splits,
+while both new runs retain four, measuring 3.21% slower across the two pairs.
+The candidate prefix is identical through this decision. Both builds test the
+eight-split candidate, but the new runs' gain does not clear the unchanged
+one-percent improvement plus measured-noise requirement. One new run improves
+26.191 to 25.767 ms during search, but its 0.204 ms noise margin keeps the
+incumbent; the corresponding control's 0.051 ms margin permits replacement.
+The final held-out comparison uses four submission chunks, so its gain need
+not equal the earlier one-chunk probe. This identifies the different search
+decision, not a demonstrated arithmetic slowdown or a reason to relax the gate.
+The raw decisions are retained in `rtx-resnet-strict-decision.json`.
+
+The largest RTX increases are strict Whisper latency (4.1%) and prefill
+(3.9%). Both new runs retain two submission chunks while both controls
+select four, with the same selected graph and flash-attention description.
+Both builds test four chunks, including with the final flash variant; the
+new runs' search comparisons retain two under the existing timing gate.
+Inference form order is unchanged by the backward-rank policy. These records
+identify an associated selection difference, but do not isolate every private
+kernel choice or prove the cause of the changed timing observations.
+`rtx-whisper-strict-decision.json` retains the complete search receipts.
+
+Evidence is retained in `../inferena-results/cohort-followups-20261018/`,
+including source/binary hashes, the excluded overlapping-GPU-test pilot pair,
+MI300 report copies and the guarded comparison manifests. Start with
+`rtx-summary.json`, `b570-summary.json`, `rtx-target-search.json`,
+`fast-path-validation/manifest.json` and the two archived-reference comparison
+files. Final CPU tests pass (49 PyTorch tests, three GPU-only cases skipped,
+and 42 script tests); diagnostic success, timeout and launch-error paths pass.
+The library's 21 search tests, 16 harness tests and Clippy passed earlier in
+this follow-up. Both PRs remain unmerged.
+
 ## Search accuracy versus repeatability (October 18, 2026)
 
 The v30 native checker compared every candidate with the first accelerated
@@ -171,7 +277,7 @@ the old cross-program anchor; MI300 rejects 56. This establishes that the
 acceptance defect also affects their search coverage. It does not establish
 which alternatives would win whole-program timing on either server.
 
-**B570 performance acceptance remains incomplete.** Ten of 36 planned native
+**The initial B570 performance comparison was interrupted.** Ten of 36 planned native
 processes completed before the machine hung during the old control binary's
 Whisper strict training construction/search. At 12:02:03 UTC the Intel `xe`
 driver reported a failed GuC engine reset; at 12:02:04 it declared the device
@@ -181,7 +287,9 @@ reports only `pl2` power-limit throttling. The journal contains no matching
 thermal alarm, OOM, NVIDIA Xid, MCE or PCIe AER event during this investigation.
 The timed-out job is logged as "not started." This points to GPU queue/recovery
 failure rather than demonstrated overheating, but does not identify the
-initiating shader, driver, firmware or hardware cause. No B570 workload was restarted after the reboot.
+initiating shader, driver, firmware or hardware cause. B570 workloads remained
+stopped for the rest of this initial investigation; the follow-up above records
+the subsequent guarded runs.
 
 The first accelerated B570 ResNet latency pair increased 14.5% (5.517 to
 6.316 ms). Only one convolution class selected a different column layout,

@@ -1,4 +1,4 @@
-"""Only complete, qualifying cells may produce publication timings."""
+"""Keep measured timings, native qualification, and paired eligibility distinct."""
 import copy
 import hashlib
 import json

@@ -587,6 +587,9 @@ def native_oracle_comparison(folder, model, args):
     if (oracle["backend"].split()[0].lower() != args.backend
             or oracle["synthetic_parameter_init"] != SYNTHETIC_PARAMETER_INIT):
         raise ValueError("independent oracle environment differs from the campaign")
+    if (oracle.get("correctness_reference") is None
+            and oracle.get("unavailable_reason") == "non-finite original F32 snapshot"):
+        return None
     native_path = folder / f"{model}_meganeura.json"
     harness = ROOT / "target/release" / ("inferena.exe" if sys.platform == "win32" else "inferena")
     validation = json.loads(subprocess.check_output(

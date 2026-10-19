@@ -5,6 +5,41 @@ post-OOM offline analysis separates inefficient resident kernels from
 weight-representation and memory-placement costs; it does not establish a
 removable barrier-cost percentage or contain new speed measurements.
 
+## Final-program qualification (October 19, 2026)
+
+Meganeura `7cf2935` ([#267](https://github.com/kvark/meganeura/pull/267))
+separates final qualification from search checkpoints. Inferena requests one
+execution per checkpoint and two fresh final executions, with state/input
+restoration and final-check time reserved inside the soft search deadline.
+Paired v33 / Android v15 receipts require the final count and duration explicitly.
+
+A serialized SmolLM2-135M accelerated comparison against the preserved `5cb84bd`
+runner used 30-second searches, ten-second warmups, 20 held-out samples and no
+persisted decisions: two B570 pairs (second order reversed) and one RTX 5070
+pair. Both B570 variants used watchdog logging. All six processes pass saved
+qualified PyTorch forward/training comparisons; all nine new-policy sessions
+pass receipt validation and record two final executions. No candidate failed
+qualification. Totals below include final checks; B570 values are medians across
+its two processes per variant.
+
+| GPU / phase | Qualification seconds, old → new | Candidate trials, old → new | Step-time change |
+| --- | ---: | ---: | ---: |
+| B570 prefill | 8.42 → 5.76 | 37–38 → 43 | −1.75% |
+| B570 latency | 0.305 → 0.168 | 14 → 14 | +3.06% |
+| B570 training | 19.83 → 16.27 | 5 → 9 | −7.83% |
+| RTX 5070 prefill | 6.75 → 3.96 | 64 → 56 | −1.62% |
+| RTX 5070 latency | 0.216 → 0.118 | 15 → 15 | +1.26% |
+| RTX 5070 training | 19.13 → 12.76 | 14 → 19 | +0.38% |
+
+Lower qualification overhead does not guarantee more trials or a faster winner:
+search ordering and kernel budgets follow measured incumbents. B570 latency
+selected four submission chunks instead of eight; its paired changes were
++5.46% and +0.72%, retained rather than dismissed. This small study supports
+lower qualification cost and improved training coverage, not a universal
+zero-regression claim or cohort replacement. Original records, comparisons,
+binary hashes and scripts are retained in `inferena-results/final-qualification-20261019`.
+The earlier measurements below retain their original revisions and policies.
+
 ## Search ordering and independent native reporting (October 18 follow-up)
 
 Meganeura `5cb84bd` preserves each training seed's backward-layout rank and

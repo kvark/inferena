@@ -126,10 +126,11 @@ def campaign_rows(directory):
                          "p3hpc-android-campaign-v10": "p3hpc-paired-campaign-v28",
                          "p3hpc-android-campaign-v11": "p3hpc-paired-campaign-v29",
                          "p3hpc-android-campaign-v12": "p3hpc-paired-campaign-v30",
-                         "p3hpc-android-campaign-v13": "p3hpc-paired-campaign-v31"}
+                         "p3hpc-android-campaign-v13": "p3hpc-paired-campaign-v31",
+                         "p3hpc-android-campaign-v15": "p3hpc-paired-campaign-v33"}
     android = manifest["protocol"] in android_protocols
     paired_protocol = android_protocols.get(manifest["protocol"], manifest["protocol"])
-    if paired_protocol not in {f"p3hpc-paired-campaign-v{v}" for v in range(18, 32)}:
+    if paired_protocol not in {f"p3hpc-paired-campaign-v{v}" for v in (*range(18, 32), 33)}:
         raise ValueError("unsupported campaign protocol")
     if android and manifest.get("paired_protocol", paired_protocol) != paired_protocol:
         raise ValueError("Android and paired campaign protocols disagree")
@@ -156,7 +157,7 @@ def campaign_rows(directory):
                                   == (model, precision, mode, graphs)]
                         if "groups" in validation or paired_protocol in (
                                 "p3hpc-paired-campaign-v21", "p3hpc-paired-campaign-v22", "p3hpc-paired-campaign-v23",
-                                "p3hpc-paired-campaign-v24", "p3hpc-paired-campaign-v25", "p3hpc-paired-campaign-v26", "p3hpc-paired-campaign-v27", "p3hpc-paired-campaign-v28", "p3hpc-paired-campaign-v29", "p3hpc-paired-campaign-v30", "p3hpc-paired-campaign-v31"):
+                                "p3hpc-paired-campaign-v24", "p3hpc-paired-campaign-v25", "p3hpc-paired-campaign-v26", "p3hpc-paired-campaign-v27", "p3hpc-paired-campaign-v28", "p3hpc-paired-campaign-v29", "p3hpc-paired-campaign-v30", "p3hpc-paired-campaign-v31", "p3hpc-paired-campaign-v33"):
                             complete &= len(groups) == 1 and groups[0]["status"] == "pass"
                         else:
                             # Older aggregate-only receipts can prove all groups

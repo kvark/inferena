@@ -12,7 +12,7 @@ from p3hpc_report import campaign_rows, cohort_rows
 
 class PairedReport(unittest.TestCase):
     def campaign(self, root):
-        manifest = dict(protocol="p3hpc-paired-campaign-v31", source="revision",
+        manifest = dict(protocol="p3hpc-paired-campaign-v33", source="revision",
             status="complete-with-failures", runs=[],
             args=dict(replicates=3, collect=True, inference_only=False,
                       models=["Good", "Bad"], precisions=["accelerated"], gpu="GPU", backend="cuda"),

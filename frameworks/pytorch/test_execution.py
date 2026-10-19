@@ -415,6 +415,7 @@ class CampaignTest(unittest.TestCase):
         mg = {**copy.deepcopy(base), "framework": "meganeura", "optimizer": {
             "measured_construction": True, "mode": "egglog-outlined", "sessions": [{
                 "mode": mode, "cooperative_matrix_policy": "NativeF32", "search": {
+                    "matrix_inputs": [],
                     "options": {"max_time": {"secs": 30, "nanos": 0}, "max_graphs": 16,
                                 "max_programs": 64, "max_submission_chunks": 64, "warmup_runs": 2,
                                 "qualification_runs": 1, "final_qualification_runs": 2,
@@ -635,6 +636,7 @@ class CampaignTest(unittest.TestCase):
             (0, ("optimizer", "sessions", 0, "search", "options", "final_qualification_runs"), 0),
             (0, ("optimizer", "sessions", 0, "search", "final_qualifications"), 1),
             (0, ("optimizer", "sessions", 0, "search", "final_qualification_time"), {"secs": 0, "nanos": 0}),
+            (0, ("optimizer", "sessions", 0, "search", "matrix_inputs"), ["BF16"]),
             (0, ("optimizer", "sessions", 0, "search", "options", "max_time"), {"secs": 60, "nanos": 0}),
             (0, ("optimizer", "sessions", 0, "search", "options", "max_submission_chunks"), 1),
             (0, ("optimizer", "sessions", 0, "search", "options", "min_improvement"), 0.05),

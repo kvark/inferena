@@ -1,13 +1,16 @@
 """Keep measured timings, native qualification, and paired eligibility distinct."""
+import contextlib
 import copy
 import hashlib
+import io
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from collection import write_json
-from p3hpc_report import campaign_rows, cohort_rows
+from p3hpc_report import campaign_rows, cohort_rows, construction_rows, main
 
 
 class PairedReport(unittest.TestCase):
@@ -135,7 +138,7 @@ class PairedReport(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manifests = []
-            for version in range(18, 32):
+            for version in range(18, 34):
                 folder = root / str(version)
                 manifest = self.campaign(folder)
                 manifest["protocol"] = f"p3hpc-paired-campaign-v{version}"
@@ -144,6 +147,45 @@ class PairedReport(unittest.TestCase):
                 manifests.append(folder)
             with self.assertRaisesRegex(ValueError, "paired protocol"):
                 cohort_rows(manifests)
+
+
+class ConstructionReport(unittest.TestCase):
+    def test_setup_keeps_cold_warm_and_disabled_separate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            runs = [dict(model="SmolLM2-135M", precision="accelerated", replicate=i + 1)
+                    for i in range(3)]
+            write_json(directory / "campaign.json", dict(source="revision", runs=runs))
+            states = [["miss", "hit"], ["hit", "hit"], ["disabled", "disabled"]]
+            records = [dict(timings=dict(compile_s=10 + i), optimizer=dict(sessions=[
+                dict(mode="Inference", kernel_memo=dict(load=load), search=dict(
+                    elapsed=dict(secs=2, nanos=500000000), selected=0,
+                    trials=[dict(description="program")]), bf16_matrix_dispatches=i)
+                for load in loads])) for i, loads in enumerate(states)]
+            with patch("p3hpc_report.read_record", side_effect=records):
+                rows = construction_rows(directory)
+            self.assertEqual([row["cache_state"] for row in rows],
+                             ["cold-first-session", "warm-decisions", "independent-decisions"])
+            self.assertEqual([row["compile_seconds"] for row in rows], [10, 11, 12])
+            self.assertEqual(rows[0]["sessions"][0]["search_seconds"], 2.5)
+
+    def test_construction_cli_reports_setup_without_paired_qualification(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            run = dict(model="ResNet-50", precision="strict", replicate=1, path="run")
+            write_json(directory / "campaign.json", dict(source="revision", runs=[run]))
+            folder = directory / "run"
+            folder.mkdir()
+            write_json(folder / "ResNet-50_meganeura.json", dict(
+                timings=dict(compile_s=1), optimizer=dict(sessions=[
+                    dict(mode="Inference", search=None),
+                    dict(mode="Training", search=dict(selected=0, trials=[]))])))
+            with patch("sys.argv", ["p3hpc_report.py", str(directory), "--construction"]), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                main()
+            rows = json.loads(output.getvalue())
+            self.assertEqual(rows[0]["compile_seconds"], 1)
+            self.assertEqual([session["selected"] for session in rows[0]["sessions"]], [None, None])
 
 
 if __name__ == "__main__":

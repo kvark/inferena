@@ -435,6 +435,21 @@ class AmpTest(unittest.TestCase):
         sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
         from amp_reference import check_record
         check_record(record, "test", "bf16", "eager", "cpu")
+        forward_only = copy.deepcopy(record)
+        forward_only["protocol"]["training_requested"] = False
+        forward_only["protocol"]["warmup"].pop("training")
+        forward_only["correctness_reference"]["training_requested"] = False
+        forward_only["execution"]["precision_qualification"]["training"] = None
+        forward_only["execution"]["graph_replay"]["phases"].pop("training")
+        forward_only["timings"]["training_ms"] = None
+        forward_only["timing_samples_ms"]["training"] = None
+        self.assertEqual(check_record(forward_only, "test", "bf16", "eager", "cpu", training=False),
+                         {"inference": "pass", "latency": "pass", "training": None})
+        with self.assertRaisesRegex(ValueError, "training scope"):
+            check_record(forward_only, "test", "bf16", "eager", "cpu")
+        forward_only["timings"]["training_ms"] = 1.0
+        with self.assertRaisesRegex(ValueError, "unrequested training"):
+            check_record(forward_only, "test", "bf16", "eager", "cpu", training=False)
         for mutate in (lambda r: r["precision"].update(comparison_class="reduced-input-f32-accumulate"),
                        lambda r: r["execution"]["precision_qualification"]["training"].update(completed_updates=31),
                        lambda r: r["protocol"]["warmup"]["training"].update(seconds=2),

@@ -15,8 +15,10 @@ from study import ROOT, begin, environment, run_json
 from precision import check_precision_qualification
 
 
-def check_record(record, model, precision, mode, gpu, *, sdpa=None, diagnostic=False):
+def check_record(record, model, precision, mode, gpu, *, sdpa=None, diagnostic=False, training=True):
     execution, protocol = record["execution"], record["protocol"]
+    if protocol["training_requested"] is not training:
+        raise ValueError("training scope differs from the requested diagnostic")
     if sdpa is not None and execution["sdpa_policy"] != sdpa:
         raise ValueError("requested attention policy did not execute")
     if record["model"] != model or record["status"] not in ("ok", "partial") or not gpu_matches(gpu, record["gpu_name"]):
@@ -30,6 +32,13 @@ def check_record(record, model, precision, mode, gpu, *, sdpa=None, diagnostic=F
         raise ValueError("requested uncaptured compiler policy did not execute")
     phases = check_precision_qualification(record, diagnostic=diagnostic)
     for phase in ("inference", "training", "latency"):
+        if phase == "training" and not training:
+            if (phases[phase] is not None or record["timings"]["training_ms"] is not None
+                    or record["timing_samples_ms"][phase] is not None
+                    or phase in execution["graph_replay"]["phases"]
+                    or phase in protocol["warmup"]):
+                raise ValueError("unrequested training supplies a gate or timing")
+            continue
         if phases[phase] == "failed":
             if (record["timing_samples_ms"][phase] is not None or record["timings"][f"{phase}_ms"] is not None
                     or record["status"] != "partial" or f"{phase}_precision_failure" not in execution):
@@ -57,6 +66,8 @@ def main():
                         help="cohort default: math on XPU, auto elsewhere")
     parser.add_argument("--repeated-batch", action="store_true",
                         help="use the optional repeated-synthetic numerical diagnostic, outside collection")
+    parser.add_argument("--inference-only", action="store_true",
+                        help="SmolLM2 forward/latency probe without the training curve; not training qualification")
     parser.add_argument("--replicates", type=int, default=1)
     parser.add_argument("--compile-seconds", type=positive_seconds, default=120)
     parser.add_argument("--run-seconds", type=positive_seconds, default=1200)
@@ -64,6 +75,8 @@ def main():
     args = parser.parse_args()
     if args.replicates < 1 or len(set(args.models)) != len(args.models) or len(set(args.precisions)) != len(args.precisions):
         parser.error("positive replicates and unique models/precisions are required")
+    if args.inference_only and any(not model.startswith("SmolLM2-") for model in args.models):
+        parser.error("--inference-only supports SmolLM2 workloads")
     import platform
     import torch
     if platform.python_version() != PYTHON_VERSION:
@@ -71,11 +84,12 @@ def main():
     check_torch_identity(torch.__version__, torch.version.git_version, torch.__version__)
     hashes = input_hashes(args.models)
     destination = args.results_dir.resolve()
-    manifest = begin(destination, "accelerated-dtype-diagnostic-v2", args)
+    manifest = begin(destination, "accelerated-dtype-diagnostic-v3", args)
     manifest.update(input_sha256=hashes, cpu_frequency_policies=cpu_frequency_policies(),
                     reference_sdpa_policy={model: reference_sdpa_policy(args, model) for model in args.models},
                     timing_class="supplementary accelerated, compiled uncaptured" if args.mode == "default" else "supplementary accelerated, eager uncaptured",
-                    publication_ready=False, scope="per-model declared training qualification and timing; optional repeated-batch diagnostic")
+                    publication_ready=False, scope=("forward/latency only; no training qualification" if args.inference_only else
+                        "per-model declared training qualification and timing; optional repeated-batch diagnostic"))
     path = destination / "campaign.json"
     write_json(path, manifest)
     try:
@@ -89,6 +103,7 @@ def main():
                     if precision == "off":
                         env.pop("NVIDIA_TF32_OVERRIDE", None)
                     env.update(INFERENA_AUTOCAST=precision, INFERENA_STRICT="0", INFERENA_TORCH_MODE=args.mode,
+                               INFERENA_INFERENCE_ONLY="1" if args.inference_only else "0",
                                INFERENA_GRAPH_REPLAY="0",
                                INFERENA_TRAINING_GATE="repeated-synthetic" if args.repeated_batch else "auto",
                                INFERENA_SDPA=reference_sdpa_policy(args, model),
@@ -104,10 +119,11 @@ def main():
                     record = run_json([sys.executable, str(ROOT / "frameworks/pytorch/budget.py"),
                                        str(ROOT / "frameworks/pytorch/bench.py"), model], folder, env, args.run_seconds)
                     phases = check_record(record, model, precision, args.mode, args.gpu,
-                                          sdpa=reference_sdpa_policy(args, model), diagnostic=args.repeated_batch)
+                                          sdpa=reference_sdpa_policy(args, model), diagnostic=args.repeated_batch,
+                                          training=not args.inference_only)
                     if record["backend"].split()[0].lower() != args.backend:
                         raise ValueError("requested PyTorch backend did not execute")
-                    run.update(status="pass" if all(value == "pass" for value in phases.values()) else "partial",
+                    run.update(status="pass" if all(value in ("pass", None) for value in phases.values()) else "partial",
                                phases=phases, timings=record["timings"])
                     columns.append({"model": model, "gpu": record["gpu_name"], "reference": f"accelerated-{precision}",
                                     "mode": args.mode, "graph_replay": False, "replicate": replicate + 1,

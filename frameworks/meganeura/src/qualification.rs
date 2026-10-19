@@ -335,7 +335,7 @@ impl Qualification {
             None
         };
         serde_json::json!({
-            "policy": "same-program-full-tensor-v1", "reference": "same execution plan",
+            "policy": "selected-program-repeatability-v2", "reference": "same execution plan",
             "rtol": 1e-4, "atol": 1e-6, "accelerated_gradient_rtol": 0.01,
             "program_checks": self.program_checks,
             "repeatability_checks": self.repeatability_checks,

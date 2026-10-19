@@ -132,7 +132,8 @@ fn build_session_with_quality(
         let (available, memory_source, system_available) =
             search_memory_budget(memory.budget, memory.usage);
         let mut options = train::BuildSearchOptions {
-            qualification_runs: 2,
+            qualification_runs: 1,
+            final_qualification_runs: 2,
             max_graphs: 16,
             max_programs: 64,
             // Keep coverage bounded by the existing time/program limits.

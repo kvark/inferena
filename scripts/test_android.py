@@ -31,15 +31,16 @@ class AndroidContract(unittest.TestCase):
             search_input_policy="refresh before each step, outside timing",
             search=dict(options=dict(max_time=dict(secs=30, nanos=0),
             max_graphs=16, max_programs=64, max_submission_chunks=64, patience=None,
-            min_improvement=0.01, warmup_runs=2, qualification_runs=2, warmup_time=dict(secs=0, nanos=250000000),
+            min_improvement=0.01, warmup_runs=2, qualification_runs=1, final_qualification_runs=2, warmup_time=dict(secs=0, nanos=250000000),
             max_plan_bytes=9 * 1024**3 // 4, tuning=tuning), selected=0,
-            trials=[dict(outcome=dict(qualified=True), qualifications=2, kernel_tuning=dict(
+            final_qualifications=2, final_qualification_time=dict(secs=0, nanos=1000),
+            trials=[dict(outcome=dict(qualified=True), qualifications=1, kernel_tuning=dict(
                 options=tuning, class_limit_reached=False, visited_classes=1, eligible_classes=1,
                 time_budget_exhausted=False, reused_classes=[], outcomes=[]))]),
             memory_budget=dict(device_budget_bytes=0, device_usage_bytes=0,
                                source="android-memavailable-capped-3gib", system_available_bytes=4 * 1024**3,
                                available_bytes=3 * 1024**3, plan_fraction_of_available=0.75),
-            qualification=dict(policy="same-program-full-tensor-v1", reference="same execution plan", rtol=1e-4,
+            qualification=dict(policy="selected-program-repeatability-v2", reference="same execution plan", rtol=1e-4,
                                arithmetic_reference=dict(policy="native-f32-full-tensor-v2", status="pass",
                                    reference="original graph; untuned native strict-f32", prepared_before_precision_conversion=True,
                                    output_policy="tensor-fidelity-v1", output_rtol=1e-4, gradient_rtol=1e-4, atol=1e-6, preparation_seconds=0.1,
@@ -58,13 +59,29 @@ class AndroidContract(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 check_native_search(invalid, 30, 64, android=True)
         invalid = copy.deepcopy(session)
-        invalid["search"]["options"]["qualification_runs"] = 1
+        invalid["search"]["options"]["qualification_runs"] = 2
         with self.assertRaises(ValueError):
             check_native_search(invalid, 30, 64, android=True)
         invalid = copy.deepcopy(session)
-        invalid["search"]["trials"][0]["qualifications"] = 1
+        invalid["search"]["trials"][0]["qualifications"] = 0
         with self.assertRaises(ValueError):
             check_native_search(invalid, 30, 64, android=True)
+        for container, key, value in (
+                ("search", "final_qualifications", 1),
+                ("search", "final_qualification_time", dict(secs=0, nanos=0)),
+                ("options", "final_qualification_runs", 0)):
+            invalid = copy.deepcopy(session)
+            target = invalid["search"]["options"] if container == "options" else invalid[container]
+            target[key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                check_native_search(invalid, 30, 64, android=True)
+        # The untouched initial fallback is valid with one search check and
+        # two fresh final checks; losing candidates need only one search check.
+        fallback = copy.deepcopy(session)
+        fallback["search"]["trials"][0].update(kernel_tuning=None,
+            outcome=dict(qualified=True, decision="KeepBaseline", initial=0, candidate=0, selected=0))
+        fallback["search"]["trials"].append(copy.deepcopy(session["search"]["trials"][0]))
+        check_native_search(fallback, 30, 64, android=True)
         # Meganeura omits empty reused-class arrays from its serialized receipt.
         del session["search"]["trials"][0]["kernel_tuning"]["reused_classes"]
         check_native_search(session, 30, 64, android=True)

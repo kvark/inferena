@@ -1,6 +1,6 @@
 # P3HPC paired collection
 
-The development collector uses **v31**, with exactly two profiles: `strict`
+The development collector uses **v33**, with exactly two profiles: `strict`
 and `accelerated` (practical). The October 11 cohort below remains frozen at
 **v18**. V19 introduced AMP; v20 changed accelerated training qualification.
 V21 adds a native F32 arithmetic reference and refreshes search inputs to match
@@ -19,27 +19,34 @@ records the actual benchmarker in every compiled result. Other backends retain
 the pinned default event-based benchmarker. Search and compilation budgets,
 numerical acceptance, final step timers and the two-profile matrix are unchanged.
 
-## Development v31: repeatability within each native program
+## Development v33: repeat the final selected program
 
-This development branch pins Meganeura `9dafafa`
-([PR #265](https://github.com/kvark/meganeura/pull/265)), based on merged main
-`e0d2e26`. The change is under review; this section does not declare cohort readiness.
+This branch pins Meganeura `7cf2935` ([PR #267](https://github.com/kvark/meganeura/pull/267)),
+based on main after #265 landed. These changes remain under review.
 
-Native search checks every candidate against the original F32 reference using
-the existing numerical or language-model quality contract. It also checks two
-fresh executions at each qualification checkpoint, restoring persistent writes
-and representative inputs before each execution. The tight repeatability bounds
-compare executions of the same complete execution plan. A different plan starts
-its own repeatability anchor; it must still pass the independent F32 gate.
+Native search performs one fresh execution at each qualification checkpoint,
+including before/after kernel tuning and after timing a winning challenger.
+Every candidate must pass the original F32 accuracy contract. The tight
+repeatability gate compares only executions of the same complete plan.
 
-Previously, the first accelerated program became the tight numerical reference
-for every later candidate. This rejected valid changes of arithmetic, including
-scalar alternatives with smaller errors against F32. The numerical thresholds,
-whole-program timing gate, search budget, and two-profile design are unchanged.
-Qualification overhead remains inside the search budget and outside step timing.
-Receipts identify this policy as `same-program-full-tensor-v1` and record the
-repeat count. Android uses v13. Keep v30 measurements separate from v31 because
-the set of selectable programs changes.
+After selection, two fresh executions of the selected program must pass,
+including when the untuned fallback wins. Persistent writes and identical
+representative inputs are restored before each execution and before returning
+the session. Failure of either final check aborts construction; no timing result
+is accepted. This replaces v31's two executions at every checkpoint.
+
+Meganeura reserves estimated time for the final checks inside the soft search
+budget. In-flight GPU work and qualification callbacks cannot be preempted, so
+actual elapsed time can still exceed the deadline. Final check count and duration
+are recorded separately, included in total search/compile time, and excluded
+from step timing. The collector requires `qualification_runs=1`,
+`final_qualification_runs=2`, and two successful `final_qualifications`.
+
+Receipts use `selected-program-repeatability-v2`; paired protocol v33 and
+Android v15 distinguish this allocation of qualification work. V32/v14 are
+reserved for the separate BF16 development branch. Historical receipts remain
+readable but must not be pooled with this protocol. Numerical thresholds,
+whole-program timing gates, and the two-profile design remain unchanged.
 
 ## Development v30: real-text embedding probe
 

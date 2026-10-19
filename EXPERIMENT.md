@@ -24,8 +24,8 @@ numerical acceptance, final step timers and the two-profile matrix are unchanged
 This branch pins merged Meganeura `c19cb1c` ([PR #267](https://github.com/kvark/meganeura/pull/267)).
 It also includes merged #266: accelerated `CoopPolicy::Auto` searches
 device-qualified BF16 matrix alternatives; strict retains `NativeF32`.
-The Inferena protocol changes remain under review. Measurements recorded at
-`7cf2935` below retain that revision and do not include the BF16 search change.
+Measurements recorded at `7cf2935` retain that revision and do not include the
+BF16 search change.
 
 Native search performs one fresh execution at each qualification checkpoint,
 including before/after kernel tuning and after timing a winning challenger.
@@ -47,9 +47,55 @@ from step timing. The collector requires `qualification_runs=1`,
 
 Receipts use `selected-program-repeatability-v2`; paired protocol v33 and
 Android v15 distinguish this allocation of qualification work. V32/v14 are
-reserved for the separate BF16 development branch. Historical receipts remain
+the earlier BF16 development protocols. Historical receipts remain
 readable but must not be pooled with this protocol. Numerical thresholds,
 whole-program timing gates, and the two-profile design remain unchanged.
+
+### Matrix arithmetic, setup reporting and dtype diagnostics
+
+Accelerated search automatically considers device-qualified BF16 multiplication
+for eligible forward dense products and convolutions, including existing
+cooperative products. Parameters, intermediate storage, outputs and protected
+backward products stay F32. Conversion runs inside the timed kernels; the
+original F32/FP16 alternatives remain available. No client-side BF16 opt-in is
+needed. Receipts require `search.matrix_inputs=["BF16"]` for Auto and `[]` for
+strict, independently of whether the device supports or selects those candidates.
+No tolerance, search deadline or PyTorch dtype policy changes.
+
+For an inexpensive first check of a large model's dtype failure,
+`scripts/amp_reference.py --inference-only` runs SmolLM2 prefill and latency
+without the training curve. Its receipt has no training gate or timing and
+cannot qualify training. Use the full diagnostic if that forward probe passes.
+
+Report setup separately with `python scripts/p3hpc_report.py CAMPAIGN --construction`.
+It lists each process's `compile_s`, per-session search time, selected program,
+arithmetic counts and actual kernel-memo load state. A first process may contain
+one cold session followed by warm sessions. Later processes can reuse kernel
+decisions. `--no-kernel-memo` disables that reuse; neither setting controls driver
+shader caches or the OS page cache. Do not describe pooled setup times as cold.
+
+The two final native qualification executions test repeatability, independently
+of clock behavior. Timing replicates also expose variations in search choices,
+compilation/cache state and host scheduling; stable clocks alone do not remove
+those sources of variation.
+
+### Optional performance requests and telemetry
+
+Run `python scripts/performance.py --pci 0000:03:00.0 --output /path/to/power -- COMMAND...`
+for one-second telemetry. Add `--apply` to request supported performance settings:
+AMD `high`, Intel minimum frequency equal to the existing maximum, or NVIDIA's
+maximum allowed power limit. Existing permissions are required; the wrapper does
+not invoke sudo. It records prior settings before writing, verifies readback,
+and restores on completion, failure, SIGINT or SIGTERM. After SIGKILL or a machine
+crash, inspect the receipt and use `--restore /path/to/power/performance.json`.
+Preserve that directory alongside the campaign archive.
+
+These requests cannot override thermal/firmware limits and are not a guarantee
+of maximum clocks. NVIDIA clock locks are untouched because their prior state
+cannot be recovered reliably; CPU policies are only recorded by the collector.
+Do not change performance policy halfway through a comparison. Read-only telemetry
+has been exercised on the local NVIDIA and Intel devices; hardware setting writes
+need permission and a short verification on the collecting host.
 
 ## Development v30: real-text embedding probe
 

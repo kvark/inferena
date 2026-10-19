@@ -29,7 +29,7 @@ class AndroidContract(unittest.TestCase):
                       max_time=dict(secs=30, nanos=0), max_scratch_bytes=TUNE_SCRATCH_BYTES)
         session = dict(mode="Training", cooperative_matrix_policy="NativeF32",
             search_input_policy="refresh before each step, outside timing",
-            search=dict(options=dict(max_time=dict(secs=30, nanos=0),
+            search=dict(matrix_inputs=[], options=dict(max_time=dict(secs=30, nanos=0),
             max_graphs=16, max_programs=64, max_submission_chunks=64, patience=None,
             min_improvement=0.01, warmup_runs=2, qualification_runs=1, final_qualification_runs=2, warmup_time=dict(secs=0, nanos=250000000),
             max_plan_bytes=9 * 1024**3 // 4, tuning=tuning), selected=0,

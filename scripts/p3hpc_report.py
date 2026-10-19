@@ -127,10 +127,11 @@ def campaign_rows(directory):
                          "p3hpc-android-campaign-v11": "p3hpc-paired-campaign-v29",
                          "p3hpc-android-campaign-v12": "p3hpc-paired-campaign-v30",
                          "p3hpc-android-campaign-v13": "p3hpc-paired-campaign-v31",
+                         "p3hpc-android-campaign-v14": "p3hpc-paired-campaign-v32",
                          "p3hpc-android-campaign-v15": "p3hpc-paired-campaign-v33"}
     android = manifest["protocol"] in android_protocols
     paired_protocol = android_protocols.get(manifest["protocol"], manifest["protocol"])
-    if paired_protocol not in {f"p3hpc-paired-campaign-v{v}" for v in (*range(18, 32), 33)}:
+    if paired_protocol not in {f"p3hpc-paired-campaign-v{v}" for v in range(18, 34)}:
         raise ValueError("unsupported campaign protocol")
     if android and manifest.get("paired_protocol", paired_protocol) != paired_protocol:
         raise ValueError("Android and paired campaign protocols disagree")
@@ -157,7 +158,7 @@ def campaign_rows(directory):
                                   == (model, precision, mode, graphs)]
                         if "groups" in validation or paired_protocol in (
                                 "p3hpc-paired-campaign-v21", "p3hpc-paired-campaign-v22", "p3hpc-paired-campaign-v23",
-                                "p3hpc-paired-campaign-v24", "p3hpc-paired-campaign-v25", "p3hpc-paired-campaign-v26", "p3hpc-paired-campaign-v27", "p3hpc-paired-campaign-v28", "p3hpc-paired-campaign-v29", "p3hpc-paired-campaign-v30", "p3hpc-paired-campaign-v31", "p3hpc-paired-campaign-v33"):
+                                "p3hpc-paired-campaign-v24", "p3hpc-paired-campaign-v25", "p3hpc-paired-campaign-v26", "p3hpc-paired-campaign-v27", "p3hpc-paired-campaign-v28", "p3hpc-paired-campaign-v29", "p3hpc-paired-campaign-v30", "p3hpc-paired-campaign-v31", "p3hpc-paired-campaign-v32", "p3hpc-paired-campaign-v33"):
                             complete &= len(groups) == 1 and groups[0]["status"] == "pass"
                         else:
                             # Older aggregate-only receipts can prove all groups
@@ -218,6 +219,41 @@ def cohort_rows(campaigns):
     return rows
 
 
+def construction_rows(directory):
+    """Keep setup measurements separate by actual memo state, never pool them.
+
+    A miss/disabled memo describes only Meganeura's decisions. Driver shader
+    caches and the OS page cache are not controlled by this measurement.
+    """
+    manifest = json.loads((directory / "campaign.json").read_text())
+    rows = []
+    for run in manifest["runs"]:
+        record = read_record(directory, run, "meganeura")
+        if not record:
+            continue
+        sessions = []
+        for session in record.get("optimizer", {}).get("sessions", []):
+            search = session.get("search") or {}
+            trials = search.get("trials", [])
+            selected = search.get("selected")
+            elapsed = search.get("elapsed")
+            sessions.append(dict(mode=session["mode"], memo=session.get("kernel_memo", {}).get("load", "unknown"),
+                search_seconds=(elapsed["secs"] + elapsed["nanos"] / 1e9) if elapsed else None,
+                selected=(trials[selected]["description"] if isinstance(selected, int)
+                          and 0 <= selected < len(trials) else None),
+                cooperative_dispatches=session.get("cooperative_dispatches"),
+                bf16_matrix_dispatches=session.get("bf16_matrix_dispatches"),
+                unsupported_matrix_inputs=search.get("unsupported_matrix_inputs")))
+        loads = [s["memo"] for s in sessions]
+        state = ("warm-decisions" if loads and all(x == "hit" for x in loads) else
+                 "independent-decisions" if loads and all(x == "disabled" for x in loads) else
+                 "cold-first-session" if loads and loads[0] == "miss" else "mixed-or-unknown")
+        rows.append(dict(campaign=str(directory), source=manifest["source"], model=run["model"],
+                         precision=run["precision"], replicate=run["replicate"], cache_state=state,
+                         compile_seconds=record.get("timings", {}).get("compile_s"), sessions=sessions))
+    return rows
+
+
 def render(rows):
     lines = ["| Platform | Model | Precision | Phase | Reference | Qualified pairs | Meganeura ms | Native qualification | PyTorch ms | Reference qualification | Speedup |",
              "|---|---|---|---|---|---|---|---|---|---|---|"]
@@ -236,12 +272,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("campaigns", type=Path, nargs="+")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--construction", action="store_true",
+                        help="emit per-process setup JSON, including memo state and selected arithmetic")
     args = parser.parse_args()
     try:
-        rows = cohort_rows(args.campaigns)
+        rows = ([row for campaign in args.campaigns for row in construction_rows(campaign)]
+                if args.construction else cohort_rows(args.campaigns))
     except ValueError as error:
         parser.error(str(error))
-    print(json.dumps(rows, indent=2) if args.json else render(rows))
+    print(json.dumps(rows, indent=2) if args.json or args.construction else render(rows))
 
 
 if __name__ == "__main__":

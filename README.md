@@ -116,9 +116,9 @@ Precision is part of every result:
   which is faster than the qualified FP16/F32 projection-wrapper recipe on both
   local GPUs; prefill and training retain the default dtype.
   FP16 training uses gradient scaling.
-  Meganeura's default `Auto` path keeps f32 storage and permits eligible f16
-  cooperative inputs. Its explicit BF16 path is available for qualification
-  experiments. Every result records the arithmetic actually used.
+  Meganeura's default `Auto` path keeps f32 storage and searches eligible f16
+  and bf16 matrix inputs, subject to device, accuracy and timing checks.
+  Every result records the arithmetic actually used.
 - `--strict` disables those paths for an f32 control run. PyTorch TF32 and
   Meganeura f16 cooperative-matrix paths are disabled. Native f32 cooperative
   matrices remain allowed.
@@ -144,7 +144,7 @@ curve L2 is diagnostic. Non-language outputs retain the tensor-fidelity gate.
 Graph replay includes forward/loss/scaled backward; scaler housekeeping runs
 after replay inside the measured step.
 
-The development collection protocol is **v31**, still 30 pairs per GPU.
+The development collection protocol is **v33**, still 30 pairs per GPU.
 PyTorch qualifies both inference and latency against F32, including the smaller
 ResNet batch and shorter SmolVLA action sequence. Each receipt records the checked
 output shape; failed latency leaves its timings empty.
@@ -154,14 +154,15 @@ reference preparation time, recorded in `compile_s`, before the 30-second search
 Search refreshes inputs before each step to match benchmark execution.
 `scripts/amp_reference.py` provides optional dtype and `--repeated-batch`
 diagnostics; `scripts/convergence.py` separately compares both engines on real
-text. Native search checks repeatability within each candidate program, alongside
-the independent F32 correctness gate. See the [current protocol](EXPERIMENT.md#development-v31-repeatability-within-each-native-program).
+text. Native search checks each candidate against F32 and repeats two fresh
+executions of the selected program. See the [current protocol](EXPERIMENT.md#development-v33-repeat-the-final-selected-program).
 The completed October 11 v18 cohort retains its frozen source and arithmetic
 policy. Keep its records separate from the new qualification protocol.
 
 Native precision experiments use `INFERENA_MEGANEURA_PRECISION`:
-`auto` preserves the normal path; `fp16` also permits reduced derivative
-kernels; `bf16-forward` converts supported forward matrices/convolutions;
+`auto` searches qualified BF16 forward matrix multiplication alongside the
+existing F32/FP16 paths; `fp16` also permits reduced derivative kernels;
+`bf16-forward` converts supported forward matrices/convolutions;
 `bf16` also narrows eligible dense derivatives; `bf16-inputs` keeps matrix
 results in f32 while narrowing operands. Parameters, accumulation, losses and
 master gradients remain f32. BF16 requires native storage and 16×16×16 or

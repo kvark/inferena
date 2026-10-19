@@ -116,6 +116,12 @@ impl Policy {
                 value[key] = "f32".into();
             }
             value["native_f32_cooperative_matrix_permitted"] = true.into();
+        } else if self == Self::Auto {
+            value["matmul_inputs"] =
+                "qualified search over f32, f16 and bf16 multiplication; f32 storage/output".into();
+            value["convolution_inputs"] =
+                "qualified search over f32, f16 and bf16 forward multiplication; f32 storage/output".into();
+            value["matrix_search_candidates"] = serde_json::json!(["BF16"]);
         } else if self == Self::Fp16 {
             for key in ["backward_matmul_inputs", "backward_convolution_inputs"] {
                 value[key] = "f16 for eligible cooperative kernels; f32 otherwise".into();

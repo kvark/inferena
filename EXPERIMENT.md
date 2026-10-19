@@ -21,8 +21,11 @@ numerical acceptance, final step timers and the two-profile matrix are unchanged
 
 ## Development v33: repeat the final selected program
 
-This branch pins Meganeura `7cf2935` ([PR #267](https://github.com/kvark/meganeura/pull/267)),
-based on main after #265 landed. These changes remain under review.
+This branch pins merged Meganeura `c19cb1c` ([PR #267](https://github.com/kvark/meganeura/pull/267)).
+It also includes merged #266: accelerated `CoopPolicy::Auto` searches
+device-qualified BF16 matrix alternatives; strict retains `NativeF32`.
+The Inferena protocol changes remain under review. Measurements recorded at
+`7cf2935` below retain that revision and do not include the BF16 search change.
 
 Native search performs one fresh execution at each qualification checkpoint,
 including before/after kernel tuning and after timing a winning challenger.

@@ -417,11 +417,12 @@ class CampaignTest(unittest.TestCase):
                 "mode": mode, "cooperative_matrix_policy": "NativeF32", "search": {
                     "options": {"max_time": {"secs": 30, "nanos": 0}, "max_graphs": 16,
                                 "max_programs": 64, "max_submission_chunks": 64, "warmup_runs": 2,
-                                "qualification_runs": 2,
+                                "qualification_runs": 1, "final_qualification_runs": 2,
                                 "min_improvement": 0.01, "patience": None,
                                 "warmup_time": {"secs": 0, "nanos": 250000000},
                                 "max_plan_bytes": 3 * 1024**3, "tuning": tuning},
-                    "selected": 0, "trials": [{"outcome": {"qualified": True}, "qualifications": 2, "kernel_tuning": {
+                    "final_qualifications": 2, "final_qualification_time": {"secs": 0, "nanos": 1000},
+                    "selected": 0, "trials": [{"outcome": {"qualified": True}, "qualifications": 1, "kernel_tuning": {
                         "options": tuning, "class_limit_reached": False,
                         "visited_classes": 1, "eligible_classes": 1, "time_budget_exhausted": False,
                         # Rust omits reused_classes when there are no hits.
@@ -430,14 +431,14 @@ class CampaignTest(unittest.TestCase):
                 },
                 "memory_budget": {"device_budget_bytes": 4 * 1024**3, "device_usage_bytes": 0,
                                   "plan_fraction_of_available": 0.75},
-                "qualification": {"policy": "same-program-full-tensor-v1", "rtol": 1e-4, "atol": 1e-6,
-                                  "reference": "same execution plan", "program_checks": 2, "repeatability_checks": 1,
+                "qualification": {"policy": "selected-program-repeatability-v2", "rtol": 1e-4, "atol": 1e-6,
+                                  "reference": "same execution plan", "program_checks": 3, "repeatability_checks": 2,
                                   "arithmetic_reference": {"policy": "native-f32-full-tensor-v2", "status": "pass",
                                       "reference": "original graph; untuned native strict-f32",
                                       "prepared_before_precision_conversion": True,
                                       "output_policy": "tensor-fidelity-v1", "output_rtol": 1e-4, "gradient_rtol": 1e-4, "atol": 1e-6,
-                                      "preparation_seconds": 0.1, "checked_calls": 2, "rejected_calls": 0},
-                                  "accelerated_gradient_rtol": 0.01, "qualified_calls": 2,
+                                      "preparation_seconds": 0.1, "checked_calls": 3, "rejected_calls": 0},
+                                  "accelerated_gradient_rtol": 0.01, "qualified_calls": 3,
                                   "output_elements": 1, "gradient_elements": int(mode == "Training")},
                 "search_input_policy": "refresh before each step, outside timing",
                 "kernel_memo": {"policy": KERNEL_MEMO_POLICY, "enabled": True, "key": "a" * 64,
@@ -485,7 +486,7 @@ class CampaignTest(unittest.TestCase):
         for session in fallback["optimizer"]["sessions"]:
             trial = copy.deepcopy(session["search"]["trials"][0])
             trial["kernel_tuning"] = None
-            trial["qualifications"] = 2
+            trial["qualifications"] = 1
             trial["outcome"].update(decision="KeepBaseline", initial=0, candidate=0, selected=0)
             session["search"]["trials"].insert(0, trial)
         check([fallback, pt])
@@ -498,15 +499,15 @@ class CampaignTest(unittest.TestCase):
         for session in explicit_empty["optimizer"]["sessions"]:
             session["search"]["trials"][0]["kernel_tuning"]["reused_classes"] = []
         check([explicit_empty, pt])
-        # Cache hits need two fresh executions after installing the kernels,
-        # without a separate pre-tuning checkpoint when no probes remain.
+        # Cache hits still qualify after installing the kernels, followed by
+        # two final executions. No pre-tuning checkpoint is needed without probes.
         resumed = copy.deepcopy(mg)
         for session in resumed["optimizer"]["sessions"]:
             trial = session["search"]["trials"][0]
-            trial["qualifications"] = 2
+            trial["qualifications"] = 1
             trial["kernel_tuning"].update(reused_classes=[{}], outcomes=[])
-            session["qualification"]["qualified_calls"] = 2
-            session["qualification"]["arithmetic_reference"]["checked_calls"] = 2
+            session["qualification"]["qualified_calls"] = 3
+            session["qualification"]["arithmetic_reference"]["checked_calls"] = 3
             session["kernel_memo"].update(load="hit", loaded_classes=1,
                                           reused_class_visits=1, new_comparisons=0)
         check([resumed, pt])
@@ -630,7 +631,10 @@ class CampaignTest(unittest.TestCase):
             (0, ("optimizer", "sessions"), []),
             (0, ("optimizer", "sessions", 0, "search", "options", "max_graphs"), 4),
             (0, ("optimizer", "sessions", 0, "search", "options", "patience"), 5),
-            (0, ("optimizer", "sessions", 0, "search", "options", "qualification_runs"), 1),
+            (0, ("optimizer", "sessions", 0, "search", "options", "qualification_runs"), 2),
+            (0, ("optimizer", "sessions", 0, "search", "options", "final_qualification_runs"), 0),
+            (0, ("optimizer", "sessions", 0, "search", "final_qualifications"), 1),
+            (0, ("optimizer", "sessions", 0, "search", "final_qualification_time"), {"secs": 0, "nanos": 0}),
             (0, ("optimizer", "sessions", 0, "search", "options", "max_time"), {"secs": 60, "nanos": 0}),
             (0, ("optimizer", "sessions", 0, "search", "options", "max_submission_chunks"), 1),
             (0, ("optimizer", "sessions", 0, "search", "options", "min_improvement"), 0.05),
@@ -641,7 +645,7 @@ class CampaignTest(unittest.TestCase):
             (0, ("optimizer", "sessions", 0, "search", "options", "tuning", "max_time"), {"secs": 2, "nanos": 0}),
             (0, ("optimizer", "sessions", 0, "search", "trials", 0, "kernel_tuning", "visited_classes"), 0),
             (0, ("optimizer", "sessions", 0, "search", "trials", 0, "outcome", "qualified"), False),
-            (0, ("optimizer", "sessions", 0, "search", "trials", 0, "qualifications"), 1),
+            (0, ("optimizer", "sessions", 0, "search", "trials", 0, "qualifications"), 0),
             (0, ("optimizer", "sessions", 0, "qualification", "qualified_calls"), 0),
             (0, ("optimizer", "sessions", 0, "qualification", "program_checks"), 1),
             (0, ("optimizer", "sessions", 0, "qualification", "repeatability_checks"), 0),

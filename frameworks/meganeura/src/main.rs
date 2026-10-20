@@ -594,6 +594,8 @@ fn bench_session(
     session: &mut meganeura::Session,
     set_inputs: &dyn Fn(&mut meganeura::Session),
 ) -> BenchStats {
+    // Keep fixed inputs resident during warmup and measurement, as PyTorch
+    // does. Rewriting them outside the timer can still affect caches and clocks.
     set_inputs(session);
     let mut exported = export::before(session, phase);
     let (warmups, samples) = benchmark_counts();
@@ -602,7 +604,6 @@ fn bench_session(
     let warmup_start = Instant::now();
     let mut warmup_runs = 0;
     while warmup_runs < warmups || warmup_start.elapsed() < warmup_time {
-        set_inputs(session);
         session.step();
         session.wait();
         warmup_runs += 1;
@@ -616,7 +617,6 @@ fn bench_session(
     let mut samples_ms = Vec::with_capacity(samples);
     for _ in 0..samples {
         let _sample_range = nsys_range("meganeura/sample");
-        set_inputs(session);
         let t0 = Instant::now();
         let step_range = nsys_range("meganeura/step");
         session.step();
@@ -1279,6 +1279,7 @@ fn emit_result(
                 "training": training.map(|stats| &stats.warmup),
             },
             "measurement_runs": measurement_runs,
+            "input_refresh": "once before warmup; resident through measurement",
             "statistic": "median",
             "training_requested": training.is_some(),
             "training_scope": training.map(|_| "forward + loss + backward; no optimizer update"),

@@ -536,7 +536,7 @@ dependencies = [
 [[package]]
 name = "blade-graphics"
 version = "0.9.0"
-source = "git+https://github.com/kvark/blade?rev=4845d6529c38b07718a624bf3c4f2ab4317c9bf4#4845d6529c38b07718a624bf3c4f2ab4317c9bf4"
+source = "git+https://github.com/kvark/blade?rev=eae0c6f7aa3167c79d1135050cf8e17c17fabd0a#eae0c6f7aa3167c79d1135050cf8e17c17fabd0a"
 dependencies = [
  "ash",
  "ash-window",
@@ -553,7 +553,7 @@ dependencies = [
  "libloading 0.9.0",
  "log",
  "mint",
- "naga 30.0.0 (git+https://github.com/kvark/wgpu?rev=13f582ddd2792befb46952498010248bd65818e6)",
+ "naga 30.0.0 (git+https://github.com/kvark/wgpu?rev=a489554c96f87cbc5252ee00350730f6e93869f9)",
  "objc2",
  "objc2-app-kit",
  "objc2-core-foundation",
@@ -5144,7 +5144,7 @@ checksum = "7ebb8d8732c6a6df3d8f032a82911cfc747e00efb95cc46e8d0acd5b5b88570c"
 [[package]]
 name = "meganeura"
 version = "0.3.0"
-source = "git+https://github.com/kvark/meganeura?rev=c19cb1caedd90be7abc61de61f6197018711398e#c19cb1caedd90be7abc61de61f6197018711398e"
+source = "git+https://github.com/kvark/meganeura?rev=53844d33889b0e59e00cb7fc6c18dd1c310e1eb9#53844d33889b0e59e00cb7fc6c18dd1c310e1eb9"
 dependencies = [
  "blade-graphics",
  "blade-macros",
@@ -5350,7 +5350,7 @@ dependencies = [
 [[package]]
 name = "naga"
 version = "30.0.0"
-source = "git+https://github.com/kvark/wgpu?rev=13f582ddd2792befb46952498010248bd65818e6#13f582ddd2792befb46952498010248bd65818e6"
+source = "git+https://github.com/kvark/wgpu?rev=a489554c96f87cbc5252ee00350730f6e93869f9#a489554c96f87cbc5252ee00350730f6e93869f9"
 dependencies = [
  "arrayvec",
  "bit-set 0.11.1",
@@ -5363,7 +5363,7 @@ dependencies = [
  "indexmap",
  "libm",
  "log",
- "naga-types 30.0.0 (git+https://github.com/kvark/wgpu?rev=13f582ddd2792befb46952498010248bd65818e6)",
+ "naga-types 30.0.0 (git+https://github.com/kvark/wgpu?rev=a489554c96f87cbc5252ee00350730f6e93869f9)",
  "num-traits",
  "once_cell",
  "rustc-hash 1.1.0",
@@ -5387,7 +5387,7 @@ dependencies = [
 [[package]]
 name = "naga-types"
 version = "30.0.0"
-source = "git+https://github.com/kvark/wgpu?rev=13f582ddd2792befb46952498010248bd65818e6#13f582ddd2792befb46952498010248bd65818e6"
+source = "git+https://github.com/kvark/wgpu?rev=a489554c96f87cbc5252ee00350730f6e93869f9#a489554c96f87cbc5252ee00350730f6e93869f9"
 dependencies = [
  "hashbrown 0.17.1",
  "indexmap",

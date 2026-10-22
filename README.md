@@ -169,6 +169,28 @@ master gradients remain f32. BF16 requires native storage and 16×16×16 or
 8×16×16 BF16/F32 cooperative matrices (the latter enables B570). Conversion
 costs are included in every step.
 
+`INFERENA_MEGANEURA_TRAINING_GATE=trajectory` is an accelerated-only experiment.
+It replaces the cross-precision gradient bound with the shared PyTorch SGD
+workload and evaluator in `scripts/training_gate.py`: 256 frozen real-text
+updates for SmolLM2, or 32 repeated-input updates for other models. Forward
+quality, finite gradients, and same-program repeatability remain checked.
+The selected program must pass the trajectory gate before training is timed;
+parameters are then restored. Set `INFERENA_TRAINING_GATE_RECEIPT` to a file
+path to retain raw trajectories, including failures. This option requires
+Python 3 and the source checkout at runtime; it does not change strict mode
+or the paired collector's accepted protocol.
+
+`INFERENA_MEGANEURA_ATTENTION_BACKWARD=uncompensated` requests F16 score
+products and BF16 derivative products without residual corrections. It requires
+the accelerated trajectory gate above. The compensated path remains the default;
+receipts include the backward attention paths actually selected on the device.
+
+`INFERENA_MEGANEURA_LATENCY_PRECISION=auto` declares a separate arithmetic
+policy for SmolLM2's single-token phase. This permits testing BF16 prefill and
+training without also requiring BF16 single-token logits to qualify. Every
+session records its actual policy; there is no retry with a different policy
+after a failed check.
+
 ```sh
 INFERENA_MEGANEURA_PRECISION=bf16-inputs MEGANEURA_TUNE=0 \
   frameworks/meganeura/run.sh Whisper-tiny

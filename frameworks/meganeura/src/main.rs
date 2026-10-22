@@ -26,6 +26,7 @@ mod precision;
 mod qualification;
 mod quality;
 mod search_cache;
+mod trajectory;
 
 fn warmup_time() -> Duration {
     let seconds = std::env::var("INFERENA_WARMUP_SECONDS")
@@ -56,6 +57,7 @@ fn build_session_with_quality(
     language_model: Option<(usize, &[u32])>,
 ) -> Session {
     export::set_graph(graph);
+    let training_workload = trajectory::Workload::from_env(mode);
     let mut config = session_config();
     config.mode = mode;
     // This runner owns search options and retains its evidence, rather than
@@ -64,7 +66,11 @@ fn build_session_with_quality(
     // The library's process-global default is never destroyed. Own the context
     // so dropping a session releases its device and flushes vendor trace data.
     ensure_selected_gpu(&mut config);
-    let arithmetic = precision::Policy::from_env();
+    let arithmetic = if language_model.is_some_and(|(_, targets)| targets.len() == 1) {
+        precision::Policy::language_model_latency()
+    } else {
+        precision::Policy::from_env()
+    };
     arithmetic.configure(&mut config);
     let reference_start = Instant::now();
     let mut reference_config = session_config();
@@ -101,6 +107,10 @@ fn build_session_with_quality(
     reference.wait();
     let mut qualification = qualification::Qualification::new(graph, mode, &reference)
         .expect("invalid strict-f32 arithmetic reference");
+    let reference_trajectory = training_workload.as_ref().map(|workload| {
+        qualification.use_trajectory_gate();
+        workload.run(&mut reference, &initialize_inputs, "strict-f32 reference")
+    });
     drop(reference);
     if let Some((vocabulary, targets)) = language_model {
         qualification
@@ -117,7 +127,7 @@ fn build_session_with_quality(
         "arithmetic": arithmetic.metadata(),
         "search": null,
     });
-    let session = if meganeura::config::TUNE.bool_or(true) {
+    let mut session = if meganeura::config::TUNE.bool_or(true) {
         let seconds = std::env::var("INFERENA_TUNE_SECONDS")
             .unwrap_or_else(|_| "30".to_owned())
             .parse::<f64>()
@@ -231,7 +241,26 @@ fn build_session_with_quality(
             .expect("native program is not repeatable");
         session
     };
+    if let Some(workload) = training_workload {
+        initialize_parameters(&mut session);
+        let actual = workload.run(&mut session, &initialize_inputs, "selected candidate");
+        preparation["training_trajectory"] = workload.assess(actual, reference_trajectory.unwrap());
+        initialize_parameters(&mut session);
+        initialize_inputs(&mut session);
+        session.step();
+        session.wait();
+        qualification
+            .check(&session)
+            .expect("restored program failed qualification");
+    }
     preparation["qualification"] = qualification.report();
+    let mut attention_paths = std::collections::BTreeMap::<String, usize>::new();
+    for dispatch in &session.plan().dispatches {
+        if let meganeura::compile::ShaderEntry::AttentionGrad(kernel) = dispatch.shader {
+            *attention_paths.entry(format!("{kernel:?}")).or_default() += 1;
+        }
+    }
+    preparation["attention_backward_dispatches"] = serde_json::json!(attention_paths);
     preparation["search_input_policy"] = "refresh before each step, outside timing".into();
     preparation["cooperative_dispatches"] = serde_json::json!(
         session
@@ -1283,7 +1312,7 @@ fn emit_result(
             "training_requested": training.is_some(),
             "training_scope": training.map(|_| "forward + loss + backward; no optimizer update"),
             "compile_scope": "graph construction, calibrated graph/kernel/submission search, GPU pipelines, weight/input initialization and full-tensor qualification for requested sessions",
-            "diagnostic": std::env::var_os("INFERENA_NSYS").is_some() || precision::Policy::from_env() != precision::Policy::Auto,
+            "diagnostic": std::env::var_os("INFERENA_NSYS").is_some() || precision["diagnostic"] == true,
             "context_lifetime": "owned per session; destroyed after use",
         },
         "precision": precision,

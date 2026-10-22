@@ -42,6 +42,13 @@ impl Policy {
         .unwrap_or_else(|error| panic!("{error}"))
     }
 
+    pub fn language_model_latency() -> Self {
+        match std::env::var("INFERENA_MEGANEURA_LATENCY_PRECISION") {
+            Ok(value) => Self::parse(&value, strict()).unwrap_or_else(|error| panic!("{error}")),
+            Err(_) => Self::from_env(),
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Auto => "auto",
@@ -69,6 +76,28 @@ impl Policy {
     }
 
     pub fn configure(self, config: &mut SessionConfig<'_>) {
+        match std::env::var("INFERENA_MEGANEURA_ATTENTION_BACKWARD")
+            .as_deref()
+            .unwrap_or("compensated")
+        {
+            "compensated" => {}
+            "uncompensated" => {
+                assert!(
+                    !strict()
+                        && std::env::var("INFERENA_MEGANEURA_TRAINING_GATE").as_deref()
+                            == Ok("trajectory"),
+                    "uncompensated attention experiment requires the accelerated trajectory gate"
+                );
+                if config.mode == meganeura::Mode::Training {
+                    use meganeura::kernels::attention_grad::{Operands, Path};
+                    config.options.prefer_attention_grad =
+                        Some(Path::Cooperative(Operands::F16BF16Uncompensated));
+                }
+            }
+            _ => {
+                panic!("INFERENA_MEGANEURA_ATTENTION_BACKWARD must be compensated or uncompensated")
+            }
+        }
         if self == Self::Fp16 {
             config.runtime.coop = CoopPolicy::AllowF16;
         }
@@ -94,7 +123,10 @@ impl Policy {
         let mut value = serde_json::json!({
             "comparison_class": if strict() { "strict-f32" } else { "accelerated" },
             "policy": self.name(),
-            "diagnostic": self != Self::Auto,
+            "diagnostic": self != Self::Auto || std::env::var("INFERENA_MEGANEURA_TRAINING_GATE").as_deref() == Ok("trajectory"),
+            "training_gate": std::env::var("INFERENA_MEGANEURA_TRAINING_GATE").unwrap_or_else(|_| "full-gradient".into()),
+            "language_model_latency_policy": Self::language_model_latency().name(),
+            "attention_backward_compensation": std::env::var("INFERENA_MEGANEURA_ATTENTION_BACKWARD").unwrap_or_else(|_| "compensated".into()),
             "cooperative_matrix_policy": if strict() { "NativeF32" } else if self == Self::Fp16 { "AllowF16" } else { "Auto" },
             "tensor_storage": "f32",
             "matmul_inputs": "forward: f16 for eligible cooperative-matrix kernels; f32 otherwise",
@@ -102,7 +134,7 @@ impl Policy {
             "convolution_inputs": "forward: f16 for eligible cooperative-matrix kernels; f32 otherwise",
             "backward_matmul_inputs": "f32",
             "backward_convolution_inputs": "f32",
-            "backward_attention_inputs": "f32",
+            "backward_attention_inputs": if strict() { "f32" } else { "qualified f32 or F16 score/BF16 derivative products; f32 accumulation and output" },
             "accumulation": "f32", "output": "f32", "loss": "f32",
             "reduced_precision_allowed": !strict(),
             "f16_cooperative_matrix_permitted": !strict(),

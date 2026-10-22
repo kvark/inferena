@@ -1,6 +1,10 @@
 """Real-data gate evidence must cover updates, learning and independent probes."""
 
 import copy
+import json
+from pathlib import Path
+import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -10,6 +14,21 @@ from training_gate import (REAL_TEXT, REPEATED, SMOLLM2_HIDDEN_SIZES, assess_tra
 
 
 class TrainingGateTest(unittest.TestCase):
+    def test_native_interface_uses_the_same_frozen_workload_and_assessment(self):
+        def call(request):
+            return subprocess.run([sys.executable, str(Path(__file__).with_name("training_gate.py"))],
+                                  input=json.dumps(request), text=True, capture_output=True)
+
+        plan = call(dict(operation="workload", model="SmolLM2-135M"))
+        self.assertEqual(plan.returncode, 0, plan.stderr)
+        self.assertEqual(json.loads(plan.stdout), dict(workload=self.workload, fixture=load_fixture()))
+        request = dict(operation="assess", actual=self.reference, reference=self.reference, workload=self.workload)
+        report = call(request)
+        self.assertEqual(report.returncode, 0, report.stderr)
+        self.assertEqual(json.loads(report.stdout), assess_trajectories(self.reference, self.reference, self.workload))
+        request["actual"] = dict(self.reference, completed_updates=255)
+        self.assertNotEqual(call(request).returncode, 0)
+
     def test_roundoff_in_diagnostics_cannot_change_a_gate_outcome(self):
         import math
         expected = dict(status="pass", relative_l2=0.003553088113636246, mismatched_steps=0)

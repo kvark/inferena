@@ -123,3 +123,21 @@ def assess_trajectories(actual, reference, workload):
     passed = all(row["status"] == "pass" for row in comparisons.values()) and all(
         row is None or row["status"] == "pass" for row in learning.values())
     return {"status": "pass" if passed else "failed", "comparisons": comparisons, "learning": learning}
+
+
+if __name__ == "__main__":
+    # Native runners use the same workload and evaluator as PyTorch. Keep this
+    # interface independent of either framework and reject incomplete evidence.
+    import sys
+
+    request = json.load(sys.stdin)
+    if request["operation"] == "workload":
+        workload = workload_for(request["model"])
+        result = {"workload": workload,
+                  "fixture": load_fixture() if workload["policy"] == REAL_TEXT else None}
+    elif request["operation"] == "assess":
+        result = assess_trajectories(request["actual"], request["reference"], request["workload"])
+    else:
+        raise ValueError("unknown training gate operation")
+    json.dump(result, sys.stdout, allow_nan=False)
+    print()

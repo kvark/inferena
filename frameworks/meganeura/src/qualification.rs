@@ -119,6 +119,7 @@ impl Snapshot {
         mode: Mode,
         output_rtol: f64,
         accelerated: bool,
+        check_gradients: bool,
     ) -> Result<(), String> {
         if self.outputs.len() != reference.outputs.len()
             || self.gradients.keys().ne(reference.gradients.keys())
@@ -136,14 +137,14 @@ impl Snapshot {
         for (name, actual) in &self.gradients {
             let mut error = Error::default();
             error.include(actual, &reference.gradients[name])?;
-            if !accelerated {
+            if check_gradients && !accelerated {
                 error
                     .check(1e-4)
                     .map_err(|error| format!("gradient {name}: {error}"))?;
             }
             total.merge(&error);
         }
-        if mode == Mode::Training {
+        if check_gradients && mode == Mode::Training {
             total
                 .check(if accelerated { 0.01 } else { 1e-4 })
                 .map_err(|error| format!("full gradient: {error}"))?;
@@ -156,6 +157,7 @@ pub struct Qualification {
     output_lengths: Vec<usize>,
     mode: Mode,
     accelerated: bool,
+    trajectory_gate: bool,
     f32: Snapshot,
     reference_seconds: f64,
     anchor: Option<CheckedSnapshot>,
@@ -179,11 +181,12 @@ impl Qualification {
             .map(|&id| graph.node(id).ty.num_elements())
             .collect();
         let f32 = Snapshot::read(reference, &output_lengths, mode)?;
-        f32.compare(&f32, mode, 1e-4, false)?;
+        f32.compare(&f32, mode, 1e-4, false, true)?;
         Ok(Self {
             output_lengths,
             mode,
             accelerated: !crate::precision::strict(),
+            trajectory_gate: false,
             f32,
             reference_seconds: 0.0,
             anchor: None,
@@ -200,6 +203,14 @@ impl Qualification {
 
     pub fn set_reference_seconds(&mut self, seconds: f64) {
         self.reference_seconds = seconds;
+    }
+
+    /// Cross-precision derivatives remain finite and structurally checked, but
+    /// SGD trajectories decide training fidelity. Same-program repeatability
+    /// keeps its full-gradient bound. Never use this in the strict contract.
+    pub fn use_trajectory_gate(&mut self) {
+        assert!(self.accelerated && self.mode == Mode::Training && self.anchor.is_none());
+        self.trajectory_gate = true;
     }
 
     pub fn set_language_model(&mut self, vocabulary: usize, targets: &[u32]) -> Result<(), String> {
@@ -273,6 +284,7 @@ impl Qualification {
                         self.mode,
                         if self.accelerated { 0.02 } else { 1e-4 },
                         self.accelerated,
+                        !self.trajectory_gate,
                     )
                     .map_err(|error| format!("strict-f32 reference: {error}"))?;
                 None
@@ -282,7 +294,7 @@ impl Qualification {
             // every plan must independently satisfy the F32 correctness gate.
             if let Some(anchor) = &self.anchor {
                 actual
-                    .compare(&anchor.tensors, self.mode, 1e-4, self.accelerated)
+                    .compare(&anchor.tensors, self.mode, 1e-4, self.accelerated, true)
                     .map_err(|error| format!("program repeatability: {error}"))?;
                 self.repeatability_checks += 1;
             } else {
@@ -311,6 +323,12 @@ impl Qualification {
 
     pub fn report(&self) -> serde_json::Value {
         assert!(self.anchor.is_some(), "qualified anchor");
+        let mut gradient_error = Error::default();
+        for (name, values) in &self.anchor.as_ref().unwrap().tensors.gradients {
+            gradient_error
+                .include(values, &self.f32.gradients[name])
+                .unwrap();
+        }
         let gradients: BTreeMap<_, _> = self
             .f32
             .gradients
@@ -345,14 +363,19 @@ impl Qualification {
             "gradient_tensors": self.f32.gradients.len(),
             "gradient_elements": self.f32.gradients.values().map(Vec::len).sum::<usize>(),
             "arithmetic_reference": {
-                "policy": "native-f32-full-tensor-v2", "status": "pass",
+                "policy": if self.trajectory_gate { "native-f32-output-finite-gradient-v1" } else { "native-f32-full-tensor-v2" }, "status": "pass",
                 "reference": "original graph; untuned native strict-f32",
                 "prepared_before_precision_conversion": true,
                 "output_policy": if self.language_model.is_some() { crate::quality::POLICY } else { "tensor-fidelity-v1" },
                 "output_rtol": if self.language_model.is_some() { None } else { Some(if self.accelerated { 0.02 } else { 1e-4 }) },
                 "language_model": self.last_quality,
                 "raw_logits": self.last_raw_logits,
-                "gradient_rtol": if self.accelerated { 0.01 } else { 1e-4 },
+                "gradient_rtol": if self.trajectory_gate { None } else { Some(if self.accelerated { 0.01 } else { 1e-4 }) },
+                "gradient_diagnostic": if self.mode == Mode::Training { Some(serde_json::json!({
+                    "relative_l2": (gradient_error.square_error / gradient_error.square_reference.max(1e-30)).sqrt(),
+                    "max_abs_error": gradient_error.max_error,
+                    "max_abs_reference": gradient_error.max_reference,
+                })) } else { None },
                 "atol": 1e-6, "preparation_seconds": self.reference_seconds,
                 "checked_calls": self.calls, "rejected_calls": self.rejected_calls,
                 "reference_outputs": {
@@ -376,6 +399,7 @@ mod tests {
             output_lengths: vec![reference.len()],
             mode: Mode::Inference,
             accelerated: true,
+            trajectory_gate: false,
             f32: Snapshot {
                 outputs: vec![reference],
                 gradients: Default::default(),
@@ -474,6 +498,7 @@ mod tests {
             output_lengths: vec![1],
             mode: Mode::Training,
             accelerated: true,
+            trajectory_gate: false,
             f32: snapshot(vec![0.25, -0.5]),
             reference_seconds: 0.01,
             anchor: None,
@@ -496,6 +521,38 @@ mod tests {
         assert_eq!(gate.report()["arithmetic_reference"]["rejected_calls"], 2);
         assert_eq!(gate.report()["arithmetic_reference"]["checked_calls"], 1);
         assert!(gate.check_snapshot(snapshot(vec![f32::NAN, -0.5])).is_err());
+    }
+
+    #[test]
+    fn trajectory_gate_keeps_finite_outputs_and_program_repeatability() {
+        let mut gate = inference_gate(vec![1.0]);
+        gate.mode = Mode::Training;
+        gate.f32.gradients.insert("weight".into(), vec![1.0]);
+        let snapshot = |output, gradient| Snapshot {
+            outputs: vec![vec![output]],
+            gradients: [("weight".into(), vec![gradient])].into(),
+        };
+        assert!(gate.check_snapshot(snapshot(1.0, 1.03)).is_err());
+        gate.use_trajectory_gate();
+        assert!(gate.check_snapshot(snapshot(1.1, 1.03)).is_err());
+        assert!(gate.check_snapshot(snapshot(1.0, f32::NAN)).is_err());
+        gate.check_snapshot(snapshot(1.0, 1.03)).unwrap();
+        gate.check_snapshot(snapshot(1.0, 1.03)).unwrap();
+        assert!(
+            gate.check_snapshot(snapshot(1.0, 1.06))
+                .unwrap_err()
+                .contains("repeatability")
+        );
+        assert!(gate.report()["arithmetic_reference"]["gradient_rtol"].is_null());
+    }
+
+    #[test]
+    #[should_panic]
+    fn strict_gate_cannot_use_trajectory_relaxation() {
+        let mut gate = inference_gate(vec![1.0]);
+        gate.accelerated = false;
+        gate.mode = Mode::Training;
+        gate.use_trajectory_gate();
     }
 
     #[test]

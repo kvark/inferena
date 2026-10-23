@@ -50,6 +50,16 @@ class AndroidContract(unittest.TestCase):
             kernel_memo=dict(policy="campaign-kernel-memo-v1", enabled=False, load="disabled", loaded_classes=0,
                              reused_class_visits=0, new_comparisons=0, key=None, saved_classes=None))
         check_native_search(session, 30, 64, android=True)
+        accelerated = copy.deepcopy(session)
+        accelerated["cooperative_matrix_policy"] = "Auto"
+        accelerated["qualification"]["arithmetic_reference"].update(output_rtol=0.02, gradient_rtol=0.01)
+        for inputs in (["F16", "BF16"], ["BF16", "F16"]):
+            accelerated["search"]["matrix_inputs"] = inputs
+            check_native_search(accelerated, 30, 64, android=True)
+        for inputs in ([], ["BF16"], ["F16"], ["F16", "F16"], ["BF16", "F16", "F32"]):
+            accelerated["search"]["matrix_inputs"] = inputs
+            with self.subTest(matrix_inputs=inputs), self.assertRaises(ValueError):
+                check_native_search(accelerated, 30, 64, android=True)
         # A selected program's independent correctness check does not stand in
         # for repeated execution of that program, even when all timings exist.
         for key, value in (("program_checks", 1), ("repeatability_checks", 0),

@@ -165,9 +165,11 @@ existing F32/FP16 paths; `fp16` also permits reduced derivative kernels;
 `bf16-forward` converts supported forward matrices/convolutions;
 `bf16` also narrows eligible dense derivatives; `bf16-inputs` keeps matrix
 results in f32 while narrowing operands. Parameters, accumulation, losses and
-master gradients remain f32. BF16 requires native storage and 16×16×16 or
-8×16×16 BF16/F32 cooperative matrices (the latter enables B570). Conversion
+master gradients remain f32. BF16 requires native storage and 16×16×16,
+8×16×16 (B570), or 8×8×8 (Apple) BF16/F32 cooperative matrices. Conversion
 costs are included in every step.
+See the [M3 diagnostic](EXPERIMENT.md#m3-checked-cooperative-matrix-diagnostic)
+for qualified search results.
 
 ```sh
 INFERENA_MEGANEURA_PRECISION=bf16-inputs MEGANEURA_TUNE=0 \

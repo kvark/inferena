@@ -230,8 +230,9 @@ def check_native_search(session, seconds, max_submission_chunks, kernel_memo=Fal
             or options["warmup_runs"] != 2
             or options.get("qualification_runs") != 1
             or options.get("final_qualification_runs") != 2
-            or search.get("matrix_inputs") != ([] if session["cooperative_matrix_policy"] == "NativeF32"
-                                                else ["BF16"])
+            or search.get("matrix_inputs") not in (
+                [[]] if session["cooperative_matrix_policy"] == "NativeF32"
+                else [["F16", "BF16"], ["BF16", "F16"]])
             or duration_seconds(options["warmup_time"]) != 0.25
             or memory["plan_fraction_of_available"] != 0.75
             or options["max_plan_bytes"] != available // 4 * 3
@@ -954,7 +955,7 @@ def collect(wake_policy):
                           "qualification": "selected-program-repeatability-v2",
                           "qualification_runs": 1,
                           "final_qualification_runs": 2,
-                          "matrix_inputs": {"strict": [], "accelerated": ["BF16"]},
+                          "matrix_inputs": {"strict": [], "accelerated": ["F16", "BF16"]},
                           "arithmetic_reference": "native-f32-full-tensor-v2; preparation included in compile_s, outside search budget",
                           "search_input_policy": "refresh before each step, outside timing",
                           "search_seconds_per_session": args.tune_seconds, "strict_coop": "NativeF32"},

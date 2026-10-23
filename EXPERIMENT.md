@@ -21,9 +21,12 @@ numerical acceptance, final step timers and the two-profile matrix are unchanged
 
 ## Development v33: repeat the final selected program
 
-This branch pins merged Meganeura `c19cb1c` ([PR #267](https://github.com/kvark/meganeura/pull/267)).
-It also includes merged #266: accelerated `CoopPolicy::Auto` searches
-device-qualified BF16 matrix alternatives; strict retains `NativeF32`.
+This branch pins merged Meganeura `610ef05`
+([PR #282](https://github.com/kvark/meganeura/pull/282)), including Apple's checked 8×8×8 kernels,
+checked F16 search, mixed convolution candidates and selected-program
+qualification from [PR #267](https://github.com/kvark/meganeura/pull/267). Accelerated
+`CoopPolicy::Auto` searches device-qualified F16 and BF16 matrix alternatives;
+strict retains `NativeF32`.
 Measurements recorded at `7cf2935` retain that revision and do not include the
 BF16 search change.
 
@@ -55,11 +58,14 @@ whole-program timing gates, and the two-profile design remain unchanged.
 
 Accelerated search automatically considers device-qualified BF16 multiplication
 for eligible forward dense products and convolutions, including existing
-cooperative products. Parameters, intermediate storage, outputs and protected
-backward products stay F32. Conversion runs inside the timed kernels; the
-original F32/FP16 alternatives remain available. No client-side BF16 opt-in is
-needed. Receipts require `search.matrix_inputs=["BF16"]` for Auto and `[]` for
-strict, independently of whether the device supports or selects those candidates.
+cooperative products, and also considers checked F16 alternatives. Parameters,
+intermediate storage, outputs and protected backward products stay F32.
+Conversion runs inside the timed kernels; the original F32/FP16 alternatives
+remain available. No client-side BF16 opt-in is needed. Receipts require both
+F16 and BF16 in `search.matrix_inputs` for Auto
+(ordered by device capability), and `[]` for strict, independently of whether
+the device supports or selects those candidates. Earlier v33 sources requested
+only BF16 explicitly; retain their dependency revisions with those receipts.
 No tolerance, search deadline or PyTorch dtype policy changes.
 
 For an inexpensive first check of a large model's dtype failure,
@@ -78,6 +84,45 @@ The two final native qualification executions test repeatability, independently
 of clock behavior. Timing replicates also expose variations in search choices,
 compilation/cache state and host scheduling; stable clocks alone do not remove
 those sources of variation.
+
+### M3 checked cooperative matrix diagnostic
+
+The pinned Meganeura extends the shared checked kernel to
+8×8×8 native products, including dense transposes, split-K and implicit-GEMM
+convolutions. Blade already advertises F32, F16/F32 and BF16/F32 on this M3;
+no backend capability override or additional Naga patch is required.
+For a diagnostic run with the pinned dependencies:
+
+```sh
+./run.sh -m ResNet-50 -f meganeura,pytorch --allow-integrated-gpu \
+  --results-dir /path/to/new-results
+```
+
+The October 22 native diagnostic covers the five ordinary models and all 14
+sessions with the usual 30-second search budget, full F32 output/gradient checks, two
+final repeatability checks, 10-second warmups and 20 samples. All passed;
+12 selected programs use cooperative matrices, neither F16 nor BF16 is
+reported unsupported, and 36 BF16 candidates qualified. Final selections use
+F16 or F32. The two non-cooperative sessions are the small SmolLM2/SmolVLA
+latency workloads.
+
+In ResNet inference's paired search, BF16 improved 42.00 to 36.72 ms, then
+F16 improved further to 34.53 ms and won selection (41 cooperative dispatches).
+For latency, BF16 improved 14.43 to 12.73 ms, followed by another BF16 layout
+at 12.18 ms; F16 ultimately won at 11.70 ms. These comparisons include complete
+program execution and operand conversions. Other models qualified BF16 but
+retained faster alternatives. Separate-process timings varied substantially;
+these search comparisons are diagnostic evidence, not a replacement cohort.
+
+Source archives, binary hashes, raw samples, search trials and logs are kept
+outside Git in `inferena-results/m3-coopmat-20261022-{initial,models,reference}`.
+Fresh compiled PyTorch inference, latency and training qualification passes for
+all five models. Inferena's cross-engine validator also accepts every native
+forward/gradient comparison against the independent F32 oracles. The reference
+timings are not paired with the earlier native runs. The diagnostic used a local
+Meganeura override before this revision was pinned; the source archives retain
+that provenance. Publication campaigns require clean committed sources and
+continue to reject local overrides.
 
 ### Optional performance requests and telemetry
 

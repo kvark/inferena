@@ -92,6 +92,15 @@ of clock behavior. Timing replicates also expose variations in search choices,
 compilation/cache state and host scheduling; stable clocks alone do not remove
 those sources of variation.
 
+Candidate initializers skip source parameters individually only when the library
+reports that both the source and all its derived/fused representations already
+share the incumbent's storage. A partly inherited plan initializes its remaining
+parameters, rather than regenerating every weight. F32 references and standalone
+builds have no donor and always initialize fresh data. Initialization remains
+inside setup/search time, outside step timing; the accuracy and final-repeatability
+checks are unchanged. This does not reuse a qualification result or saved tensors
+between independent processes.
+
 ### M3 checked cooperative matrix diagnostic
 
 The saved October 22 diagnostic below predates the half-storage Winograd search

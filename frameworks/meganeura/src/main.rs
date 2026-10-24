@@ -42,7 +42,7 @@ fn warmup_time() -> Duration {
 fn build_session(
     graph: &Graph,
     mode: Mode,
-    initialize_parameters: impl Fn(&mut Session),
+    initialize_parameters: impl Fn(&mut Session, Option<&Session>),
     initialize_inputs: impl Fn(&mut Session),
 ) -> Session {
     build_session_with_quality(graph, mode, initialize_parameters, initialize_inputs, None)
@@ -51,7 +51,7 @@ fn build_session(
 fn build_session_with_quality(
     graph: &Graph,
     mode: Mode,
-    initialize_parameters: impl Fn(&mut Session),
+    initialize_parameters: impl Fn(&mut Session, Option<&Session>),
     initialize_inputs: impl Fn(&mut Session),
     language_model: Option<(usize, &[u32])>,
 ) -> Session {
@@ -95,7 +95,7 @@ fn build_session_with_quality(
     reference_config.options.flash_backward_coop = false;
     reference_config.options.bf16_matrix_gradients = false;
     let mut reference = meganeura::build(graph, reference_config).0;
-    initialize_parameters(&mut reference);
+    initialize_parameters(&mut reference, None);
     initialize_inputs(&mut reference);
     reference.step();
     reference.wait();
@@ -175,16 +175,9 @@ fn build_session_with_quality(
             config,
             options,
             |session, incumbent| {
-                // Construction already shares immutable weights. Check derived
-                // representations too before skipping the source uploads.
-                let reused = incumbent.is_some_and(|source| {
-                    qualification::source_parameters(session)
-                        .iter()
-                        .all(|(name, _)| session.inherits_parameter(source, name))
-                });
-                if !reused {
-                    initialize_parameters(session);
-                }
+                // Initializers skip each fully inherited source independently,
+                // including the library's check of its derived representations.
+                initialize_parameters(session, incumbent.as_deref());
                 initialize_inputs(session);
                 Ok(())
             },
@@ -216,7 +209,7 @@ fn build_session_with_quality(
         session
     } else {
         let mut session = meganeura::build(graph, config).0;
-        initialize_parameters(&mut session);
+        initialize_parameters(&mut session, None);
         initialize_inputs(&mut session);
         session.step();
         session.wait();
@@ -395,9 +388,9 @@ fn validation_sample(data: &[f32], count: usize) -> Vec<f64> {
         .collect()
 }
 
-/// Initialize all session parameters with deterministic name-seeded values.
-fn init_params(session: &mut meganeura::Session) {
-    for (name, n) in qualification::source_parameters(session) {
+/// Initialize non-inherited sources with deterministic name-seeded values.
+fn init_params(session: &mut meganeura::Session, donor: Option<&Session>) {
+    for (name, n) in parameters::initialization_parameters(session, donor) {
         let data = initialization::parameter_values(&name, n, initialization::AMPLITUDE);
         session.set_parameter(&name, &data);
     }
@@ -407,8 +400,12 @@ fn load_weights(
     session: &mut meganeura::Session,
     model: &SafeTensorsModel,
     transposed_set: &std::collections::HashSet<&str>,
+    donor: Option<&Session>,
 ) {
     for (name, _) in session.plan().param_buffers.clone() {
+        if donor.is_some_and(|donor| session.inherits_parameter(donor, &name)) {
+            continue;
+        }
         // Skip derived (fused) params — auto-populated when source params are loaded.
         if !model.tensor_info().contains_key(&name) && name != "lm_head.weight" {
             continue;
@@ -786,7 +783,7 @@ fn bench_smollm2(model_name: &str) {
     let mut session = build_session_with_quality(
         &g,
         Mode::Inference,
-        |session| load_weights(session, &model, &transposed_set),
+        |session, donor| load_weights(session, &model, &transposed_set, donor),
         |session| {
             session.set_input_u32("token_ids", &input_ids);
         },
@@ -840,7 +837,7 @@ fn bench_smollm2(model_name: &str) {
     let mut lat_session = build_session_with_quality(
         &lat_g,
         Mode::Inference,
-        |session| load_weights(session, &model, &transposed_set),
+        |session, donor| load_weights(session, &model, &transposed_set, donor),
         |session| {
             session.set_input_u32("token_ids", &[0u32]);
         },
@@ -900,7 +897,7 @@ fn bench_smollm2(model_name: &str) {
     let mut train_session = build_session(
         &training_g,
         Mode::Training,
-        |session| load_weights(session, &model, &transposed_set),
+        |session, donor| load_weights(session, &model, &transposed_set, donor),
         |session| {
             session.set_input_u32("token_ids", &input_ids);
             session.set_input_u32("labels", &labels);
@@ -1370,8 +1367,8 @@ fn bench_stable_diffusion() {
     // layers use their conventional identity initialization so signals and
     // gradients are not artificially attenuated through the deep U-Net.
     eprintln!("[meganeura] initializing parameters...");
-    let init_params = |session: &mut meganeura::Session| {
-        for (name, n) in qualification::source_parameters(session) {
+    let init_params = |session: &mut meganeura::Session, donor: Option<&Session>| {
+        for (name, n) in parameters::initialization_parameters(session, donor) {
             let data = if name.contains(".norm") && name.ends_with(".weight") {
                 vec![1.0; n]
             } else if name.contains(".norm") && name.ends_with(".bias") {
@@ -1557,8 +1554,8 @@ fn bench_resnet() {
     // Note: matches PyTorch's _resnet_init — fused_bias=0 (BN identity)
     // and every Meganeura-native parameter buffer is name-seeded in its
     // native layout. PyTorch transposes its FC storage when initializing.
-    let init_params = |session: &mut meganeura::Session| {
-        for (name, n) in qualification::source_parameters(session) {
+    let init_params = |session: &mut meganeura::Session, donor: Option<&Session>| {
+        for (name, n) in parameters::initialization_parameters(session, donor) {
             let data: Vec<f32> = if name.contains("fused_bias") {
                 vec![0.0; n]
             } else {
@@ -1712,8 +1709,8 @@ fn bench_whisper() {
 
     // Load weights with deterministic init matching PyTorch encoder.
     let prefix = "model.encoder.";
-    let init_params = |session: &mut meganeura::Session| {
-        for (name, n) in qualification::source_parameters(session) {
+    let init_params = |session: &mut meganeura::Session, donor: Option<&Session>| {
+        for (name, n) in parameters::initialization_parameters(session, donor) {
             let seed_name = name.strip_prefix(prefix).unwrap_or(&name);
             let seed_name = seed_name.replace("fused_bias", "bias");
             // All Meganeura buffers, including [in, out] linear weights

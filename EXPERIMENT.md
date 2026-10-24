@@ -21,9 +21,10 @@ numerical acceptance, final step timers and the two-profile matrix are unchanged
 
 ## Development v33: repeat the final selected program
 
-This branch pins merged Meganeura `3cfa008`
-([PR #274](https://github.com/kvark/meganeura/pull/274)), including search candidates
-for private half-storage Winograd transforms and products, Apple's checked 8×8×8
+This branch pins merged Meganeura `0355796`, including early eight-wide arithmetic
+coverage and shared private-probe budgeting within the existing search deadline.
+It also includes search candidates for private half-storage Winograd transforms
+and products ([PR #274](https://github.com/kvark/meganeura/pull/274)), Apple's checked 8×8×8
 kernels ([PR #282](https://github.com/kvark/meganeura/pull/282)), checked F16
 search, mixed convolution candidates and selected-program
 qualification from [PR #267](https://github.com/kvark/meganeura/pull/267). Accelerated

@@ -117,10 +117,12 @@ impl Policy {
             }
             value["native_f32_cooperative_matrix_permitted"] = true.into();
         } else if self == Self::Auto {
+            value["tensor_storage"] =
+                "f32 interfaces; private Winograd transforms may use f16/bf16".into();
             value["matmul_inputs"] =
                 "qualified search over f32, f16 and bf16 multiplication; f32 storage/output".into();
             value["convolution_inputs"] =
-                "qualified search over f32, f16 and bf16 forward multiplication; f32 storage/output".into();
+                "qualified f32/f16/bf16 forward products and private Winograd transforms; f32 interfaces".into();
             value["matrix_search_candidates"] = serde_json::json!(["F16", "BF16"]);
         } else if self == Self::Fp16 {
             for key in ["backward_matmul_inputs", "backward_convolution_inputs"] {
@@ -186,9 +188,84 @@ pub fn strict() -> bool {
     std::env::var("INFERENA_STRICT").as_deref() == Ok("1")
 }
 
+/// Count products, not their conversion/transform dispatches. Winograd's
+/// operands can be private BF16 tensors even while every graph interface is F32.
+pub fn bf16_matrix_dispatches(plan: &meganeura::compile::ExecutionPlan) -> usize {
+    use meganeura::{
+        DType,
+        compile::{Kernel, ShaderEntry},
+    };
+    plan.dispatches
+        .iter()
+        .filter(|d| {
+            matches!(d.kernel,
+            Kernel::CooperativeTyped { types, .. }
+                | Kernel::CooperativeWorkgroup { types: Some(types), .. }
+                if types.uses(DType::BF16))
+                || matches!(
+                    d.kernel,
+                    Kernel::WinogradMatmul {
+                        storage: DType::BF16,
+                        ..
+                    }
+                )
+                || matches!(d.shader, ShaderEntry::Conv2dBF16 { .. })
+        })
+        .count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bf16_receipts_count_winograd_products_but_not_transforms() {
+        use meganeura::{
+            DType,
+            codegen::MatrixTypes,
+            compile::{Dispatch, Kernel, ShaderEntry},
+        };
+        let mut plan = meganeura::compile::compile(&Graph::new());
+        for kernel in [
+            Kernel::WinogradTransform(DType::BF16),
+            Kernel::WinogradTransform(DType::F16),
+            Kernel::WinogradMatmul {
+                storage: DType::BF16,
+                tile: [32, 32],
+            },
+            Kernel::WinogradMatmul {
+                storage: DType::F16,
+                tile: [32, 32],
+            },
+            Kernel::CooperativeTyped {
+                types: MatrixTypes {
+                    multiply: DType::BF16,
+                    ..MatrixTypes::F32_AS_F16
+                },
+                splits: 1,
+            },
+            Kernel::CooperativeTyped {
+                types: MatrixTypes::F32_AS_F16,
+                splits: 1,
+            },
+        ] {
+            plan.dispatches.push(Dispatch {
+                kernel,
+                ..Default::default()
+            });
+        }
+        assert_eq!(bf16_matrix_dispatches(&plan), 2);
+        plan.dispatches.push(Dispatch {
+            shader: ShaderEntry::Conv2dBF16 {
+                kernel_h: 3,
+                kernel_w: 3,
+                stride: 1,
+                output_bf16: false,
+            },
+            ..Default::default()
+        });
+        assert_eq!(bf16_matrix_dispatches(&plan), 3);
+    }
 
     #[test]
     fn strict_cannot_enable_a_reduced_override() {

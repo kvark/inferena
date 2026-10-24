@@ -16,6 +16,20 @@ pub fn source_parameters(session: &Session) -> Vec<(String, usize)> {
         .collect()
 }
 
+/// Only skip a source when all of its derived representations are inherited
+/// too. A shared source with a new packed/fused representation must be uploaded
+/// again to initialize that representation. References and standalone builds
+/// have no donor and always initialize every source from fresh data.
+pub fn initialization_parameters(
+    session: &Session,
+    donor: Option<&Session>,
+) -> Vec<(String, usize)> {
+    let mut parameters = source_parameters(session);
+    parameters
+        .retain(|(name, _)| !donor.is_some_and(|donor| session.inherits_parameter(donor, name)));
+    parameters
+}
+
 /// Restore checkpoint coordinates, including gradients of packed projections.
 pub fn gradients(session: &Session) -> Result<BTreeMap<String, Vec<f32>>, String> {
     let plan = session.plan();

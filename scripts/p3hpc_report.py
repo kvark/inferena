@@ -243,6 +243,8 @@ def construction_rows(directory):
                           and 0 <= selected < len(trials) else None),
                 cooperative_dispatches=session.get("cooperative_dispatches"),
                 bf16_matrix_dispatches=session.get("bf16_matrix_dispatches"),
+                winograd_f16_matrix_dispatches=session.get("winograd_f16_matrix_dispatches"),
+                winograd_bf16_matrix_dispatches=session.get("winograd_bf16_matrix_dispatches"),
                 unsupported_matrix_inputs=search.get("unsupported_matrix_inputs")))
         loads = [s["memo"] for s in sessions]
         state = ("warm-decisions" if loads and all(x == "hit" for x in loads) else

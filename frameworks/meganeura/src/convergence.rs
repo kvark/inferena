@@ -94,12 +94,12 @@ pub fn run(spec_path: &Path, output: &Path) {
     let mut session = build_session(
         &graph,
         Mode::Training,
-        |session| load_weights(session, &model, &transposed_set),
+        |session, donor| load_weights(session, &model, &transposed_set, donor),
         |session| bind(session, &spec.train[0]),
     );
     // Search is untimed preparation. Restore the checkpoint explicitly before
     // the first evaluation or optimizer update.
-    load_weights(&mut session, &model, &transposed_set);
+    load_weights(&mut session, &model, &transposed_set, None);
     let parameter = "model.norm.weight";
     let mut initial = vec![0.0; config.hidden_size];
     session.read_param(parameter, &mut initial);

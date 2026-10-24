@@ -241,20 +241,23 @@ fn build_session_with_quality(
             .filter(|dispatch| dispatch.use_coop())
             .count()
     );
-    preparation["bf16_matrix_dispatches"] = serde_json::json!(
-        session
+    preparation["bf16_matrix_dispatches"] =
+        serde_json::json!(precision::bf16_matrix_dispatches(session.plan()));
+    for (name, dtype) in [
+        ("winograd_f16_matrix_dispatches", meganeura::DType::F16),
+        ("winograd_bf16_matrix_dispatches", meganeura::DType::BF16),
+    ] {
+        let count = session
             .plan()
             .dispatches
             .iter()
-            .filter(|d| matches!(
-                d.kernel,
-                meganeura::compile::Kernel::CooperativeTyped { types, .. }
-                    | meganeura::compile::Kernel::CooperativeWorkgroup {
-                        types: Some(types), ..
-                    } if types.uses(meganeura::DType::BF16)
-            ) || matches!(d.shader, meganeura::compile::ShaderEntry::Conv2dBF16 { .. }))
-            .count()
-    );
+            .filter(|d| {
+                matches!(d.kernel,
+                meganeura::compile::Kernel::WinogradMatmul { storage, .. } if storage == dtype)
+            })
+            .count();
+        preparation[name] = serde_json::json!(count);
+    }
     preparation["bf16_subgroup_shape"] =
         if preparation["bf16_matrix_dispatches"].as_u64().unwrap() > 0 {
             serde_json::json!(meganeura::codegen::checked_cooperative_shape(

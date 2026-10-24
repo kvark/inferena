@@ -51,3 +51,9 @@ class KernelSearchContract(unittest.TestCase):
             receipt["options"].update(options)
             with self.subTest(options=options), self.assertRaises(ValueError):
                 self.check(receipt)
+
+    def test_early_arithmetic_can_share_the_private_probe_budget(self):
+        receipt = copy.deepcopy(self.receipt)
+        receipt.update(visited_classes=3, share_cutoff=False, time_budget_exhausted=True)
+        receipt["options"]["max_time"] = dict(secs=8, nanos=0)
+        self.check(receipt)

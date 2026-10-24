@@ -21,9 +21,11 @@ numerical acceptance, final step timers and the two-profile matrix are unchanged
 
 ## Development v33: repeat the final selected program
 
-This branch pins merged Meganeura `610ef05`
-([PR #282](https://github.com/kvark/meganeura/pull/282)), including Apple's checked 8×8×8 kernels,
-checked F16 search, mixed convolution candidates and selected-program
+This branch pins merged Meganeura `3cfa008`
+([PR #274](https://github.com/kvark/meganeura/pull/274)), including search candidates
+for private half-storage Winograd transforms and products, Apple's checked 8×8×8
+kernels ([PR #282](https://github.com/kvark/meganeura/pull/282)), checked F16
+search, mixed convolution candidates and selected-program
 qualification from [PR #267](https://github.com/kvark/meganeura/pull/267). Accelerated
 `CoopPolicy::Auto` searches device-qualified F16 and BF16 matrix alternatives;
 strict retains `NativeF32`.
@@ -59,7 +61,12 @@ whole-program timing gates, and the two-profile design remain unchanged.
 Accelerated search automatically considers device-qualified BF16 multiplication
 for eligible forward dense products and convolutions, including existing
 cooperative products, and also considers checked F16 alternatives. Parameters,
-intermediate storage, outputs and protected backward products stay F32.
+graph-visible intermediate storage, outputs and protected backward products stay F32.
+Private Winograd transform buffers can use F16 or BF16, independently of dense
+product arithmetic. The transforms and products execute inside every timed step;
+each complete candidate still passes the original F32 gate. Setup reports count
+Winograd products separately by storage type, and BF16 Winograd products contribute
+to `bf16_matrix_dispatches` (the transforms themselves do not).
 Conversion runs inside the timed kernels; the original F32/FP16 alternatives
 remain available. No client-side BF16 opt-in is needed. Receipts require both
 F16 and BF16 in `search.matrix_inputs` for Auto
@@ -86,6 +93,11 @@ compilation/cache state and host scheduling; stable clocks alone do not remove
 those sources of variation.
 
 ### M3 checked cooperative matrix diagnostic
+
+The saved October 22 diagnostic below predates the half-storage Winograd search
+in `3cfa008`. Its results do not qualify that new search space. CPU integration
+checks are not GPU qualification; collect fresh numerical and paired timing
+evidence on AC power before making a performance claim for the updated pin.
 
 The pinned Meganeura extends the shared checked kernel to
 8×8×8 native products, including dense transposes, split-K and implicit-GEMM

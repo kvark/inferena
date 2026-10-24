@@ -927,7 +927,7 @@ def collect(wake_policy):
         "synthetic_parameter_init": SYNTHETIC_PARAMETER_INIT,
         "precision_policy": {"strict": "f32", "accelerated": {
             "autocast_requested": args.autocast, "pytorch_by_model": args.autocast_policies,
-            "native": "qualified f32/f16/bf16 matrix search; f32 storage/output",
+            "native": "qualified f32/f16/bf16 matrix and private Winograd storage search; f32 interfaces",
             "correctness_reference": "compare both original F32 references; independently qualify each accelerated output",
             "language_model_forward": {"policy": LM_POLICY, "mean_kl_limit": MEAN_KL_LIMIT,
                                        "token_kl_limit": TOKEN_KL_LIMIT, "loss_rtol": 0.02, "loss_atol": 1e-6,

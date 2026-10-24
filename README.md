@@ -168,6 +168,8 @@ results in f32 while narrowing operands. Parameters, accumulation, losses and
 master gradients remain f32. BF16 requires native storage and 16×16×16,
 8×16×16 (B570), or 8×8×8 (Apple) BF16/F32 cooperative matrices. Conversion
 costs are included in every step.
+Auto can also narrow private Winograd transform buffers and products while
+retaining F32 graph interfaces; each candidate must pass the same F32 gate.
 See the [M3 diagnostic](EXPERIMENT.md#m3-checked-cooperative-matrix-diagnostic)
 for qualified search results.
 

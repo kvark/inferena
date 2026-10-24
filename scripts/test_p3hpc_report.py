@@ -160,7 +160,9 @@ class ConstructionReport(unittest.TestCase):
             records = [dict(timings=dict(compile_s=10 + i), optimizer=dict(sessions=[
                 dict(mode="Inference", kernel_memo=dict(load=load), search=dict(
                     elapsed=dict(secs=2, nanos=500000000), selected=0,
-                    trials=[dict(description="program")]), bf16_matrix_dispatches=i)
+                    trials=[dict(description="program")]), bf16_matrix_dispatches=i,
+                    winograd_f16_matrix_dispatches=2 * i,
+                    winograd_bf16_matrix_dispatches=i)
                 for load in loads])) for i, loads in enumerate(states)]
             with patch("p3hpc_report.read_record", side_effect=records):
                 rows = construction_rows(directory)
@@ -168,6 +170,8 @@ class ConstructionReport(unittest.TestCase):
                              ["cold-first-session", "warm-decisions", "independent-decisions"])
             self.assertEqual([row["compile_seconds"] for row in rows], [10, 11, 12])
             self.assertEqual(rows[0]["sessions"][0]["search_seconds"], 2.5)
+            self.assertEqual(rows[2]["sessions"][0]["winograd_f16_matrix_dispatches"], 4)
+            self.assertEqual(rows[2]["sessions"][0]["winograd_bf16_matrix_dispatches"], 2)
 
     def test_construction_cli_reports_setup_without_paired_qualification(self):
         with tempfile.TemporaryDirectory() as temporary:

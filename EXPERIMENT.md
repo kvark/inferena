@@ -42,7 +42,8 @@ Meganeura can compare repeated outputs and gradients directly on the GPU after
 that plan passes the full CPU/F32 gate. Every checked 32-bit word must match the
 CPU-qualified snapshot; any difference uses the existing full CPU check. Plan
 changes discard the snapshot. Snapshot data is capped at 1 GiB and half the
-reported available GPU budget, with CPU fallback when unavailable. Receipts
+reported available GPU budget, with CPU fallback when unavailable or on software
+adapters. Receipts
 record `gpu_repeat_checks_enabled`, `gpu_repeat_checks` and `gpu_anchor_bytes`; set
 `INFERENA_GPU_REPEAT_CHECKS=0` for CPU-only checks. This preserves the numerical
 bounds and the number of fresh qualification executions, outside step timing.

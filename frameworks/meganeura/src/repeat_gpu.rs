@@ -62,6 +62,9 @@ pub struct Snapshot {
 impl Snapshot {
     pub fn capture(session: &Session, lengths: &[usize], mode: Mode) -> Option<Self> {
         let gpu = session.context().clone();
+        if gpu.device_information().is_software_emulated {
+            return None;
+        }
         let plan = session.plan();
         let mut tensors = BTreeMap::<u32, (usize, Source)>::new();
         if plan.output_buffers.len() != lengths.len() {

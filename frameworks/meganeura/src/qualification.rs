@@ -81,6 +81,40 @@ impl Error {
     }
 }
 
+/// Compute whole tensors independently, then restore the original merge order.
+fn tensor_errors(tensors: &[(&[f32], &[f32])], workers: usize) -> Vec<Result<Error, String>> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    let work = || {
+        let mut results = Vec::new();
+        loop {
+            let index = next.fetch_add(1, Ordering::Relaxed);
+            let Some(&(actual, reference)) = tensors.get(index) else {
+                break;
+            };
+            let mut error = Error::default();
+            results.push((index, error.include(actual, reference).map(|()| error)));
+        }
+        results
+    };
+    let mut results = std::thread::scope(|scope| {
+        let mut threads = Vec::new();
+        for _ in 1..workers {
+            match std::thread::Builder::new().spawn_scoped(scope, work) {
+                Ok(thread) => threads.push(thread),
+                Err(_) => break, // The caller can finish all remaining tensors.
+            }
+        }
+        let mut results = work();
+        for thread in threads {
+            results.extend(thread.join().unwrap());
+        }
+        results
+    });
+    results.sort_unstable_by_key(|entry| entry.0);
+    results.into_iter().map(|(_, error)| error).collect()
+}
+
 #[derive(PartialEq)]
 struct Snapshot {
     outputs: Vec<Vec<f32>>,
@@ -132,10 +166,32 @@ impl Snapshot {
                 .check(output_rtol)
                 .map_err(|error| format!("output {index}: {error}"))?;
         }
+        // Small comparisons retain the serial path. Parallel work preserves
+        // each tensor's F64 lanes and the original ordered checks and merge.
+        let workers = if self.gradients.len() >= 8
+            && self.gradients.values().map(Vec::len).sum::<usize>() >= 1 << 20
+        {
+            std::thread::available_parallelism().map_or(1, |n| n.get().min(4))
+        } else {
+            1
+        };
+        let mut computed = (workers > 1).then(|| {
+            let tensors: Vec<_> = self
+                .gradients
+                .iter()
+                .map(|(name, values)| (values.as_slice(), reference.gradients[name].as_slice()))
+                .collect();
+            tensor_errors(&tensors, workers).into_iter()
+        });
         let mut total = Error::default();
         for (name, actual) in &self.gradients {
-            let mut error = Error::default();
-            error.include(actual, &reference.gradients[name])?;
+            let error = if let Some(errors) = computed.as_mut() {
+                errors.next().unwrap()?
+            } else {
+                let mut error = Error::default();
+                error.include(actual, &reference.gradients[name])?;
+                error
+            };
             if !accelerated {
                 error
                     .check(1e-4)
@@ -398,6 +454,113 @@ impl Qualification {
 mod tests {
     use super::{Error, Qualification, Snapshot};
     use meganeura::Mode;
+
+    #[test]
+    fn parallel_tensor_errors_keep_bits_and_rejections() {
+        let mut values: Vec<_> = [0, 1, 7, 8, 9, 257, 65537]
+            .into_iter()
+            .map(|n| {
+                let reference: Vec<_> = (0..n).map(|i| (i as f32 * 0.17).sin()).collect();
+                let actual = reference.iter().map(|v| v * 1.00001).collect();
+                (actual, reference)
+            })
+            .collect();
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for actual in [false, true] {
+                let (mut a, mut b) = (vec![1.0; 9], vec![1.0; 9]);
+                if actual {
+                    a[8] = value
+                } else {
+                    b[8] = value
+                }
+                values.push((a, b));
+            }
+        }
+        values.push((vec![0.0; 8], vec![0.0; 7]));
+        values.push((
+            vec![-0.0, f32::from_bits(1), f32::MAX],
+            vec![0.0, 0.0, -f32::MAX],
+        ));
+        let tensors: Vec<_> = values
+            .iter()
+            .map(|(a, b)| (a.as_slice(), b.as_slice()))
+            .collect();
+        let evidence = |result: Result<Error, String>| {
+            result.map(|e| {
+                (
+                    [
+                        e.elements as u64,
+                        e.max_error.to_bits(),
+                        e.max_reference.to_bits(),
+                        e.square_error.to_bits(),
+                        e.square_reference.to_bits(),
+                    ],
+                    [e.check(0.0), e.check(1e-4), e.check(0.01)],
+                )
+            })
+        };
+        let serial: Vec<_> = tensors
+            .iter()
+            .map(|(a, b)| {
+                let mut error = Error::default();
+                evidence(error.include(a, b).map(|()| error))
+            })
+            .collect();
+        for workers in [1, 2, 4] {
+            assert_eq!(
+                super::tensor_errors(&tensors, workers)
+                    .into_iter()
+                    .map(evidence)
+                    .collect::<Vec<_>>(),
+                serial
+            );
+        }
+    }
+
+    #[test]
+    fn large_gradient_comparison_keeps_fixed_bounds() {
+        let reference = Snapshot {
+            outputs: vec![vec![1.0]],
+            gradients: (0..8)
+                .map(|i| (format!("w{i}"), vec![(i + 1) as f32 * 0.125; 1 << 17]))
+                .collect(),
+        };
+        let mut actual = Snapshot {
+            outputs: vec![vec![1.0]],
+            gradients: reference
+                .gradients
+                .iter()
+                .map(|(name, values)| (name.clone(), values.iter().map(|v| v * 1.005).collect()))
+                .collect(),
+        };
+        assert!(
+            actual
+                .compare(&reference, Mode::Training, 0.02, true)
+                .is_ok()
+        );
+        assert!(
+            actual
+                .compare(&reference, Mode::Training, 1e-4, false)
+                .unwrap_err()
+                .starts_with("gradient w0:")
+        );
+        for values in actual.gradients.values_mut() {
+            for value in values {
+                *value *= 10.0;
+            }
+        }
+        assert!(
+            actual
+                .compare(&reference, Mode::Training, 0.02, true)
+                .unwrap_err()
+                .starts_with("full gradient:")
+        );
+        actual.gradients.get_mut("w0").unwrap()[0] = f32::NAN;
+        assert_eq!(
+            actual.compare(&reference, Mode::Training, 0.02, true),
+            Err("non-finite tensor".into())
+        );
+    }
 
     #[test]
     #[ignore = "GPU regression: changed gradients must retain the full CPU gate"]

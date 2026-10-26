@@ -71,7 +71,10 @@ impl Snapshot {
             return None;
         }
         for (index, (&buffer, &len)) in plan.output_buffers.iter().zip(lengths).enumerate() {
-            tensors.insert(buffer.0, (len, Source::Output(index)));
+            tensors
+                .entry(buffer.0)
+                .and_modify(|(n, _)| *n = (*n).max(len))
+                .or_insert((len, Source::Output(index)));
         }
         if mode == Mode::Training {
             for &(parameter, gradient) in &plan.param_grad_pairs {
@@ -232,6 +235,58 @@ impl Drop for Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "GPU regression: repeated output bindings cover every requested word"]
+    fn repeated_outputs_cover_longest_prefix() {
+        let gpu = Arc::new(
+            meganeura::runtime::init_gpu_context_with(meganeura::GpuOptions {
+                device_id: std::env::var("MEGANEURA_DEVICE_ID")
+                    .ok()
+                    .map(|s| s.parse().unwrap()),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let mut g = meganeura::Graph::new();
+        let x = g.input("x", &[257]);
+        let y = g.neg(x);
+        g.set_outputs(vec![y, y]);
+        let (mut session, _) = meganeura::build(
+            &g,
+            meganeura::SessionConfig {
+                gpu: Some(gpu),
+                tune: false,
+                runtime: meganeura::SessionOptions {
+                    coop: meganeura::CoopPolicy::Disabled,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            session.plan().output_buffers[0],
+            session.plan().output_buffers[1]
+        );
+        let mut values = vec![0.; 257];
+        session.set_input("x", &values);
+        session.step();
+        session.wait();
+        for lengths in [[257, 1], [1, 257]] {
+            values.fill(0.);
+            session.set_input("x", &values);
+            session.step();
+            session.wait();
+            let mut snapshot = Snapshot::capture(&session, &lengths, Mode::Inference).unwrap();
+            assert_eq!(snapshot.bytes, 257 * 4);
+            assert!(snapshot.matches(&session));
+            values[256] = 1.;
+            session.set_input("x", &values);
+            session.step();
+            session.wait();
+            assert!(!snapshot.matches(&session));
+        }
+    }
+
     #[test]
     #[ignore = "GPU regression: exact output/gradient snapshots and large-array tails"]
     fn all_gradient_words_and_tail_changes_are_observed() {

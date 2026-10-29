@@ -19,7 +19,12 @@ pub struct Cache {
 }
 
 impl Cache {
-    pub fn open(directory: Option<&Path>, identity: Value) -> io::Result<Self> {
+    pub fn open(directory: Option<&Path>, mut identity: Value) -> io::Result<Self> {
+        // The deadline limits new comparisons, not compatibility of decisions
+        // already made. Keep the remaining tuning policy in the file identity.
+        if let Some(tuning) = identity.get_mut("tuning").and_then(Value::as_object_mut) {
+            tuning.remove("max_time");
+        }
         // The library checks device/driver/decision policy on use. Also isolate
         // dependency revisions: a memo must never survive a changed compiler.
         let identity = json!({
@@ -87,6 +92,27 @@ impl Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resumes_across_deadlines_without_mixing_decision_policies() {
+        let directory = tempfile::tempdir().unwrap();
+        let identity = |seconds, pairs| {
+            let tuning = meganeura::tune::TuneOptions {
+                max_time: std::time::Duration::from_secs(seconds),
+                sample_pairs: pairs,
+                ..Default::default()
+            };
+            json!({"device": "test GPU", "tuning": tuning})
+        };
+        let first = Cache::open(Some(directory.path()), identity(30, 6)).unwrap();
+        first.finish(&BuildSearchReport::default()).unwrap();
+        let shorter = Cache::open(Some(directory.path()), identity(15, 6)).unwrap();
+        assert_eq!(shorter.loaded, "hit");
+        assert_eq!(first.key, shorter.key);
+        let different_policy = Cache::open(Some(directory.path()), identity(15, 8)).unwrap();
+        assert_eq!(different_policy.loaded, "miss");
+        assert_ne!(first.key, different_policy.key);
+    }
 
     #[test]
     fn persists_only_after_success_and_scopes_the_identity() {

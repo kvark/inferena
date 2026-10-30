@@ -81,6 +81,40 @@ impl Error {
     }
 }
 
+/// Compute whole tensors independently, then restore the original merge order.
+fn tensor_errors(tensors: &[(&[f32], &[f32])], workers: usize) -> Vec<Result<Error, String>> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    let work = || {
+        let mut results = Vec::new();
+        loop {
+            let index = next.fetch_add(1, Ordering::Relaxed);
+            let Some(&(actual, reference)) = tensors.get(index) else {
+                break;
+            };
+            let mut error = Error::default();
+            results.push((index, error.include(actual, reference).map(|()| error)));
+        }
+        results
+    };
+    let mut results = std::thread::scope(|scope| {
+        let mut threads = Vec::new();
+        for _ in 1..workers {
+            match std::thread::Builder::new().spawn_scoped(scope, work) {
+                Ok(thread) => threads.push(thread),
+                Err(_) => break, // The caller can finish all remaining tensors.
+            }
+        }
+        let mut results = work();
+        for thread in threads {
+            results.extend(thread.join().unwrap());
+        }
+        results
+    });
+    results.sort_unstable_by_key(|entry| entry.0);
+    results.into_iter().map(|(_, error)| error).collect()
+}
+
 #[derive(PartialEq)]
 struct Snapshot {
     outputs: Vec<Vec<f32>>,
@@ -132,10 +166,32 @@ impl Snapshot {
                 .check(output_rtol)
                 .map_err(|error| format!("output {index}: {error}"))?;
         }
+        // Small comparisons retain the serial path. Parallel work preserves
+        // each tensor's F64 lanes and the original ordered checks and merge.
+        let workers = if self.gradients.len() >= 8
+            && self.gradients.values().map(Vec::len).sum::<usize>() >= 1 << 20
+        {
+            std::thread::available_parallelism().map_or(1, |n| n.get().min(4))
+        } else {
+            1
+        };
+        let mut computed = (workers > 1).then(|| {
+            let tensors: Vec<_> = self
+                .gradients
+                .iter()
+                .map(|(name, values)| (values.as_slice(), reference.gradients[name].as_slice()))
+                .collect();
+            tensor_errors(&tensors, workers).into_iter()
+        });
         let mut total = Error::default();
         for (name, actual) in &self.gradients {
-            let mut error = Error::default();
-            error.include(actual, &reference.gradients[name])?;
+            let error = if let Some(errors) = computed.as_mut() {
+                errors.next().unwrap()?
+            } else {
+                let mut error = Error::default();
+                error.include(actual, &reference.gradients[name])?;
+                error
+            };
             if !accelerated {
                 error
                     .check(1e-4)
@@ -159,6 +215,8 @@ pub struct Qualification {
     f32: Snapshot,
     reference_seconds: f64,
     anchor: Option<CheckedSnapshot>,
+    gpu_anchor: Option<crate::repeat_gpu::Snapshot>,
+    gpu_repeat_checks: usize,
     anchor_plan: Option<meganeura::compile::ExecutionPlan>,
     program_checks: usize,
     repeatability_checks: usize,
@@ -187,6 +245,8 @@ impl Qualification {
             f32,
             reference_seconds: 0.0,
             anchor: None,
+            gpu_anchor: None,
+            gpu_repeat_checks: 0,
             anchor_plan: None,
             program_checks: 0,
             repeatability_checks: 0,
@@ -221,13 +281,34 @@ impl Qualification {
 
     pub fn check(&mut self, session: &Session) -> Result<(), String> {
         self.begin_program(session.plan());
-        self.check_snapshot(Snapshot::read(session, &self.output_lengths, self.mode)?)
+        if let Some(anchor) = &self.anchor
+            && self.gpu_anchor.as_mut().is_some_and(|a| a.matches(session))
+        {
+            self.last_quality.clone_from(&anchor.quality);
+            self.last_raw_logits.clone_from(&anchor.raw_logits);
+            self.repeatability_checks += 1;
+            self.program_checks += 1;
+            self.gpu_repeat_checks += 1;
+            self.calls += 1;
+            return Ok(());
+        }
+        let first = self.anchor.is_none();
+        let result = self.check_snapshot(Snapshot::read(session, &self.output_lengths, self.mode)?);
+        if first
+            && result.is_ok()
+            && std::env::var("INFERENA_GPU_REPEAT_CHECKS").as_deref() != Ok("0")
+        {
+            self.gpu_anchor =
+                crate::repeat_gpu::Snapshot::capture(session, &self.output_lengths, self.mode);
+        }
+        result
     }
 
     fn begin_program(&mut self, plan: &meganeura::compile::ExecutionPlan) {
         if self.anchor_plan.as_ref() != Some(plan) {
             self.anchor_plan = Some(plan.clone());
             self.anchor = None;
+            self.gpu_anchor = None;
             self.program_checks = 0;
         }
     }
@@ -339,6 +420,9 @@ impl Qualification {
             "rtol": 1e-4, "atol": 1e-6, "accelerated_gradient_rtol": 0.01,
             "program_checks": self.program_checks,
             "repeatability_checks": self.repeatability_checks,
+            "gpu_repeat_checks_enabled": std::env::var("INFERENA_GPU_REPEAT_CHECKS").as_deref() != Ok("0"),
+            "gpu_repeat_checks": self.gpu_repeat_checks,
+            "gpu_anchor_bytes": self.gpu_anchor.as_ref().map_or(0, |a| a.bytes),
             "qualified_calls": self.calls,
             "rejected_calls": self.rejected_calls,
             "output_elements": self.f32.outputs.iter().map(Vec::len).sum::<usize>(),
@@ -371,6 +455,240 @@ mod tests {
     use super::{Error, Qualification, Snapshot};
     use meganeura::Mode;
 
+    #[test]
+    fn parallel_tensor_errors_keep_bits_and_rejections() {
+        let mut values: Vec<_> = [0, 1, 7, 8, 9, 257, 65537]
+            .into_iter()
+            .map(|n| {
+                let reference: Vec<_> = (0..n).map(|i| (i as f32 * 0.17).sin()).collect();
+                let actual = reference.iter().map(|v| v * 1.00001).collect();
+                (actual, reference)
+            })
+            .collect();
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for actual in [false, true] {
+                let (mut a, mut b) = (vec![1.0; 9], vec![1.0; 9]);
+                if actual {
+                    a[8] = value
+                } else {
+                    b[8] = value
+                }
+                values.push((a, b));
+            }
+        }
+        values.push((vec![0.0; 8], vec![0.0; 7]));
+        values.push((
+            vec![-0.0, f32::from_bits(1), f32::MAX],
+            vec![0.0, 0.0, -f32::MAX],
+        ));
+        let tensors: Vec<_> = values
+            .iter()
+            .map(|(a, b)| (a.as_slice(), b.as_slice()))
+            .collect();
+        let evidence = |result: Result<Error, String>| {
+            result.map(|e| {
+                (
+                    [
+                        e.elements as u64,
+                        e.max_error.to_bits(),
+                        e.max_reference.to_bits(),
+                        e.square_error.to_bits(),
+                        e.square_reference.to_bits(),
+                    ],
+                    [e.check(0.0), e.check(1e-4), e.check(0.01)],
+                )
+            })
+        };
+        let serial: Vec<_> = tensors
+            .iter()
+            .map(|(a, b)| {
+                let mut error = Error::default();
+                evidence(error.include(a, b).map(|()| error))
+            })
+            .collect();
+        for workers in [1, 2, 4] {
+            assert_eq!(
+                super::tensor_errors(&tensors, workers)
+                    .into_iter()
+                    .map(evidence)
+                    .collect::<Vec<_>>(),
+                serial
+            );
+        }
+    }
+
+    #[test]
+    fn large_gradient_comparison_keeps_fixed_bounds() {
+        let reference = Snapshot {
+            outputs: vec![vec![1.0]],
+            gradients: (0..8)
+                .map(|i| (format!("w{i}"), vec![(i + 1) as f32 * 0.125; 1 << 17]))
+                .collect(),
+        };
+        let mut actual = Snapshot {
+            outputs: vec![vec![1.0]],
+            gradients: reference
+                .gradients
+                .iter()
+                .map(|(name, values)| (name.clone(), values.iter().map(|v| v * 1.005).collect()))
+                .collect(),
+        };
+        assert!(
+            actual
+                .compare(&reference, Mode::Training, 0.02, true)
+                .is_ok()
+        );
+        assert!(
+            actual
+                .compare(&reference, Mode::Training, 1e-4, false)
+                .unwrap_err()
+                .starts_with("gradient w0:")
+        );
+        for values in actual.gradients.values_mut() {
+            for value in values {
+                *value *= 10.0;
+            }
+        }
+        assert!(
+            actual
+                .compare(&reference, Mode::Training, 0.02, true)
+                .unwrap_err()
+                .starts_with("full gradient:")
+        );
+        actual.gradients.get_mut("w0").unwrap()[0] = f32::NAN;
+        assert_eq!(
+            actual.compare(&reference, Mode::Training, 0.02, true),
+            Err("non-finite tensor".into())
+        );
+    }
+
+    #[test]
+    #[ignore = "GPU regression: changed gradients must retain the full CPU gate"]
+    fn gpu_repeat_changes_fall_back_to_full_gradient_gate() {
+        let device_id = std::env::var("MEGANEURA_DEVICE_ID")
+            .ok()
+            .map(|s| s.parse().unwrap());
+        let gpu = std::sync::Arc::new(
+            meganeura::runtime::init_gpu_context_with(meganeura::GpuOptions {
+                device_id,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let mut graph = meganeura::Graph::new();
+        let x = graph.input("x", &[257]);
+        let w = graph.parameter("w", &[257]);
+        let y = graph.mul(x, w);
+        let loss = graph.mean_all(y);
+        graph.set_outputs(vec![loss]);
+        let (mut session, _) = meganeura::train::build(
+            &graph,
+            meganeura::SessionConfig {
+                gpu: Some(gpu),
+                mode: Mode::Training,
+                runtime: meganeura::SessionOptions {
+                    coop: meganeura::CoopPolicy::Disabled,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let mut x = vec![1.; 257];
+        session.set_parameter("w", &[0.; 257]);
+        session.set_input("x", &x);
+        session.step();
+        session.wait();
+        let mut gate = Qualification::new(&graph, Mode::Training, &session).unwrap();
+        gate.accelerated = true;
+        gate.check(&session).unwrap();
+        gate.gpu_anchor = crate::repeat_gpu::Snapshot::capture(&session, &[1], Mode::Training);
+        assert!(gate.gpu_anchor.is_some());
+        gate.check(&session).unwrap();
+        assert_eq!(gate.gpu_repeat_checks, 1);
+        x[0] = 0.;
+        x[256] = 2.;
+        session.set_input("x", &x);
+        session.step();
+        session.wait();
+        assert_eq!(session.read_loss(), 0.);
+        let error = gate.check(&session).unwrap_err();
+        assert!(error.contains("full gradient"), "{error}");
+        assert_eq!(gate.rejected_calls, 1);
+        assert_eq!(gate.gpu_repeat_checks, 1);
+        x.fill(1.);
+        session.set_input("x", &x);
+        session.step();
+        session.wait();
+        gate.check(&session).unwrap();
+        assert_eq!(gate.gpu_repeat_checks, 2);
+        assert_eq!(gate.calls, 3);
+    }
+
+    #[test]
+    #[ignore = "GPU regression: packed gradients must retain source-coordinate qualification"]
+    fn gpu_repeat_checks_packed_parameter_gradients() {
+        let device_id = std::env::var("MEGANEURA_DEVICE_ID")
+            .ok()
+            .map(|s| s.parse().unwrap());
+        let gpu = std::sync::Arc::new(
+            meganeura::runtime::init_gpu_context_with(meganeura::GpuOptions {
+                device_id,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let mut graph = meganeura::Graph::new();
+        let x = graph.input("x", &[16, 32]);
+        let gate = graph.parameter("gate", &[32, 64]);
+        let up = graph.parameter("up", &[32, 64]);
+        let down = graph.parameter("down", &[64, 32]);
+        let gate = graph.matmul(x, gate);
+        let up = graph.matmul(x, up);
+        let hidden = graph.swiglu(gate, up);
+        let y = graph.matmul(hidden, down);
+        let loss = graph.mean_all(y);
+        graph.set_outputs(vec![loss]);
+        let config = |skip_full_optimize| meganeura::SessionConfig {
+            gpu: Some(gpu.clone()),
+            mode: Mode::Training,
+            skip_full_optimize,
+            runtime: meganeura::SessionOptions {
+                coop: meganeura::CoopPolicy::Disabled,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (mut reference, _) = meganeura::train::build(&graph, config(true));
+        let (mut candidate, _) = meganeura::train::build(&graph, config(false));
+        assert!(!candidate.plan().derived_params.is_empty());
+        let mut x = vec![1.; 16 * 32];
+        for s in [&mut reference, &mut candidate] {
+            s.set_parameter("gate", &[0.1; 32 * 64]);
+            s.set_parameter("up", &[0.; 32 * 64]);
+            s.set_parameter("down", &[1.; 64 * 32]);
+            s.set_input("x", &x);
+            s.step();
+            s.wait();
+        }
+        let mut qualification = Qualification::new(&graph, Mode::Training, &reference).unwrap();
+        qualification.accelerated = true;
+        qualification.check(&candidate).unwrap();
+        qualification.gpu_anchor =
+            crate::repeat_gpu::Snapshot::capture(&candidate, &[1], Mode::Training);
+        assert!(qualification.gpu_anchor.is_some());
+        qualification.check(&candidate).unwrap();
+        assert_eq!(qualification.gpu_repeat_checks, 1);
+        x[0] = 2.;
+        candidate.set_input("x", &x);
+        candidate.step();
+        candidate.wait();
+        assert_eq!(candidate.read_loss(), 0.);
+        let error = qualification.check(&candidate).unwrap_err();
+        assert!(error.contains("full gradient"), "{error}");
+        assert_eq!(qualification.gpu_repeat_checks, 1);
+        assert_eq!(qualification.rejected_calls, 1);
+    }
+
     fn inference_gate(reference: Vec<f32>) -> Qualification {
         Qualification {
             output_lengths: vec![reference.len()],
@@ -382,6 +700,8 @@ mod tests {
             },
             reference_seconds: 0.0,
             anchor: None,
+            gpu_anchor: None,
+            gpu_repeat_checks: 0,
             anchor_plan: None,
             program_checks: 0,
             repeatability_checks: 0,
@@ -477,6 +797,8 @@ mod tests {
             f32: snapshot(vec![0.25, -0.5]),
             reference_seconds: 0.01,
             anchor: None,
+            gpu_anchor: None,
+            gpu_repeat_checks: 0,
             anchor_plan: None,
             program_checks: 0,
             repeatability_checks: 0,

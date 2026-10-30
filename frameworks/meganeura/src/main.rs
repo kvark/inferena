@@ -25,6 +25,7 @@ mod parameters;
 mod precision;
 mod qualification;
 mod quality;
+mod repeat_gpu;
 mod search_cache;
 
 fn warmup_time() -> Duration {

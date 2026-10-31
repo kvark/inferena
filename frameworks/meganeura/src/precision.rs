@@ -91,11 +91,15 @@ impl Policy {
     }
 
     pub fn metadata(self) -> serde_json::Value {
+        self.metadata_for(strict())
+    }
+
+    fn metadata_for(self, strict: bool) -> serde_json::Value {
         let mut value = serde_json::json!({
-            "comparison_class": if strict() { "strict-f32" } else { "accelerated" },
+            "comparison_class": if strict { "strict-f32" } else { "accelerated" },
             "policy": self.name(),
             "diagnostic": self != Self::Auto,
-            "cooperative_matrix_policy": if strict() { "NativeF32" } else if self == Self::Fp16 { "AllowF16" } else { "Auto" },
+            "cooperative_matrix_policy": if strict { "NativeF32" } else if self == Self::Fp16 { "AllowF16" } else { "Auto" },
             "tensor_storage": "f32",
             "matmul_inputs": "forward: f16 for eligible cooperative-matrix kernels; f32 otherwise",
             "attention_inputs": "forward: f16 for eligible cooperative-matrix kernels; f32 otherwise",
@@ -104,20 +108,22 @@ impl Policy {
             "backward_convolution_inputs": "f32",
             "backward_attention_inputs": "f32",
             "accumulation": "f32", "output": "f32", "loss": "f32",
-            "reduced_precision_allowed": !strict(),
-            "f16_cooperative_matrix_permitted": !strict(),
-            "bf16_permitted": !strict(),
+            "reduced_precision_allowed": !strict,
+            "f16_cooperative_matrix_permitted": !strict,
+            "bf16_permitted": !strict,
             "bf16_graph_conversion": self.uses_bf16(),
             "persistent_f16_tensors": false,
             "parameters": "f32; conversions, when needed, execute inside every timed step",
         });
-        if strict() {
+        if strict {
             for key in ["matmul_inputs", "attention_inputs", "convolution_inputs"] {
                 value[key] = "f32".into();
             }
             value["native_f32_cooperative_matrix_permitted"] = true.into();
         } else if self == Self::Auto {
-            value["tensor_storage"] =
+            value["tensor_storage"] = "mixed".into();
+            value["storage_dtypes"] = serde_json::json!(["f32", "f16", "bf16"]);
+            value["storage_policy"] =
                 "f32 interfaces; private Winograd transforms may use f16/bf16".into();
             value["matmul_inputs"] =
                 "qualified search over f32, f16 and bf16 multiplication; f32 storage/output".into();
@@ -217,6 +223,30 @@ pub fn bf16_matrix_dispatches(plan: &meganeura::compile::ExecutionPlan) -> usize
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_metadata_uses_contract_storage_labels() {
+        let accelerated = Policy::Auto.metadata_for(false);
+        assert_eq!(accelerated["tensor_storage"], "mixed");
+        assert_eq!(
+            accelerated["storage_dtypes"],
+            serde_json::json!(["f32", "f16", "bf16"])
+        );
+        assert_eq!(
+            accelerated["storage_policy"],
+            "f32 interfaces; private Winograd transforms may use f16/bf16"
+        );
+        assert_eq!(accelerated["accumulation"], "f32");
+        assert_eq!(accelerated["output"], "f32");
+        assert_eq!(accelerated["bf16_graph_conversion"], false);
+        assert_eq!(accelerated["persistent_f16_tensors"], false);
+
+        let strict = Policy::Auto.metadata_for(true);
+        assert_eq!(strict["tensor_storage"], "f32");
+        assert!(strict.get("storage_dtypes").is_none());
+        assert!(strict.get("storage_policy").is_none());
+        assert_eq!(strict["reduced_precision_allowed"], false);
+    }
 
     #[test]
     fn bf16_receipts_count_winograd_products_but_not_transforms() {

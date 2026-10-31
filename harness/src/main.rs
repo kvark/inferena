@@ -2177,6 +2177,11 @@ mod tests {
             }),
         );
         assert_eq!(precision_contract_error(&candidate, "accelerated"), None);
+        // Auto can narrow private Winograd storage while keeping F32 graph
+        // interfaces. This is the same mixed-storage contract as explicit BF16.
+        candidate.extra.get_mut("precision").unwrap()["storage_dtypes"] =
+            serde_json::json!(["f32", "f16", "bf16"]);
+        assert_eq!(precision_contract_error(&candidate, "accelerated"), None);
         let reference = candidate.clone();
         candidate.outputs.logits_sample.fill(100.0);
         // Cross-engine agreement checks the independent F32 references. The

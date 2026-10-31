@@ -1,7 +1,7 @@
 """Campaign contract, bounded compilation and backend replay; no retained artifacts."""
 
 import copy
-from contextlib import redirect_stdout
+from contextlib import nullcontext, redirect_stdout
 import hashlib
 import io
 import json
@@ -13,7 +13,7 @@ import tempfile
 import subprocess
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import torch
 
@@ -29,6 +29,32 @@ from p3hpc import (MODELS, PYTHON_VERSION, TORCH_REVISION, TORCH_VERSION, TUNE_S
 
 
 class CampaignTest(unittest.TestCase):
+    def test_xpu_command_graph_wait_rejection_requires_a_healthy_device(self):
+        message = "wait method cannot be used for an event associated with a command graph."
+        for device, failure, device_failure, expected in (
+            ("xpu", RuntimeError(message), None, QualificationError),
+            ("cuda", RuntimeError(message), None, RuntimeError),
+            ("xpu", torch.OutOfMemoryError(message), None, torch.OutOfMemoryError),
+            ("xpu", RuntimeError("device execution fault"), None, RuntimeError),
+            ("xpu", RuntimeError(message), RuntimeError("device lost"), RuntimeError),
+        ):
+            with self.subTest(device=device, failure=failure, device_failure=device_failure):
+                api = MagicMock()
+                api.stream.side_effect = lambda _: nullcontext()
+                api.graph.side_effect = failure
+                # Three ordinary calls synchronize before capture is attempted.
+                sync_results = [None] * 3 + [device_failure]
+                with patch("execution.graph_backend", return_value=api), \
+                     patch("execution.synchronize", side_effect=sync_results), \
+                     self.assertRaises(expected) as caught:
+                    capture_phase(lambda: torch.ones(2), device=device)
+                self.assertIs(type(caught.exception), expected)
+                if expected is QualificationError:
+                    self.assertEqual(caught.exception.details["kind"], "capture")
+                    self.assertEqual(caught.exception.details["stage"], "graph capture")
+                else:
+                    self.assertIs(caught.exception, device_failure or failure)
+
     def test_uncaptured_qualification_and_partial_training_failure(self):
         from bench import _bench
 
@@ -776,6 +802,29 @@ class CampaignTest(unittest.TestCase):
         expected.index_add_(0, indices, upstream)
         torch.testing.assert_close(output, weight[indices])
         torch.testing.assert_close(weight.grad, expected)
+
+    def test_embedding_capture_route_is_explicit_and_qualified(self):
+        from bench import qualify_embedding_backward
+
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embedding = torch.nn.Embedding(5, 3)
+
+            def get_input_embeddings(self):
+                return self.embedding
+
+        model = Model()
+        indices = [1, 1, 3]
+        report = qualify_embedding_backward(model, "cpu", indices)
+        self.assertEqual(report["selected"], "native-dense")
+        report = qualify_embedding_backward(model, "cpu", indices, graph_replay=True)
+        self.assertEqual(report["native_dense"]["status"], "pass")
+        self.assertEqual(report["selected"], "dense-index-add-autograd")
+        self.assertEqual(report["workaround"]["status"], "pass")
+        model.embedding(torch.tensor(indices)).sum().backward()
+        torch.testing.assert_close(model.embedding.weight.grad, torch.tensor([[0., 0., 0.], [2., 2., 2.],
+                                                                           [0., 0., 0.], [1., 1., 1.], [0., 0., 0.]]))
 
 
 @unittest.skipUnless(torch.cuda.is_available() or torch.xpu.is_available(), "CUDA/HIP/XPU required")

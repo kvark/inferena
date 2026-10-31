@@ -704,7 +704,7 @@ class AmpTest(unittest.TestCase):
                     patch("bench.qualify_embedding_backward", side_effect=RuntimeError("probe reached")) as probe:
                 with self.assertRaisesRegex(RuntimeError, "probe reached"):
                     _bench(name, {"type": "causal_lm"}, "xpu", None)
-                probe.assert_called_once_with(model, "xpu", expected)
+                probe.assert_called_once_with(model, "xpu", expected, graph_replay=False)
                 oracle.assert_not_called()
 
     def test_embedding_probe_includes_repeated_and_unused_rows(self):

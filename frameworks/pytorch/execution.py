@@ -267,9 +267,13 @@ def capture_phase(fn, model=None, stream=None, reduced_precision=False, device="
             # Only a rejected capture with a still-healthy device is recoverable.
             # OOM, device loss, execution faults and unrelated exceptions escape.
             message = str(error).lower()
-            if isinstance(error, torch.OutOfMemoryError) or not any(text in message for text in (
+            rejected = any(text in message for text in (
                     "operation not permitted when stream is capturing", "not permitted when stream is capturing",
-                    "not supported during graph capture", "not supported during capture")):
+                    "not supported during graph capture", "not supported during capture"))
+            rejected |= backend == "xpu" and (
+                "wait method cannot be used for an event associated with a command graph" in message
+            )
+            if isinstance(error, torch.OutOfMemoryError) or not rejected:
                 raise
             synchronize(device)
             raise QualificationError(str(error), kind="capture", stage="graph capture") from error

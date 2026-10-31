@@ -444,7 +444,7 @@ def _index_add_embedding_forward(embedding, indices):
     return _IndexAddEmbeddingBackward.apply(indices, embedding.weight)
 
 
-def qualify_embedding_backward(model, dev: str, probe_indices=None):
+def qualify_embedding_backward(model, dev: str, probe_indices=None, *, graph_replay=False):
     """Probe the native dense backward and select an equivalent safe path."""
     embedding = model.get_input_embeddings()
     if not isinstance(embedding, nn.Embedding):
@@ -492,7 +492,10 @@ def qualify_embedding_backward(model, dev: str, probe_indices=None):
         },
         "selected": "native-dense",
     }
-    if matching == total and finite:
+    # The native XPU kernel can pass eagerly, yet wait on a SYCL event during
+    # compiled backward. That wait is illegal inside an XPUGraph. Select the
+    # same qualified index_add route before compiling a captured workload.
+    if matching == total and finite and not graph_replay:
         return report
 
     if (
@@ -502,15 +505,15 @@ def qualify_embedding_backward(model, dev: str, probe_indices=None):
         or embedding.sparse
     ):
         raise RuntimeError(
-            "native embedding backward failed its probe and the input embedding "
-            "uses options unsupported by the dense index_add workaround"
+            "input embedding uses options unsupported by the required dense index_add backward"
         )
 
     matching, finite = probe(_IndexAddEmbeddingBackward.apply)
     if matching != total or not finite:
-        raise RuntimeError("both native and index_add embedding backward failed qualification")
+        raise RuntimeError("index_add embedding backward failed qualification")
     embedding.forward = _index_add_embedding_forward.__get__(embedding, type(embedding))
     report["selected"] = "dense-index-add-autograd"
+    report["selection_reason"] = "XPU graph capture compatibility" if graph_replay else "native dense probe failed"
     report["workaround"] = {
         "status": "pass",
         "matching_elements": matching,
@@ -519,7 +522,7 @@ def qualify_embedding_backward(model, dev: str, probe_indices=None):
     }
     print(
         f"[pytorch] native dense embedding backward matched {native_matching}/{total} "
-        "contract elements; selected qualified dense index_add backward",
+        f"contract elements; selected qualified dense index_add backward ({report['selection_reason']})",
         file=sys.stderr,
     )
     return report
@@ -1545,7 +1548,7 @@ def _bench(model_name, spec, dev, stream, sdpa_compile="compiled"):
     probe_indices = (gate_plan["train"][0]["input_ids"].flatten().tolist()
                      if gate_plan and gate_plan["workload"]["policy"] == REAL_TEXT else None)
     execution["embedding_backward"] = (
-        qualify_embedding_backward(eager_model, dev, probe_indices)
+        qualify_embedding_backward(eager_model, dev, probe_indices, graph_replay=use_graphs)
         if training_requested and model_type == "causal_lm" and dev.startswith("xpu")
         else {
             "status": "not-required"
